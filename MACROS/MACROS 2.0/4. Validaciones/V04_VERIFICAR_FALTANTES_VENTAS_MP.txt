@@ -1,0 +1,520 @@
+Option Explicit
+
+Public Sub V04_VERIFICAR_FALTANTES_VENTAS_MP()
+
+    Const SH_SRC As String = "VENTAS_MP"
+    Const SH_OUT As String = "V04_FALTANTES_MP"
+
+    Dim wsSrc As Worksheet, wsOut As Worksheet
+    Dim hdrRow As Long, lastRow As Long
+    Dim colOK As Long, colId As Long, colUUID As Long, colTrans As Long, colFecha As Long
+    Dim colBanco As Long, colSucursal As Long, colCajero As Long, colCliente As Long
+    Dim r As Long, outRow As Long
+
+    Dim totalRegistros As Long
+    Dim totalConMatch As Long
+    Dim totalSinMatch As Long
+
+    Dim totalConUUID As Long
+    Dim totalSinUUID As Long
+
+    Dim faltantesConUUID As Long
+    Dim faltantesSinUUID As Long
+    Dim faltantesSinTrans As Long
+
+    Dim okTxt As String
+    Dim uuidTxt As String
+    Dim transTxt As String
+    Dim filaTieneDato As Boolean
+    Dim motivo As String
+
+    Dim incluirDetalleUUID As VbMsgBoxResult
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsSrc = V04_GetSheet(SH_SRC)
+    If wsSrc Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_SRC & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrRow = V04_FindHeaderRow(wsSrc)
+    If hdrRow = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en VENTAS_MP.", vbExclamation
+        Exit Sub
+    End If
+
+    colOK = V04_FindHeaderCol(wsSrc, hdrRow, Array("OK_MP", "OK MP"))
+    colId = V04_FindHeaderCol(wsSrc, hdrRow, Array("ID_VENTA", "ID_venta", "id_venta"))
+    colUUID = V04_FindHeaderCol(wsSrc, hdrRow, Array("UUID", "uuid"))
+    colTrans = V04_FindHeaderCol(wsSrc, hdrRow, Array("numero_transaccion", "Número de transacción", "Numero de transaccion", "Operacion relacionada"))
+    colFecha = V04_FindHeaderCol(wsSrc, hdrRow, Array("FECHA", "fecha", "Fecha"))
+    colSucursal = V04_FindHeaderCol(wsSrc, hdrRow, Array("SUCURSAL", "sucursal"))
+    colCajero = V04_FindHeaderCol(wsSrc, hdrRow, Array("CAJERO", "cajero"))
+    colCliente = V04_FindHeaderCol(wsSrc, hdrRow, Array("nombre cliente", "Nombre cliente", "cliente", "Cliente", "nombre_cliente", "Nombre_Cliente"))
+    colBanco = V04_FindHeaderCol(wsSrc, hdrRow, Array("bancos_cobro", "Bancos_cobro"))
+
+    If colOK = 0 Then
+        MsgBox "No encontré la columna 'OK_MP' en VENTAS_MP.", vbExclamation
+        Exit Sub
+    End If
+
+    lastRow = V04_LastUsedRow(wsSrc)
+    If lastRow <= hdrRow Then
+        MsgBox "VENTAS_MP no tiene datos para revisar.", vbExclamation
+        Exit Sub
+    End If
+
+    incluirDetalleUUID = MsgBox( _
+        "La tabla resumen de UUID se generará siempre." & vbCrLf & vbCrLf & _
+        "¿También quieres generar el detalle de filas SIN UUID?" & vbCrLf & _
+        "(Puede salir largo)", _
+        vbYesNo + vbQuestion, _
+        "V04 - Detalle UUID")
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    V04_DeleteSheetIfExists SH_OUT
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsOut.Name = SH_OUT
+
+    ' =====================================================
+    ' RECORRIDO GENERAL
+    ' =====================================================
+    For r = hdrRow + 1 To lastRow
+
+        filaTieneDato = V04_RowHasData(wsSrc, r, Array(colId, colUUID, colTrans, colFecha, colSucursal, colCajero, colCliente, colBanco, colOK))
+        If Not filaTieneDato Then GoTo SiguienteR
+
+        totalRegistros = totalRegistros + 1
+
+        okTxt = V04_GetCellText(wsSrc, r, colOK)
+        uuidTxt = V04_GetCellText(wsSrc, r, colUUID)
+        transTxt = V04_GetCellText(wsSrc, r, colTrans)
+
+        If uuidTxt <> "" Then
+            totalConUUID = totalConUUID + 1
+        Else
+            totalSinUUID = totalSinUUID + 1
+        End If
+
+        If V04_IsOKMatch(okTxt) Then
+            totalConMatch = totalConMatch + 1
+        Else
+            totalSinMatch = totalSinMatch + 1
+
+            If uuidTxt <> "" Then
+                faltantesConUUID = faltantesConUUID + 1
+            Else
+                faltantesSinUUID = faltantesSinUUID + 1
+            End If
+
+            If transTxt = "" Then
+                faltantesSinTrans = faltantesSinTrans + 1
+            End If
+        End If
+
+SiguienteR:
+    Next r
+
+    ' =====================================================
+    ' TÍTULO
+    ' =====================================================
+    wsOut.Range("A1").Value = "VERIFICACIÓN DE MATCH EN VENTAS_MP"
+    wsOut.Range("A1").Font.Bold = True
+
+    ' =====================================================
+    ' TABLA 1 - MATCH MP
+    ' =====================================================
+    wsOut.Range("A3:C3").Value = Array("Concepto", "Cantidad", "%")
+    wsOut.Rows(3).Font.Bold = True
+
+    wsOut.Range("A4").Value = "Total registros"
+    wsOut.Range("B4").Value = totalRegistros
+
+    wsOut.Range("A5").Value = "Con match MP (OK en OK_MP)"
+    wsOut.Range("B5").Value = totalConMatch
+    wsOut.Range("C5").Value = V04_Pct(totalConMatch, totalRegistros)
+
+    wsOut.Range("A6").Value = "Sin match MP"
+    wsOut.Range("B6").Value = totalSinMatch
+    wsOut.Range("C6").Value = V04_Pct(totalSinMatch, totalRegistros)
+
+    wsOut.Range("C5:C6").NumberFormat = "0.00%"
+
+    ' =====================================================
+    ' TABLA 2 - UUID
+    ' =====================================================
+    wsOut.Range("E3:G3").Value = Array("Concepto UUID", "Cantidad", "%")
+    wsOut.Rows(3).Font.Bold = True
+
+    wsOut.Range("E4").Value = "Con UUID"
+    wsOut.Range("F4").Value = totalConUUID
+    wsOut.Range("G4").Value = V04_Pct(totalConUUID, totalRegistros)
+
+    wsOut.Range("E5").Value = "Sin UUID"
+    wsOut.Range("F5").Value = totalSinUUID
+    wsOut.Range("G5").Value = V04_Pct(totalSinUUID, totalRegistros)
+
+    wsOut.Range("E6").Value = "Faltantes MP con UUID"
+    wsOut.Range("F6").Value = faltantesConUUID
+    wsOut.Range("G6").Value = V04_Pct(faltantesConUUID, totalSinMatch)
+
+    wsOut.Range("E7").Value = "Faltantes MP sin UUID"
+    wsOut.Range("F7").Value = faltantesSinUUID
+    wsOut.Range("G7").Value = V04_Pct(faltantesSinUUID, totalSinMatch)
+
+    wsOut.Range("E8").Value = "Faltantes MP sin numero_transaccion"
+    wsOut.Range("F8").Value = faltantesSinTrans
+    wsOut.Range("G8").Value = V04_Pct(faltantesSinTrans, totalSinMatch)
+
+    wsOut.Range("G4:G8").NumberFormat = "0.00%"
+
+    ' =====================================================
+    ' DETALLE 1 - FALTANTES DE MATCH MP
+    ' =====================================================
+    outRow = 11
+
+    wsOut.Cells(outRow, 1).Value = "DETALLE DE FALTANTES DE MATCH MP"
+    wsOut.Cells(outRow, 1).Font.Bold = True
+
+    wsOut.Range("A" & outRow + 2 & ":L" & outRow + 2).Value = Array( _
+        "fila", _
+        "ID_VENTA", _
+        "FECHA", _
+        "SUCURSAL", _
+        "CAJERO", _
+        "nombre cliente", _
+        "bancos_cobro", _
+        "numero_transaccion", _
+        "OK_MP", _
+        "Tiene UUID", _
+        "Tiene numero_transaccion", _
+        "Motivo")
+    wsOut.Rows(outRow + 2).Font.Bold = True
+
+    outRow = outRow + 3
+
+    For r = hdrRow + 1 To lastRow
+
+        filaTieneDato = V04_RowHasData(wsSrc, r, Array(colId, colUUID, colTrans, colFecha, colSucursal, colCajero, colCliente, colBanco, colOK))
+        If Not filaTieneDato Then GoTo SiguienteDetalle1
+
+        okTxt = V04_GetCellText(wsSrc, r, colOK)
+        uuidTxt = V04_GetCellText(wsSrc, r, colUUID)
+        transTxt = V04_GetCellText(wsSrc, r, colTrans)
+
+        If Not V04_IsOKMatch(okTxt) Then
+
+            motivo = V04_BuildMotivoMatch(okTxt, uuidTxt, transTxt)
+
+            wsOut.Cells(outRow, 1).Value = r
+            If colId > 0 Then wsOut.Cells(outRow, 2).Value = wsSrc.Cells(r, colId).Value
+            If colFecha > 0 Then wsOut.Cells(outRow, 3).Value = wsSrc.Cells(r, colFecha).Value
+            If colSucursal > 0 Then wsOut.Cells(outRow, 4).Value = wsSrc.Cells(r, colSucursal).Value
+            If colCajero > 0 Then wsOut.Cells(outRow, 5).Value = wsSrc.Cells(r, colCajero).Value
+            If colCliente > 0 Then wsOut.Cells(outRow, 6).Value = wsSrc.Cells(r, colCliente).Value
+            If colBanco > 0 Then wsOut.Cells(outRow, 7).Value = wsSrc.Cells(r, colBanco).Value
+            If colTrans > 0 Then
+                wsOut.Cells(outRow, 8).NumberFormat = "@"
+                wsOut.Cells(outRow, 8).Value = transTxt
+            End If
+            If colOK > 0 Then wsOut.Cells(outRow, 9).Value = wsSrc.Cells(r, colOK).Value
+            wsOut.Cells(outRow, 10).Value = IIf(uuidTxt <> "", "SI", "NO")
+            wsOut.Cells(outRow, 11).Value = IIf(transTxt <> "", "SI", "NO")
+            wsOut.Cells(outRow, 12).Value = motivo
+
+            outRow = outRow + 1
+        End If
+
+SiguienteDetalle1:
+    Next r
+
+    If wsOut.Cells(outRow, 1).Value = "" Then
+        wsOut.Cells(outRow, 1).Value = "SIN FALTANTES DE MATCH MP"
+        outRow = outRow + 1
+    End If
+
+    ' =====================================================
+    ' DETALLE 2 - SIN UUID (OPCIONAL)
+    ' =====================================================
+    If incluirDetalleUUID = vbYes Then
+
+        outRow = outRow + 2
+
+        wsOut.Cells(outRow, 1).Value = "DETALLE DE REGISTROS SIN UUID"
+        wsOut.Cells(outRow, 1).Font.Bold = True
+
+        wsOut.Range("A" & outRow + 2 & ":L" & outRow + 2).Value = Array( _
+            "fila", _
+            "ID_VENTA", _
+            "FECHA", _
+            "SUCURSAL", _
+            "CAJERO", _
+            "nombre cliente", _
+            "bancos_cobro", _
+            "numero_transaccion", _
+            "OK_MP", _
+            "Tiene UUID", _
+            "Tiene numero_transaccion", _
+            "Motivo")
+        wsOut.Rows(outRow + 2).Font.Bold = True
+
+        outRow = outRow + 3
+
+        For r = hdrRow + 1 To lastRow
+
+            filaTieneDato = V04_RowHasData(wsSrc, r, Array(colId, colUUID, colTrans, colFecha, colSucursal, colCajero, colCliente, colBanco, colOK))
+            If Not filaTieneDato Then GoTo SiguienteDetalle2
+
+            uuidTxt = V04_GetCellText(wsSrc, r, colUUID)
+            If uuidTxt = "" Then
+
+                okTxt = V04_GetCellText(wsSrc, r, colOK)
+                transTxt = V04_GetCellText(wsSrc, r, colTrans)
+
+                wsOut.Cells(outRow, 1).Value = r
+                If colId > 0 Then wsOut.Cells(outRow, 2).Value = wsSrc.Cells(r, colId).Value
+                If colFecha > 0 Then wsOut.Cells(outRow, 3).Value = wsSrc.Cells(r, colFecha).Value
+                If colSucursal > 0 Then wsOut.Cells(outRow, 4).Value = wsSrc.Cells(r, colSucursal).Value
+                If colCajero > 0 Then wsOut.Cells(outRow, 5).Value = wsSrc.Cells(r, colCajero).Value
+                If colCliente > 0 Then wsOut.Cells(outRow, 6).Value = wsSrc.Cells(r, colCliente).Value
+                If colBanco > 0 Then wsOut.Cells(outRow, 7).Value = wsSrc.Cells(r, colBanco).Value
+                If colTrans > 0 Then
+                    wsOut.Cells(outRow, 8).NumberFormat = "@"
+                    wsOut.Cells(outRow, 8).Value = transTxt
+                End If
+                If colOK > 0 Then wsOut.Cells(outRow, 9).Value = wsSrc.Cells(r, colOK).Value
+                wsOut.Cells(outRow, 10).Value = "NO"
+                wsOut.Cells(outRow, 11).Value = IIf(transTxt <> "", "SI", "NO")
+                wsOut.Cells(outRow, 12).Value = V04_BuildMotivoUUID(okTxt, transTxt)
+
+                outRow = outRow + 1
+            End If
+
+SiguienteDetalle2:
+        Next r
+
+        If wsOut.Cells(outRow, 1).Value = "" Then
+            wsOut.Cells(outRow, 1).Value = "SIN REGISTROS SIN UUID"
+            outRow = outRow + 1
+        End If
+    End If
+
+    If colFecha > 0 Then
+        wsOut.Columns("C").NumberFormat = "dd/mm/yyyy"
+    End If
+
+    wsOut.Columns("A:L").EntireColumn.AutoFit
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Verificación V04 terminada." & vbCrLf & _
+           "Sin match MP: " & totalSinMatch & vbCrLf & _
+           "Sin UUID: " & totalSinUUID, vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en V04_VERIFICAR_FALTANTES_VENTAS_MP: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function V04_IsOKMatch(ByVal okValue As String) As Boolean
+    Dim txt As String
+    txt = UCase$(Trim$(okValue))
+
+    If txt = "" Then Exit Function
+
+    If InStr(1, txt, "OK", vbTextCompare) > 0 Then
+        V04_IsOKMatch = True
+    End If
+End Function
+
+
+Private Function V04_BuildMotivoMatch( _
+    ByVal okValue As String, _
+    ByVal uuidTxt As String, _
+    ByVal transTxt As String) As String
+
+    Dim okTxt As String
+
+    okTxt = Trim$(okValue)
+
+    If okTxt = "" Then
+        If uuidTxt = "" And transTxt = "" Then
+            V04_BuildMotivoMatch = "SIN OK_MP / SIN UUID / SIN numero_transaccion"
+        ElseIf uuidTxt = "" Then
+            V04_BuildMotivoMatch = "SIN OK_MP / SIN UUID"
+        ElseIf transTxt = "" Then
+            V04_BuildMotivoMatch = "SIN OK_MP / SIN numero_transaccion"
+        Else
+            V04_BuildMotivoMatch = "SIN MATCH MP"
+        End If
+    Else
+        If uuidTxt = "" And transTxt = "" Then
+            V04_BuildMotivoMatch = "OK_MP SIN 'OK' / SIN UUID / SIN numero_transaccion"
+        ElseIf uuidTxt = "" Then
+            V04_BuildMotivoMatch = "OK_MP SIN 'OK' / SIN UUID"
+        ElseIf transTxt = "" Then
+            V04_BuildMotivoMatch = "OK_MP SIN 'OK' / SIN numero_transaccion"
+        Else
+            V04_BuildMotivoMatch = "OK_MP SIN 'OK'"
+        End If
+    End If
+End Function
+
+
+Private Function V04_BuildMotivoUUID( _
+    ByVal okValue As String, _
+    ByVal transTxt As String) As String
+
+    If V04_IsOKMatch(okValue) Then
+        If transTxt = "" Then
+            V04_BuildMotivoUUID = "SIN UUID / CON MATCH MP / SIN numero_transaccion"
+        Else
+            V04_BuildMotivoUUID = "SIN UUID / CON MATCH MP"
+        End If
+    Else
+        If transTxt = "" Then
+            V04_BuildMotivoUUID = "SIN UUID / SIN MATCH MP / SIN numero_transaccion"
+        Else
+            V04_BuildMotivoUUID = "SIN UUID / SIN MATCH MP"
+        End If
+    End If
+End Function
+
+
+Private Function V04_GetCellText(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal colNum As Long) As String
+    If ws Is Nothing Then Exit Function
+    If colNum <= 0 Then Exit Function
+    V04_GetCellText = Trim$(CStr(ws.Cells(rowNum, colNum).Value))
+End Function
+
+
+Private Function V04_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set V04_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function V04_FindHeaderRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If V04_FindHeaderCol(ws, r, Array("OK_MP", "OK MP")) > 0 Then
+            V04_FindHeaderRow = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function V04_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = V04_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = V04_NormHeader(CStr(headerNames(i))) Then
+                V04_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function V04_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    V04_NormHeader = s
+End Function
+
+
+Private Function V04_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        V04_LastUsedRow = 0
+    Else
+        V04_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function V04_RowHasData(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal cols As Variant) As Boolean
+    Dim i As Long, c As Long
+
+    For i = LBound(cols) To UBound(cols)
+        c = CLng(cols(i))
+        If c > 0 Then
+            If Trim$(CStr(ws.Cells(rowNum, c).Value)) <> "" Then
+                V04_RowHasData = True
+                Exit Function
+            End If
+        End If
+    Next i
+End Function
+
+
+Private Function V04_Pct(ByVal numerador As Double, ByVal denominador As Double) As Double
+    If denominador = 0 Then
+        V04_Pct = 0
+    Else
+        V04_Pct = numerador / denominador
+    End If
+End Function
+
+
+Private Sub V04_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub

@@ -1,0 +1,1785 @@
+Option Explicit
+
+'=========================================================
+' PROCESO COMPLETO - "BBVA VS CFDI"
+' Orden:
+'   B01 -> B02 -> C01 -> D01 -> D02 -> E01 (MOD PPD)
+'
+' MOD (lo que me pediste, SIN cambiar conciliación por CARGO):
+'   - D01, D02 y E01 ahora también recorren la hoja "EST MP"
+'   - En "EST MP" NO hay "Día", se toma "REFERENCE_ID" como columna guía
+'   - En "EST MP" el abono es "abonos" (plural)
+'=========================================================
+
+Public Sub BBVA_VS_CFDI()
+    B01_ORDENAR_BANCOS_POR_DIA
+    B02_OBS_Y_COMPL_BBVA_V2
+    C01_CFDI_E_LIMPIAR_Y_SEPARAR_PUE_PPD
+    D01_CONCILIAR_CARGOS_CON_CFDI_PUE
+    D02_CONCILIAR_CARGOS_CON_CFDI_PPD_UUID_EN_BANCO
+    E01_CONCILIAR_CARGOS_CON_COMPL_E_UUID_EN_OBS
+
+    MsgBox "Proceso completo 'BBVA VS CFDI' terminado.", vbInformation
+End Sub
+
+
+'=========================================================
+' B01 - Ordenar bancos por "Día" ascendente (hojas numéricas)
+'=========================================================
+Public Sub B01_ORDENAR_BANCOS_POR_DIA()
+
+    Dim ws As Worksheet
+    Dim hdr As Range
+    Dim diaCol As Long, hdrRow As Long
+    Dim lastRow As Long, lastCol As Long
+    Dim sortRange As Range
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If Not IsNumeric(ws.Name) Then GoTo SiguienteWs
+        If BBVA2_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo SiguienteWs
+
+        Set hdr = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+        If hdr Is Nothing Then Set hdr = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+        If hdr Is Nothing Then GoTo SiguienteWs
+
+        hdrRow = hdr.Row
+        diaCol = hdr.Column
+
+        lastRow = ws.Cells(ws.Rows.Count, diaCol).End(xlUp).Row
+        lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+        If lastRow <= hdrRow Then GoTo SiguienteWs
+
+        Set sortRange = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(lastRow, lastCol))
+
+        sortRange.Sort Key1:=ws.Cells(hdrRow, diaCol), Order1:=xlAscending, Header:=xlYes
+
+SiguienteWs:
+        Set hdr = Nothing
+        Set sortRange = Nothing
+    Next ws
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "B01 listo: hojas de bancos ordenadas por 'Día' (ascendente).", vbInformation
+End Sub
+
+
+'=========================================================
+' B02 - Generar OBS + COMPL. CTA en bancos (V2)
+'=========================================================
+Public Sub B02_OBS_Y_COMPL_BBVA_V2()
+
+    Dim ws As Worksheet
+    Dim headerRow As Long
+    Dim colDia As Long, colConcepto As Long, colCargo As Long, colAbono As Long
+    Dim colOBS As Long, colCompl As Long
+    Dim lastRow As Long, r As Long
+    Dim txt As String, u As String
+    Dim cargoVal As Double, abonoVal As Double
+
+    Dim lo As ListObject, targetLo As ListObject
+    Dim isTable As Boolean
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If Not IsNumeric(ws.Name) Then GoTo NextWs
+        If BBVA2_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        colDia = BBVA2_FindHeader(ws, "Día", headerRow)
+        If colDia = 0 Then colDia = BBVA2_FindHeader(ws, "Dia", headerRow)
+        If colDia = 0 Then GoTo NextWs
+
+        colConcepto = BBVA2_FindHeaderInRowExact(ws, headerRow, "Concepto / Referencia")
+        colCargo = BBVA2_FindHeaderInRowExact(ws, headerRow, "Cargo")
+        If colCargo = 0 Then colCargo = BBVA2_FindHeaderInRowExact(ws, headerRow, "cargo")
+        colAbono = BBVA2_FindHeaderInRowExact(ws, headerRow, "Abono")
+        If colConcepto = 0 Or colCargo = 0 Or colAbono = 0 Then GoTo NextWs
+
+        isTable = False
+        Set targetLo = Nothing
+        For Each lo In ws.ListObjects
+            If lo.HeaderRowRange.Row = headerRow Then
+                isTable = True
+                Set targetLo = lo
+                Exit For
+            End If
+        Next lo
+
+        If isTable Then
+            colOBS = BBVA2_EnsureTableColumn(targetLo, "OBS")
+            colCompl = BBVA2_EnsureTableColumn(targetLo, "COMPL. CTA")
+
+            If targetLo.DataBodyRange Is Nothing Then GoTo NextWs
+            lastRow = targetLo.DataBodyRange.Rows.Count + headerRow
+
+            For r = headerRow + 1 To lastRow
+                txt = CStr(ws.Cells(r, colConcepto).Value)
+                u = UCase$(txt)
+
+                cargoVal = BBVA2_GetNum(ws.Cells(r, colCargo).Value)
+                abonoVal = BBVA2_GetNum(ws.Cells(r, colAbono).Value)
+
+                BBVA2_ApplyRules ws, r, colOBS, colCompl, u, txt, cargoVal, abonoVal
+            Next r
+
+        Else
+            colOBS = BBVA2_FindHeaderInRowExact(ws, headerRow, "OBS")
+            colCompl = BBVA2_FindHeaderInRowExact(ws, headerRow, "COMPL. CTA")
+            If colOBS = 0 Then colOBS = BBVA2_AddHeaderColumn(ws, headerRow, "OBS")
+            If colCompl = 0 Then colCompl = BBVA2_AddHeaderColumn(ws, headerRow, "COMPL. CTA")
+
+            lastRow = ws.Cells(ws.Rows.Count, colDia).End(xlUp).Row
+            If lastRow <= headerRow Then GoTo NextWs
+
+            For r = headerRow + 1 To lastRow
+                If Trim$(CStr(ws.Cells(r, colDia).Value)) = "" Then GoTo ContinueR
+
+                txt = CStr(ws.Cells(r, colConcepto).Value)
+                u = UCase$(txt)
+
+                cargoVal = BBVA2_GetNum(ws.Cells(r, colCargo).Value)
+                abonoVal = BBVA2_GetNum(ws.Cells(r, colAbono).Value)
+
+                BBVA2_ApplyRules ws, r, colOBS, colCompl, u, txt, cargoVal, abonoVal
+ContinueR:
+            Next r
+        End If
+
+NextWs:
+        Set targetLo = Nothing
+    Next ws
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "B02 listo (V2): OBS + COMPL. CTA generados.", vbInformation
+End Sub
+
+
+'=========================================================
+' C01 - Limpiar CFDI E y separar PUE/PPD (preserva Cuenta bancaria)
+'   Fuente: hoja "CFDI E" (con espacio)
+'=========================================================
+Public Sub C01_CFDI_E_LIMPIAR_Y_SEPARAR_PUE_PPD()
+
+    Dim wsSrc As Worksheet, wsClean As Worksheet, wsPUE As Worksheet, wsPPD As Worksheet
+    Dim keepCols As Variant, i As Long
+    Dim headerRow As Long, lastRow As Long, lastCleanRow As Long
+    Dim nCols As Long, methodCol As Variant
+    Dim r As Long, v As String
+    Dim outPUE As Long, outPPD As Long
+
+    Dim mapPUE As Object, mapPPD As Object
+    Set mapPUE = CreateObject("Scripting.Dictionary")
+    Set mapPPD = CreateObject("Scripting.Dictionary")
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    On Error Resume Next
+    Set wsSrc = ThisWorkbook.Worksheets("CFDI E")
+    On Error GoTo 0
+    If wsSrc Is Nothing Then
+        MsgBox "No existe la hoja fuente 'CFDI E'.", vbExclamation
+        GoTo Fin
+    End If
+
+    headerRow = 3
+    keepCols = Array("A", "B", "G", "H", "J", "K", "L", "P", "U", "AF", "AJ", "AK")
+    nCols = UBound(keepCols) + 1
+
+    '0) Guardar UUID -> Cuenta bancaria ANTES de borrar
+    C01_LoadCuentaMap "CFDI_E_PUE", mapPUE
+    C01_LoadCuentaMap "CFDI_E_PPD", mapPPD
+
+    lastRow = C01_GetLastRowMulti(wsSrc, keepCols, headerRow + 1)
+    If lastRow <= headerRow Then GoTo Fin
+
+    C01_DeleteSheetIfExists "CFDI_E_LIMPIO"
+    C01_DeleteSheetIfExists "CFDI_E_PUE"
+    C01_DeleteSheetIfExists "CFDI_E_PPD"
+
+    Set wsClean = ThisWorkbook.Worksheets.Add(After:=wsSrc): wsClean.Name = "CFDI_E_LIMPIO"
+    Set wsPUE = ThisWorkbook.Worksheets.Add(After:=wsClean): wsPUE.Name = "CFDI_E_PUE"
+    Set wsPPD = ThisWorkbook.Worksheets.Add(After:=wsPUE): wsPPD.Name = "CFDI_E_PPD"
+
+    'Copiar columnas seleccionadas a limpio (fila 1)
+    For i = 0 To UBound(keepCols)
+        wsSrc.Range(keepCols(i) & headerRow & ":" & keepCols(i) & lastRow).Copy
+        With wsClean.Cells(1, i + 1)
+            .PasteSpecial Paste:=xlPasteValuesAndNumberFormats
+            .PasteSpecial Paste:=xlPasteFormats
+        End With
+        Application.CutCopyMode = False
+        wsClean.Columns(i + 1).ColumnWidth = wsSrc.Columns(keepCols(i)).ColumnWidth
+    Next i
+
+    methodCol = Application.Match("Método de Pago", wsClean.Rows(1), 0)
+    If IsError(methodCol) Then
+        MsgBox "No encontré el encabezado 'Método de Pago' en CFDI_E_LIMPIO.", vbExclamation
+        GoTo Fin
+    End If
+
+    lastCleanRow = wsClean.Cells(wsClean.Rows.Count, 1).End(xlUp).Row
+    If lastCleanRow < 2 Then GoTo Fin
+
+    wsPUE.Cells(1, 1).Resize(1, nCols).Value = wsClean.Cells(1, 1).Resize(1, nCols).Value
+    wsPPD.Cells(1, 1).Resize(1, nCols).Value = wsClean.Cells(1, 1).Resize(1, nCols).Value
+
+    For i = 1 To nCols
+        wsPUE.Columns(i).ColumnWidth = wsClean.Columns(i).ColumnWidth
+        wsPPD.Columns(i).ColumnWidth = wsClean.Columns(i).ColumnWidth
+
+        wsClean.Cells(1, i).Copy
+        wsPUE.Cells(1, i).PasteSpecial Paste:=xlPasteFormats
+        wsPPD.Cells(1, i).PasteSpecial Paste:=xlPasteFormats
+        Application.CutCopyMode = False
+    Next i
+
+    outPUE = 2: outPPD = 2
+
+    For r = 2 To lastCleanRow
+        v = UCase$(Trim$(CStr(wsClean.Cells(r, CLng(methodCol)).Value)))
+
+        If v = "PUE" Then
+            wsPUE.Cells(outPUE, 1).Resize(1, nCols).Value = wsClean.Cells(r, 1).Resize(1, nCols).Value
+            outPUE = outPUE + 1
+        ElseIf v = "PPD" Then
+            wsPPD.Cells(outPPD, 1).Resize(1, nCols).Value = wsClean.Cells(r, 1).Resize(1, nCols).Value
+            outPPD = outPPD + 1
+        End If
+    Next r
+
+    '1) Restaurar Cuenta bancaria por UUID (si existía)
+    C01_ApplyCuentaMap wsPUE, mapPUE
+    C01_ApplyCuentaMap wsPPD, mapPPD
+
+Fin:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "C01 listo: CFDI_E_LIMPIO + separación PUE/PPD (preserva Cuenta bancaria).", vbInformation
+End Sub
+
+
+'=========================================================
+' D01 - PUE: Cargo banco = Total CFDI_E_PUE
+'   - UUID del CFDI PUE se escribe en banco en OBS
+'   - Candado: si OBS tiene algo -> NO procesa
+'   - MOD: también revisa "EST MP" con REFERENCE_ID + abonos (plural)
+'=========================================================
+Public Sub D01_CONCILIAR_CARGOS_CON_CFDI_PUE()
+
+    Dim wsCFDI As Worksheet
+    Dim colUUID As Long, colTotal As Long, colCtaBanc As Long
+    Dim lastCFDI As Long, i As Long
+    Dim dict As Object
+    Dim uuid As String, amt As Double
+    Dim matches As Long
+
+    On Error Resume Next
+    Set wsCFDI = ThisWorkbook.Worksheets("CFDI_E_PUE")
+    On Error GoTo 0
+
+    If wsCFDI Is Nothing Then
+        MsgBox "No existe la hoja 'CFDI_E_PUE'. Corre primero C01_CFDI_E_LIMPIAR_Y_SEPARAR_PUE_PPD.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo CleanUp
+
+    colUUID = CN_FindHeaderAny(wsCFDI, 1, Array("UUID"))
+    colTotal = CN_FindHeaderAny(wsCFDI, 1, Array("TOTAL", "Total", "Total CFDI", "Importe", "Monto", "Total Pagado"))
+    If colUUID = 0 Or colTotal = 0 Then GoTo CleanUp
+
+    colCtaBanc = CN_FindHeaderAny(wsCFDI, 1, Array("Cuenta bancaria", "CUENTA BANCARIA", "Cuenta Bancaria", "CTA BANCARIA"))
+    If colCtaBanc = 0 Then colCtaBanc = CN_AddHeaderColumnSimple(wsCFDI, 1, "Cuenta bancaria")
+
+    lastCFDI = wsCFDI.Cells(wsCFDI.Rows.Count, colUUID).End(xlUp).Row
+    If lastCFDI < 2 Then GoTo CleanUp
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    For i = 2 To lastCFDI
+        If Trim$(CStr(wsCFDI.Cells(i, colCtaBanc).Value)) <> "" Then GoTo NextI
+        uuid = Trim$(CStr(wsCFDI.Cells(i, colUUID).Value))
+        If uuid <> "" Then
+            amt = CN_GetNum(wsCFDI.Cells(i, colTotal).Value)
+            If amt <> 0 Then CN_AddToDict dict, CN_Cents(Abs(amt)), Array(i, uuid)
+        End If
+NextI:
+    Next i
+
+    Dim ws As Worksheet, headerRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long
+    Dim colCompl As Long, colOBS As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim lo As ListObject, targetLo As ListObject, isTable As Boolean
+    Dim arr As Variant, centsBank As Long, tolCents As Long
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If (Not IsNumeric(ws.Name)) And (UCase$(ws.Name) <> "EST MP") Then GoTo NextWs
+        If CN_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        colDia = CN_FindHeader(ws, "Día", headerRow)
+        If colDia = 0 Then colDia = CN_FindHeader(ws, "Dia", headerRow)
+
+        'MOD: EST MP usa REFERENCE_ID
+        If colDia = 0 And UCase$(ws.Name) = "EST MP" Then
+            colDia = CN_FindHeader(ws, "REFERENCE_ID", headerRow)
+            If colDia = 0 Then colDia = CN_FindHeader(ws, "REFERENCE ID", headerRow)
+        End If
+        If colDia = 0 Then GoTo NextWs
+
+        colCargo = CN_FindHeaderInRowExact(ws, headerRow, "Cargo")
+        If colCargo = 0 Then colCargo = CN_FindHeaderInRowExact(ws, headerRow, "cargo")
+
+        colAbono = CN_FindHeaderInRowExact(ws, headerRow, "Abono")
+        If colAbono = 0 Then colAbono = CN_FindHeaderInRowExact(ws, headerRow, "abonos") 'MOD: EST MP
+
+        If colCargo = 0 Or colAbono = 0 Then GoTo NextWs
+
+        isTable = False
+        Set targetLo = Nothing
+        For Each lo In ws.ListObjects
+            If lo.HeaderRowRange.Row = headerRow Then
+                isTable = True
+                Set targetLo = lo
+                Exit For
+            End If
+        Next lo
+
+        If isTable Then
+            colCompl = CN_EnsureTableColumn(targetLo, "COMPL. CTA")
+            colOBS = CN_EnsureTableColumn(targetLo, "OBS")
+            If targetLo.DataBodyRange Is Nothing Then GoTo NextWs
+            lastRow = targetLo.DataBodyRange.Rows.Count + headerRow
+        Else
+            colCompl = CN_EnsureHeaderColumn(ws, headerRow, "COMPL. CTA")
+            colOBS = CN_EnsureHeaderColumn(ws, headerRow, "OBS")
+            lastRow = ws.Cells(ws.Rows.Count, colDia).End(xlUp).Row
+        End If
+
+        If lastRow <= headerRow Then GoTo NextWs
+
+        For r = headerRow + 1 To lastRow
+
+            If Trim$(CStr(ws.Cells(r, colDia).Value)) = "" Then GoTo ContinueR
+            If Trim$(CStr(ws.Cells(r, colOBS).Value)) <> "" Then GoTo ContinueR
+
+            cargoVal = CN_GetNum(ws.Cells(r, colCargo).Value)
+            abonoVal = CN_GetNum(ws.Cells(r, colAbono).Value)
+
+            'NO CAMBIA: solo CARGOS y sin abono
+            If Abs(cargoVal) <= 0.00001 Then GoTo ContinueR
+            If Abs(abonoVal) > 0.00001 Then GoTo ContinueR
+
+            If Trim$(CStr(ws.Cells(r, colCompl).Value)) <> "" Then
+                If UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))) <> "PUE" Then GoTo ContinueR
+            End If
+
+            centsBank = CN_Cents(Abs(cargoVal))
+            tolCents = CN_ToleranceCents(Abs(cargoVal))
+
+            If CN_TryPopMatch(dict, centsBank, tolCents, arr) Then
+                ws.Cells(r, colOBS).Value = CStr(arr(1))
+                ws.Cells(r, colCompl).Value = "PUE"
+
+                If Trim$(CStr(wsCFDI.Cells(CLng(arr(0)), colCtaBanc).Value)) = "" Then
+                    wsCFDI.Cells(CLng(arr(0)), colCtaBanc).Value = ws.Name
+                End If
+
+                matches = matches + 1
+            End If
+
+ContinueR:
+        Next r
+
+NextWs:
+        Set targetLo = Nothing
+    Next ws
+
+CleanUp:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    If colUUID = 0 Or colTotal = 0 Then
+        MsgBox "No encontré encabezados necesarios en CFDI_E_PUE. Requiero 'UUID' y 'Total/TOTAL'.", vbExclamation
+    Else
+        MsgBox "D01 PUE listo. Matches: " & matches, vbInformation
+    End If
+End Sub
+
+
+'=========================================================
+' D02 - PPD: Cargo banco = Total CFDI_E_PPD
+'   - UUID del CFDI PPD se escribe en banco en columna "UUID"
+'   - Candado: si OBS tiene algo -> NO procesa
+'   - MOD: también revisa "EST MP" con REFERENCE_ID + abonos (plural)
+'=========================================================
+Public Sub D02_CONCILIAR_CARGOS_CON_CFDI_PPD_UUID_EN_BANCO()
+
+    Dim wsCFDI As Worksheet
+    Dim colUUID As Long, colTotal As Long, colCtaBanc As Long
+    Dim lastCFDI As Long, i As Long
+    Dim dict As Object
+    Dim uuid As String, amt As Double
+    Dim matches As Long
+
+    On Error Resume Next
+    Set wsCFDI = ThisWorkbook.Worksheets("CFDI_E_PPD")
+    On Error GoTo 0
+
+    If wsCFDI Is Nothing Then
+        MsgBox "No existe la hoja 'CFDI_E_PPD'. Corre primero C01_CFDI_E_LIMPIAR_Y_SEPARAR_PUE_PPD.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo CleanUp
+
+    colUUID = CN_FindHeaderAny(wsCFDI, 1, Array("UUID"))
+    colTotal = CN_FindHeaderAny(wsCFDI, 1, Array("TOTAL", "Total", "Total CFDI", "Importe", "Monto", "Total Pagado"))
+    If colUUID = 0 Or colTotal = 0 Then GoTo CleanUp
+
+    colCtaBanc = CN_FindHeaderAny(wsCFDI, 1, Array("Cuenta bancaria", "CUENTA BANCARIA", "Cuenta Bancaria", "CTA BANCARIA"))
+    If colCtaBanc = 0 Then colCtaBanc = CN_AddHeaderColumnSimple(wsCFDI, 1, "Cuenta bancaria")
+
+    lastCFDI = wsCFDI.Cells(wsCFDI.Rows.Count, colUUID).End(xlUp).Row
+    If lastCFDI < 2 Then GoTo CleanUp
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    For i = 2 To lastCFDI
+        If Trim$(CStr(wsCFDI.Cells(i, colCtaBanc).Value)) <> "" Then GoTo NextI
+        uuid = Trim$(CStr(wsCFDI.Cells(i, colUUID).Value))
+        If uuid <> "" Then
+            amt = CN_GetNum(wsCFDI.Cells(i, colTotal).Value)
+            If amt <> 0 Then CN_AddToDict dict, CN_Cents(Abs(amt)), Array(i, uuid)
+        End If
+NextI:
+    Next i
+
+    Dim ws As Worksheet, headerRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long
+    Dim colCompl As Long, colUUIDBanco As Long, colOBS As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim lo As ListObject, targetLo As ListObject, isTable As Boolean
+    Dim arr As Variant, centsBank As Long, tolCents As Long
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If (Not IsNumeric(ws.Name)) And (UCase$(ws.Name) <> "EST MP") Then GoTo NextWs
+        If CN_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        colDia = CN_FindHeader(ws, "Día", headerRow)
+        If colDia = 0 Then colDia = CN_FindHeader(ws, "Dia", headerRow)
+
+        'MOD: EST MP usa REFERENCE_ID
+        If colDia = 0 And UCase$(ws.Name) = "EST MP" Then
+            colDia = CN_FindHeader(ws, "REFERENCE_ID", headerRow)
+            If colDia = 0 Then colDia = CN_FindHeader(ws, "REFERENCE ID", headerRow)
+        End If
+        If colDia = 0 Then GoTo NextWs
+
+        colCargo = CN_FindHeaderInRowExact(ws, headerRow, "Cargo")
+        If colCargo = 0 Then colCargo = CN_FindHeaderInRowExact(ws, headerRow, "cargo")
+
+        colAbono = CN_FindHeaderInRowExact(ws, headerRow, "Abono")
+        If colAbono = 0 Then colAbono = CN_FindHeaderInRowExact(ws, headerRow, "abonos") 'MOD: EST MP
+
+        If colCargo = 0 Or colAbono = 0 Then GoTo NextWs
+
+        isTable = False
+        Set targetLo = Nothing
+        For Each lo In ws.ListObjects
+            If lo.HeaderRowRange.Row = headerRow Then
+                isTable = True
+                Set targetLo = lo
+                Exit For
+            End If
+        Next lo
+
+        If isTable Then
+            colCompl = CN_EnsureTableColumn(targetLo, "COMPL. CTA")
+            colUUIDBanco = CN_EnsureTableColumn(targetLo, "UUID")
+            colOBS = CN_EnsureTableColumn(targetLo, "OBS")
+            If targetLo.DataBodyRange Is Nothing Then GoTo NextWs
+            lastRow = targetLo.DataBodyRange.Rows.Count + headerRow
+        Else
+            colCompl = CN_EnsureHeaderColumn(ws, headerRow, "COMPL. CTA")
+            colUUIDBanco = CN_EnsureHeaderColumn(ws, headerRow, "UUID")
+            colOBS = CN_EnsureHeaderColumn(ws, headerRow, "OBS")
+            lastRow = ws.Cells(ws.Rows.Count, colDia).End(xlUp).Row
+        End If
+
+        If lastRow <= headerRow Then GoTo NextWs
+
+        For r = headerRow + 1 To lastRow
+
+            If Trim$(CStr(ws.Cells(r, colDia).Value)) = "" Then GoTo ContinueR
+            If Trim$(CStr(ws.Cells(r, colOBS).Value)) <> "" Then GoTo ContinueR
+
+            cargoVal = CN_GetNum(ws.Cells(r, colCargo).Value)
+            abonoVal = CN_GetNum(ws.Cells(r, colAbono).Value)
+
+            'NO CAMBIA: solo CARGOS y sin abono
+            If Abs(cargoVal) <= 0.00001 Then GoTo ContinueR
+            If Abs(abonoVal) > 0.00001 Then GoTo ContinueR
+
+            If Trim$(CStr(ws.Cells(r, colUUIDBanco).Value)) <> "" Then GoTo ContinueR
+
+            If Trim$(CStr(ws.Cells(r, colCompl).Value)) <> "" Then
+                If UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))) <> "PPD" Then GoTo ContinueR
+            End If
+
+            centsBank = CN_Cents(Abs(cargoVal))
+            tolCents = CN_ToleranceCents(Abs(cargoVal))
+
+            If CN_TryPopMatch(dict, centsBank, tolCents, arr) Then
+                ws.Cells(r, colUUIDBanco).Value = CStr(arr(1))
+                ws.Cells(r, colCompl).Value = "PPD"
+
+                If Trim$(CStr(wsCFDI.Cells(CLng(arr(0)), colCtaBanc).Value)) = "" Then
+                    wsCFDI.Cells(CLng(arr(0)), colCtaBanc).Value = ws.Name
+                End If
+
+                matches = matches + 1
+            End If
+
+ContinueR:
+        Next r
+
+NextWs:
+        Set targetLo = Nothing
+    Next ws
+
+CleanUp:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    If colUUID = 0 Or colTotal = 0 Then
+        MsgBox "No encontré encabezados necesarios en CFDI_E_PPD. Requiero 'UUID' y 'Total/TOTAL'.", vbExclamation
+    Else
+        MsgBox "D02 PPD listo. Matches: " & matches, vbInformation
+    End If
+End Sub
+
+
+'=========================================================
+' E01 - Conciliar cargos banco vs COMPL. E (SOLO PPD)
+'   - SOLO filas banco con COMPL. CTA = "PPD"
+'   - Cargo banco ~ Total Pagado (COMPL. E) -> UUID COMPL. E a OBS
+'   - MOD: también revisa "EST MP" con REFERENCE_ID + abonos (plural)
+'=========================================================
+Public Sub E01_CONCILIAR_CARGOS_CON_COMPL_E_UUID_EN_OBS()
+
+    Dim wsCE As Worksheet
+    Dim headerRowCE As Long
+    Dim colTotalPagado As Long, colUUID As Long, colCtaBanc As Long, colRFC_CE As Long
+    Dim lastCE As Long, i As Long
+    Dim dict As Object
+    Dim uuid As String, amt As Double
+    Dim matches As Long, matchesUUID As Long, matchesRFC As Long
+
+    On Error Resume Next
+    Set wsCE = ThisWorkbook.Worksheets("COMPL. E")
+    On Error GoTo 0
+
+    If wsCE Is Nothing Then
+        MsgBox "No existe la hoja 'COMPL. E'.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo Fin
+
+    colTotalPagado = CE_FindHeader(wsCE, "Total Pagado", headerRowCE)
+    If colTotalPagado = 0 Then
+        MsgBox "No encontré el encabezado 'Total Pagado' en COMPL. E.", vbExclamation
+        GoTo Fin
+    End If
+
+    colUUID = CE_FindHeaderAny(wsCE, headerRowCE, Array("UUID"))
+    If colUUID = 0 Then
+        MsgBox "No encontré el encabezado 'UUID' en COMPL. E (misma fila que 'Total Pagado').", vbExclamation
+        GoTo Fin
+    End If
+
+    colRFC_CE = CE_FindHeaderAny(wsCE, headerRowCE, Array("RFC", "RFC RECEPTOR", "RFC receptor", "RFC CLIENTE", "RFC Cliente"))
+
+    colCtaBanc = CE_FindHeaderInRowExact(wsCE, headerRowCE, "Cuenta bancaria")
+    If colCtaBanc = 0 Then colCtaBanc = CE_AddHeaderColumnSimple(wsCE, headerRowCE, "Cuenta bancaria")
+
+    lastCE = CE_GetLastRowMulti(wsCE, Array(colUUID, colTotalPagado), headerRowCE + 1)
+    If lastCE <= headerRowCE Then GoTo Fin
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    For i = headerRowCE + 1 To lastCE
+        If Trim$(CStr(wsCE.Cells(i, colCtaBanc).Value)) <> "" Then GoTo NextI_Base
+
+        uuid = Trim$(CStr(wsCE.Cells(i, colUUID).Value))
+        If uuid <> "" Then
+            amt = CE_GetNum(wsCE.Cells(i, colTotalPagado).Value)
+            If Abs(amt) > 0.00001 Then
+                CE_AddToDict dict, CE_Cents(Abs(amt)), Array(i, uuid)
+            End If
+        End If
+NextI_Base:
+    Next i
+
+    matches = CE_MatchBankRowsAgainstDict_PPD(wsCE, colCtaBanc, dict)
+
+    Dim resp As VbMsgBoxResult
+    resp = MsgBox( _
+        "E01 Base (SOLO PPD) terminado." & vbCrLf & _
+        "Matches (por fila): " & matches & vbCrLf & vbCrLf & _
+        "¿Ejecutar PASO EXTRA (SOLO PPD)?" & vbCrLf & _
+        "1) Sumar por UUID repetido" & vbCrLf & _
+        "2) Sumar por RFC repetido (si existe RFC en banco y COMPL. E)", _
+        vbYesNo + vbQuestion, "E01 - Paso extra (PPD)" _
+    )
+
+    If resp = vbYes Then
+        matchesUUID = CE_PasoExtra_UUIDRepetido_PPD(wsCE, headerRowCE, colUUID, colTotalPagado, colCtaBanc, lastCE)
+        If colRFC_CE > 0 Then
+            matchesRFC = CE_PasoExtra_RFCRepetido_PPD(wsCE, headerRowCE, colRFC_CE, colTotalPagado, colCtaBanc, lastCE)
+        Else
+            matchesRFC = 0
+        End If
+    End If
+
+Fin:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "E01 listo (SOLO PPD)." & vbCrLf & _
+           "Matches (por fila): " & matches & vbCrLf & _
+           "Matches (UUID repetido): " & matchesUUID & vbCrLf & _
+           "Matches (RFC repetido): " & matchesRFC, vbInformation
+End Sub
+
+
+'=========================================================
+' ====== HELPERS B02 (BBVA2_*)
+'=========================================================
+Private Sub BBVA2_ApplyRules(ByVal ws As Worksheet, ByVal r As Long, _
+                            ByVal colOBS As Long, ByVal colCompl As Long, _
+                            ByVal u As String, ByVal originalTxt As String, _
+                            ByVal cargoVal As Double, ByVal abonoVal As Double)
+
+    Dim cuenta As String
+
+    If InStr(1, u, "TERMINALES PUNTO DE VENTA", vbTextCompare) > 0 Then
+        If cargoVal <> 0 Then
+            ws.Cells(r, colOBS).Value = "ND-COMISION"
+        ElseIf abonoVal <> 0 Then
+            ws.Cells(r, colOBS).Value = "INGRESO"
+        End If
+
+    ElseIf InStr(1, u, "TRASPASO CUENTAS PROPIAS", vbTextCompare) > 0 Then
+        ws.Cells(r, colOBS).Value = "TRASPASO CUENTAS PROPIAS"
+        cuenta = BBVA2_ExtractCuenta(originalTxt)
+        If cuenta <> "" Then ws.Cells(r, colCompl).Value = cuenta
+
+    ElseIf InStr(1, u, "PAGO SUA", vbTextCompare) > 0 Then
+        ws.Cells(r, colOBS).Value = "IMSS"
+
+    ElseIf InStr(1, u, "SAT/GUIA", vbTextCompare) > 0 Then
+        ws.Cells(r, colOBS).Value = "IMPUESTOS SAT"
+
+    ElseIf InStr(1, u, "PREST.", vbTextCompare) > 0 Then
+        ws.Cells(r, colOBS).Value = "PRESTAMO"
+
+    ElseIf InStr(1, u, "EFECTIVALE", vbTextCompare) > 0 Then
+        ws.Cells(r, colOBS).Value = "EFECTIVALE"
+    End If
+
+End Sub
+
+Private Function BBVA2_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    BBVA2_SheetHasText = Not (f Is Nothing)
+End Function
+
+Private Function BBVA2_GetNum(ByVal v As Variant) As Double
+    On Error GoTo SafeExit
+    If IsError(v) Or IsEmpty(v) Or Trim$(CStr(v)) = "" Then
+        BBVA2_GetNum = 0
+    Else
+        Dim s As String
+        s = CStr(v)
+        s = Replace(s, "$", "")
+        s = Replace(s, ",", "")
+        s = Trim$(s)
+        If s = "-" Then s = "0"
+        BBVA2_GetNum = CDbl(s)
+    End If
+    Exit Function
+SafeExit:
+    BBVA2_GetNum = 0
+End Function
+
+Private Function BBVA2_FindHeader(ByVal ws As Worksheet, ByVal headerText As String, ByRef headerRow As Long) As Long
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=headerText, LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If Not f Is Nothing Then
+        headerRow = f.Row
+        BBVA2_FindHeader = f.Column
+    Else
+        BBVA2_FindHeader = 0
+    End If
+End Function
+
+Private Function BBVA2_FindHeaderInRowExact(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal headerText As String) As Long
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(rowNum, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        If LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value))) = LCase$(headerText) Then
+            BBVA2_FindHeaderInRowExact = c
+            Exit Function
+        End If
+    Next c
+    BBVA2_FindHeaderInRowExact = 0
+End Function
+
+Private Function BBVA2_AddHeaderColumn(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+    Dim lastCol As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    BBVA2_AddHeaderColumn = lastCol + 1
+
+    ws.Cells(headerRow, BBVA2_AddHeaderColumn).Value = headerName
+    ws.Columns(BBVA2_AddHeaderColumn).ColumnWidth = 18
+
+    ws.Cells(headerRow, lastCol).Copy
+    ws.Cells(headerRow, BBVA2_AddHeaderColumn).PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+End Function
+
+Private Function BBVA2_EnsureTableColumn(ByVal lo As ListObject, ByVal colName As String) As Long
+    Dim lc As ListColumn
+    For Each lc In lo.ListColumns
+        If LCase$(lc.Name) = LCase$(colName) Then
+            BBVA2_EnsureTableColumn = lc.Range.Column
+            Exit Function
+        End If
+    Next lc
+    lo.ListColumns.Add
+    lo.ListColumns(lo.ListColumns.Count).Name = colName
+    BBVA2_EnsureTableColumn = lo.ListColumns(lo.ListColumns.Count).Range.Column
+End Function
+
+Private Function BBVA2_ExtractCuenta(ByVal s As String) As String
+    Dim p As Long, i As Long, ch As String, out As String
+    p = InStr(1, UCase$(s), "CUENTA:", vbTextCompare)
+    If p = 0 Then Exit Function
+    i = p + Len("CUENTA:")
+    out = ""
+    Do While i <= Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "#" Then
+            out = out & ch
+        ElseIf out <> "" Then
+            Exit Do
+        End If
+        i = i + 1
+    Loop
+    BBVA2_ExtractCuenta = out
+End Function
+
+
+'=========================================================
+' ====== HELPERS C01 (preservación Cuenta bancaria)
+'=========================================================
+Private Sub C01_LoadCuentaMap(ByVal sheetName As String, ByVal dict As Object)
+    Dim ws As Worksheet
+    Dim colUUID As Long, colCta As Long
+    Dim lastRow As Long, r As Long
+    Dim uuid As String, cta As String
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+    If ws Is Nothing Then Exit Sub
+
+    colUUID = C01_FindHeaderInRowAny(ws, 1, Array("UUID"))
+    colCta = C01_FindHeaderInRowAny(ws, 1, Array("Cuenta bancaria", "CUENTA BANCARIA", "Cuenta Bancaria", "CTA BANCARIA"))
+    If colUUID = 0 Or colCta = 0 Then Exit Sub
+
+    lastRow = ws.Cells(ws.Rows.Count, colUUID).End(xlUp).Row
+    If lastRow < 2 Then Exit Sub
+
+    For r = 2 To lastRow
+        uuid = Trim$(CStr(ws.Cells(r, colUUID).Value))
+        cta = Trim$(CStr(ws.Cells(r, colCta).Value))
+        If uuid <> "" And cta <> "" Then
+            If Not dict.Exists(uuid) Then dict.Add uuid, cta
+        End If
+    Next r
+End Sub
+
+Private Sub C01_ApplyCuentaMap(ByVal ws As Worksheet, ByVal dict As Object)
+    Dim colUUID As Long, colCta As Long
+    Dim lastRow As Long, r As Long
+    Dim uuid As String
+
+    If dict Is Nothing Then Exit Sub
+    If dict.Count = 0 Then Exit Sub
+
+    colUUID = C01_FindHeaderInRowAny(ws, 1, Array("UUID"))
+    If colUUID = 0 Then Exit Sub
+
+    colCta = C01_FindHeaderInRowAny(ws, 1, Array("Cuenta bancaria", "CUENTA BANCARIA", "Cuenta Bancaria", "CTA BANCARIA"))
+    If colCta = 0 Then colCta = C01_AddHeaderColumnSimple(ws, 1, "Cuenta bancaria")
+
+    lastRow = ws.Cells(ws.Rows.Count, colUUID).End(xlUp).Row
+    If lastRow < 2 Then Exit Sub
+
+    For r = 2 To lastRow
+        uuid = Trim$(CStr(ws.Cells(r, colUUID).Value))
+        If uuid <> "" Then
+            If dict.Exists(uuid) Then
+                If Trim$(CStr(ws.Cells(r, colCta).Value)) = "" Then
+                    ws.Cells(r, colCta).Value = CStr(dict(uuid))
+                End If
+            End If
+        End If
+    Next r
+End Sub
+
+Private Function C01_FindHeaderInRowAny(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal candidates As Variant) As Long
+    Dim i As Long, c As Long, lastCol As Long, cellVal As String, cand As String
+    lastCol = ws.Cells(rowNum, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellVal = LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value)))
+        If cellVal <> "" Then
+            For i = LBound(candidates) To UBound(candidates)
+                cand = LCase$(Trim$(CStr(candidates(i))))
+                If cellVal = cand Then
+                    C01_FindHeaderInRowAny = c
+                    Exit Function
+                End If
+            Next i
+        End If
+    Next c
+
+    For c = 1 To lastCol
+        cellVal = LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value)))
+        If cellVal <> "" Then
+            For i = LBound(candidates) To UBound(candidates)
+                cand = LCase$(Trim$(CStr(candidates(i))))
+                If InStr(1, cellVal, cand, vbTextCompare) > 0 Then
+                    C01_FindHeaderInRowAny = c
+                    Exit Function
+                End If
+            Next i
+        End If
+    Next c
+
+    C01_FindHeaderInRowAny = 0
+End Function
+
+Private Function C01_AddHeaderColumnSimple(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+    Dim lastCol As Long, newCol As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    newCol = lastCol + 1
+
+    ws.Cells(headerRow, newCol).Value = headerName
+    ws.Columns(newCol).ColumnWidth = 18
+
+    ws.Cells(headerRow, lastCol).Copy
+    ws.Cells(headerRow, newCol).PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+
+    C01_AddHeaderColumnSimple = newCol
+End Function
+
+Private Function C01_GetLastRowMulti(ByVal ws As Worksheet, ByVal cols As Variant, ByVal startRow As Long) As Long
+    Dim i As Long, lr As Long, best As Long
+    best = startRow - 1
+    For i = 0 To UBound(cols)
+        lr = ws.Cells(ws.Rows.Count, cols(i)).End(xlUp).Row
+        If lr > best Then best = lr
+    Next i
+    C01_GetLastRowMulti = best
+End Function
+
+Private Sub C01_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+
+
+'=========================================================
+' ===== Helpers D01/D02 (CN_*)
+'=========================================================
+Private Function CN_ToleranceCents(ByVal amt As Double) As Long
+    If amt < 50000# Then
+        CN_ToleranceCents = 10   ' $0.10
+    Else
+        CN_ToleranceCents = 50   ' $0.50
+    End If
+End Function
+
+Private Function CN_Cents(ByVal amt As Double) As Long
+    CN_Cents = CLng(Application.WorksheetFunction.Round(amt * 100, 0))
+End Function
+
+Private Sub CN_AddToDict(ByVal dict As Object, ByVal cents As Long, ByVal payload As Variant)
+    Dim k As String
+    Dim col As Collection
+    k = CStr(cents)
+
+    If Not dict.Exists(k) Then
+        Set col = New Collection
+        dict.Add k, col
+    Else
+        Set col = dict(k)
+    End If
+
+    col.Add payload
+End Sub
+
+Private Function CN_TryPopMatch(ByVal dict As Object, ByVal centsBank As Long, ByVal tolCents As Long, ByRef arrOut As Variant) As Boolean
+
+    Dim d As Long, candidateCents As Long, k As String
+    Dim bestDiff As Long, bestRow As Long, bestCents As Long
+    Dim col As Collection, peek As Variant, peekRow As Long
+
+    bestDiff = tolCents + 1
+    bestRow = 2147483647
+    bestCents = 2147483647
+
+    For d = 0 To tolCents
+
+        candidateCents = centsBank + d
+        k = CStr(candidateCents)
+        If dict.Exists(k) Then
+            Set col = dict(k)
+            If col.Count > 0 Then
+                peek = col(1)
+                peekRow = CLng(peek(0))
+                If (d < bestDiff) Or (d = bestDiff And peekRow < bestRow) Or (d = bestDiff And peekRow = bestRow And candidateCents < bestCents) Then
+                    bestDiff = d: bestRow = peekRow: bestCents = candidateCents
+                End If
+            End If
+        End If
+
+        If d <> 0 Then
+            candidateCents = centsBank - d
+            k = CStr(candidateCents)
+            If dict.Exists(k) Then
+                Set col = dict(k)
+                If col.Count > 0 Then
+                    peek = col(1)
+                    peekRow = CLng(peek(0))
+                    If (d < bestDiff) Or (d = bestDiff And peekRow < bestRow) Or (d = bestDiff And peekRow = bestRow And candidateCents < bestCents) Then
+                        bestDiff = d: bestRow = peekRow: bestCents = candidateCents
+                    End If
+                End If
+            End If
+        End If
+    Next d
+
+    If bestDiff <= tolCents Then
+        k = CStr(bestCents)
+        Set col = dict(k)
+        arrOut = col(1)
+        col.Remove 1
+        CN_TryPopMatch = True
+    Else
+        CN_TryPopMatch = False
+    End If
+End Function
+
+Private Function CN_FindHeaderAny(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal candidates As Variant) As Long
+    Dim i As Long, c As Long, lastCol As Long
+    Dim cellVal As String, cand As String
+
+    For i = LBound(candidates) To UBound(candidates)
+        cand = LCase$(Trim$(CStr(candidates(i))))
+        c = CN_FindHeaderInRowExactAny(ws, rowNum, cand)
+        If c <> 0 Then
+            CN_FindHeaderAny = c
+            Exit Function
+        End If
+    Next i
+
+    lastCol = ws.Cells(rowNum, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        cellVal = LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value)))
+        If cellVal <> "" Then
+            For i = LBound(candidates) To UBound(candidates)
+                cand = LCase$(Trim$(CStr(candidates(i))))
+                If InStr(1, cellVal, cand, vbTextCompare) > 0 Then
+                    CN_FindHeaderAny = c
+                    Exit Function
+                End If
+            Next i
+        End If
+    Next c
+
+    CN_FindHeaderAny = 0
+End Function
+
+Private Function CN_FindHeaderInRowExactAny(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal headerLower As String) As Long
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(rowNum, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        If LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value))) = headerLower Then
+            CN_FindHeaderInRowExactAny = c
+            Exit Function
+        End If
+    Next c
+    CN_FindHeaderInRowExactAny = 0
+End Function
+
+Private Function CN_FindHeader(ByVal ws As Worksheet, ByVal headerText As String, ByRef headerRow As Long) As Long
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=headerText, LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If Not f Is Nothing Then
+        headerRow = f.Row
+        CN_FindHeader = f.Column
+    Else
+        CN_FindHeader = 0
+    End If
+End Function
+
+Private Function CN_FindHeaderInRowExact(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal headerText As String) As Long
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(rowNum, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        If LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value))) = LCase$(headerText) Then
+            CN_FindHeaderInRowExact = c
+            Exit Function
+        End If
+    Next c
+    CN_FindHeaderInRowExact = 0
+End Function
+
+Private Function CN_EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+    Dim c As Long
+    c = CN_FindHeaderInRowExact(ws, headerRow, headerName)
+    If c = 0 Then c = CN_AddHeaderColumnSimple(ws, headerRow, headerName)
+    CN_EnsureHeaderColumn = c
+End Function
+
+Private Function CN_AddHeaderColumnSimple(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+    Dim lastCol As Long, newCol As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    newCol = lastCol + 1
+
+    ws.Cells(headerRow, newCol).Value = headerName
+    ws.Columns(newCol).ColumnWidth = 18
+
+    ws.Cells(headerRow, lastCol).Copy
+    ws.Cells(headerRow, newCol).PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+
+    CN_AddHeaderColumnSimple = newCol
+End Function
+
+Private Function CN_EnsureTableColumn(ByVal lo As ListObject, ByVal colName As String) As Long
+    Dim lc As ListColumn
+    For Each lc In lo.ListColumns
+        If LCase$(lc.Name) = LCase$(colName) Then
+            CN_EnsureTableColumn = lc.Range.Column
+            Exit Function
+        End If
+    Next lc
+    lo.ListColumns.Add
+    lo.ListColumns(lo.ListColumns.Count).Name = colName
+    CN_EnsureTableColumn = lo.ListColumns(lo.ListColumns.Count).Range.Column
+End Function
+
+Private Function CN_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    CN_SheetHasText = Not (f Is Nothing)
+End Function
+
+Private Function CN_GetNum(ByVal v As Variant) As Double
+    On Error GoTo SafeExit
+    If IsError(v) Or IsEmpty(v) Or Trim$(CStr(v)) = "" Then
+        CN_GetNum = 0
+    Else
+        Dim s As String
+        s = CStr(v)
+        s = Replace(s, "$", "")
+        s = Replace(s, ",", "")
+        s = Trim$(s)
+        If s = "-" Then s = "0"
+        CN_GetNum = CDbl(s)
+    End If
+    Exit Function
+SafeExit:
+    CN_GetNum = 0
+End Function
+
+
+'=========================================================
+' ===== E01 MATCH ENGINE (SOLO PPD) + Helpers CE_*
+'=========================================================
+Private Function CE_MatchBankRowsAgainstDict_PPD( _
+    ByVal wsCE As Worksheet, _
+    ByVal colCtaBanc As Long, _
+    ByVal dict As Object) As Long
+
+    Dim ws As Worksheet
+    Dim headerRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long
+    Dim colOBS As Long, colCompl As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim lo As ListObject, targetLo As ListObject
+    Dim isTable As Boolean
+    Dim arr As Variant
+    Dim centsBank As Long, tolCents As Long
+    Dim matches As Long
+
+    matches = 0
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If (Not IsNumeric(ws.Name)) And (UCase$(ws.Name) <> "EST MP") Then GoTo NextWs
+        If CE_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        colDia = CE_FindHeader(ws, "Día", headerRow)
+        If colDia = 0 Then colDia = CE_FindHeader(ws, "Dia", headerRow)
+
+        'MOD: EST MP usa REFERENCE_ID
+        If colDia = 0 And UCase$(ws.Name) = "EST MP" Then
+            colDia = CE_FindHeader(ws, "REFERENCE_ID", headerRow)
+            If colDia = 0 Then colDia = CE_FindHeader(ws, "REFERENCE ID", headerRow)
+        End If
+        If colDia = 0 Then GoTo NextWs
+
+        colCargo = CE_FindHeaderInRowExact(ws, headerRow, "Cargo")
+        If colCargo = 0 Then colCargo = CE_FindHeaderInRowExact(ws, headerRow, "cargo")
+
+        colAbono = CE_FindHeaderInRowExact(ws, headerRow, "Abono")
+        If colAbono = 0 Then colAbono = CE_FindHeaderInRowExact(ws, headerRow, "abonos") 'MOD: EST MP
+
+        If colCargo = 0 Or colAbono = 0 Then GoTo NextWs
+
+        isTable = False
+        Set targetLo = Nothing
+        For Each lo In ws.ListObjects
+            If lo.HeaderRowRange.Row = headerRow Then
+                isTable = True
+                Set targetLo = lo
+                Exit For
+            End If
+        Next lo
+
+        If isTable Then
+            colOBS = CE_EnsureTableColumn(targetLo, "OBS")
+            colCompl = CE_EnsureTableColumn(targetLo, "COMPL. CTA")
+            If targetLo.DataBodyRange Is Nothing Then GoTo NextWs
+            lastRow = targetLo.DataBodyRange.Rows.Count + headerRow
+        Else
+            colOBS = CE_EnsureHeaderColumn(ws, headerRow, "OBS")
+            colCompl = CE_EnsureHeaderColumn(ws, headerRow, "COMPL. CTA")
+            lastRow = ws.Cells(ws.Rows.Count, colDia).End(xlUp).Row
+        End If
+
+        If lastRow <= headerRow Then GoTo NextWs
+
+        For r = headerRow + 1 To lastRow
+
+            If Trim$(CStr(ws.Cells(r, colDia).Value)) = "" Then GoTo ContinueR
+
+            If UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))) <> "PPD" Then GoTo ContinueR
+
+            If Trim$(CStr(ws.Cells(r, colOBS).Value)) <> "" Then GoTo ContinueR
+
+            cargoVal = CE_GetNum(ws.Cells(r, colCargo).Value)
+            abonoVal = CE_GetNum(ws.Cells(r, colAbono).Value)
+
+            'NO CAMBIA: se queda por CARGO
+            If Abs(cargoVal) <= 0.00001 Then GoTo ContinueR
+            If Abs(abonoVal) > 0.00001 Then GoTo ContinueR
+
+            centsBank = CE_Cents(Abs(cargoVal))
+            tolCents = CE_ToleranceCents(Abs(cargoVal))
+
+            If CE_TryPopMatch(dict, centsBank, tolCents, arr) Then
+                ws.Cells(r, colOBS).Value = CStr(arr(1))
+                wsCE.Cells(CLng(arr(0)), colCtaBanc).Value = ws.Name
+                matches = matches + 1
+            End If
+
+ContinueR:
+        Next r
+
+NextWs:
+        Set targetLo = Nothing
+    Next ws
+
+    CE_MatchBankRowsAgainstDict_PPD = matches
+End Function
+
+
+'========================
+' Paso extra UUID repetido (SOLO PPD)
+'========================
+Private Function CE_PasoExtra_UUIDRepetido_PPD( _
+    ByVal wsCE As Worksheet, _
+    ByVal headerRowCE As Long, _
+    ByVal colUUID As Long, _
+    ByVal colTotalPagado As Long, _
+    ByVal colCtaBanc As Long, _
+    ByVal lastCE As Long) As Long
+
+    Dim dictSum As Object, dictRows As Object
+    Set dictSum = CreateObject("Scripting.Dictionary")
+    Set dictRows = CreateObject("Scripting.Dictionary")
+
+    Dim i As Long, uuid As String, amt As Double, cents As Long
+    Dim rowsCol As Collection
+
+    For i = headerRowCE + 1 To lastCE
+        If Trim$(CStr(wsCE.Cells(i, colCtaBanc).Value)) <> "" Then GoTo NextI
+
+        uuid = Trim$(CStr(wsCE.Cells(i, colUUID).Value))
+        If uuid = "" Then GoTo NextI
+
+        amt = CE_GetNum(wsCE.Cells(i, colTotalPagado).Value)
+        If Abs(amt) <= 0.00001 Then GoTo NextI
+
+        cents = CE_Cents(Abs(amt))
+
+        If Not dictSum.Exists(uuid) Then
+            dictSum.Add uuid, CLng(0)
+            Set rowsCol = New Collection
+            dictRows.Add uuid, rowsCol
+        Else
+            Set rowsCol = dictRows(uuid)
+        End If
+
+        dictSum(uuid) = CLng(dictSum(uuid)) + cents
+        rowsCol.Add i
+NextI:
+    Next i
+
+    Dim dictMatch As Object
+    Set dictMatch = CreateObject("Scripting.Dictionary")
+
+    Dim k As Variant, sumCents As Long, arrRows As Variant
+    For Each k In dictSum.Keys
+        Set rowsCol = dictRows(k)
+        If rowsCol.Count > 1 Then
+            sumCents = CLng(dictSum(k))
+            arrRows = CE_CollectionToLongArray(rowsCol)
+            CE_AddToDict dictMatch, sumCents, Array(0, CStr(k), arrRows)
+        End If
+    Next k
+
+    If dictMatch.Count = 0 Then
+        CE_PasoExtra_UUIDRepetido_PPD = 0
+        Exit Function
+    End If
+
+    CE_PasoExtra_UUIDRepetido_PPD = CE_Match_UUIDGroupAgainstBank_PPD(wsCE, colCtaBanc, dictMatch)
+End Function
+
+Private Function CE_Match_UUIDGroupAgainstBank_PPD(ByVal wsCE As Worksheet, ByVal colCtaBanc As Long, ByVal dictMatch As Object) As Long
+
+    Dim ws As Worksheet, headerRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long
+    Dim colOBS As Long, colCompl As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim lo As ListObject, targetLo As ListObject, isTable As Boolean
+    Dim centsBank As Long, tolCents As Long
+    Dim arr As Variant, rowsArr As Variant
+    Dim matches As Long
+
+    matches = 0
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If (Not IsNumeric(ws.Name)) And (UCase$(ws.Name) <> "EST MP") Then GoTo NextWs
+        If CE_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        colDia = CE_FindHeader(ws, "Día", headerRow)
+        If colDia = 0 Then colDia = CE_FindHeader(ws, "Dia", headerRow)
+
+        If colDia = 0 And UCase$(ws.Name) = "EST MP" Then
+            colDia = CE_FindHeader(ws, "REFERENCE_ID", headerRow)
+            If colDia = 0 Then colDia = CE_FindHeader(ws, "REFERENCE ID", headerRow)
+        End If
+        If colDia = 0 Then GoTo NextWs
+
+        colCargo = CE_FindHeaderInRowExact(ws, headerRow, "Cargo")
+        If colCargo = 0 Then colCargo = CE_FindHeaderInRowExact(ws, headerRow, "cargo")
+
+        colAbono = CE_FindHeaderInRowExact(ws, headerRow, "Abono")
+        If colAbono = 0 Then colAbono = CE_FindHeaderInRowExact(ws, headerRow, "abonos")
+
+        If colCargo = 0 Or colAbono = 0 Then GoTo NextWs
+
+        isTable = False
+        Set targetLo = Nothing
+        For Each lo In ws.ListObjects
+            If lo.HeaderRowRange.Row = headerRow Then
+                isTable = True
+                Set targetLo = lo
+                Exit For
+            End If
+        Next lo
+
+        If isTable Then
+            colOBS = CE_EnsureTableColumn(targetLo, "OBS")
+            colCompl = CE_EnsureTableColumn(targetLo, "COMPL. CTA")
+            If targetLo.DataBodyRange Is Nothing Then GoTo NextWs
+            lastRow = targetLo.DataBodyRange.Rows.Count + headerRow
+        Else
+            colOBS = CE_EnsureHeaderColumn(ws, headerRow, "OBS")
+            colCompl = CE_EnsureHeaderColumn(ws, headerRow, "COMPL. CTA")
+            lastRow = ws.Cells(ws.Rows.Count, colDia).End(xlUp).Row
+        End If
+
+        If lastRow <= headerRow Then GoTo NextWs
+
+        For r = headerRow + 1 To lastRow
+
+            If Trim$(CStr(ws.Cells(r, colDia).Value)) = "" Then GoTo ContinueR
+            If UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))) <> "PPD" Then GoTo ContinueR
+            If Trim$(CStr(ws.Cells(r, colOBS).Value)) <> "" Then GoTo ContinueR
+
+            cargoVal = CE_GetNum(ws.Cells(r, colCargo).Value)
+            abonoVal = CE_GetNum(ws.Cells(r, colAbono).Value)
+
+            If Abs(cargoVal) <= 0.00001 Then GoTo ContinueR
+            If Abs(abonoVal) > 0.00001 Then GoTo ContinueR
+
+            centsBank = CE_Cents(Abs(cargoVal))
+            tolCents = CE_ToleranceCents(Abs(cargoVal))
+
+            If CE_TryPopMatch(dictMatch, centsBank, tolCents, arr) Then
+                rowsArr = arr(2)
+                ws.Cells(r, colOBS).Value = CStr(arr(1))
+                CE_MarkRowsUsed wsCE, rowsArr, colCtaBanc, ws.Name
+                matches = matches + 1
+            End If
+ContinueR:
+        Next r
+
+NextWs:
+        Set targetLo = Nothing
+    Next ws
+
+    CE_Match_UUIDGroupAgainstBank_PPD = matches
+End Function
+
+
+'========================
+' Paso extra RFC repetido (SOLO PPD)
+'========================
+Private Function CE_PasoExtra_RFCRepetido_PPD( _
+    ByVal wsCE As Worksheet, _
+    ByVal headerRowCE As Long, _
+    ByVal colRFC As Long, _
+    ByVal colTotalPagado As Long, _
+    ByVal colCtaBanc As Long, _
+    ByVal lastCE As Long) As Long
+
+    Dim dictSum As Object, dictRows As Object
+    Set dictSum = CreateObject("Scripting.Dictionary")
+    Set dictRows = CreateObject("Scripting.Dictionary")
+
+    Dim i As Long, rfc As String, amt As Double, cents As Long
+    Dim rowsCol As Collection
+
+    For i = headerRowCE + 1 To lastCE
+        If Trim$(CStr(wsCE.Cells(i, colCtaBanc).Value)) <> "" Then GoTo NextI
+        rfc = Trim$(CStr(wsCE.Cells(i, colRFC).Value))
+        If rfc = "" Then GoTo NextI
+
+        amt = CE_GetNum(wsCE.Cells(i, colTotalPagado).Value)
+        If Abs(amt) <= 0.00001 Then GoTo NextI
+
+        cents = CE_Cents(Abs(amt))
+
+        If Not dictSum.Exists(rfc) Then
+            dictSum.Add rfc, CLng(0)
+            Set rowsCol = New Collection
+            dictRows.Add rfc, rowsCol
+        Else
+            Set rowsCol = dictRows(rfc)
+        End If
+
+        dictSum(rfc) = CLng(dictSum(rfc)) + cents
+        rowsCol.Add i
+NextI:
+    Next i
+
+    Dim matches As Long
+    matches = 0
+
+    Dim key As Variant, sumCents As Long, rowsArr As Variant
+    For Each key In dictSum.Keys
+
+        Set rowsCol = dictRows(key)
+        If rowsCol.Count < 2 Then GoTo NextRFC
+
+        sumCents = CLng(dictSum(key))
+        rowsArr = CE_CollectionToLongArray(rowsCol)
+
+        Dim dictOne As Object
+        Set dictOne = CreateObject("Scripting.Dictionary")
+        CE_AddToDict dictOne, sumCents, Array(0, "RFC:" & CStr(key), rowsArr)
+
+        matches = CE_Match_RFCGroupAgainstBank_PPD(wsCE, colCtaBanc, dictOne, CStr(key), matches)
+
+NextRFC:
+    Next key
+
+    CE_PasoExtra_RFCRepetido_PPD = matches
+End Function
+
+Private Function CE_Match_RFCGroupAgainstBank_PPD( _
+    ByVal wsCE As Worksheet, _
+    ByVal colCtaBanc As Long, _
+    ByVal dictOne As Object, _
+    ByVal rfcTarget As String, _
+    ByVal matchesIn As Long) As Long
+
+    Dim ws As Worksheet, headerRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long, colRFCB As Long
+    Dim colOBS As Long, colCompl As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim lo As ListObject, targetLo As ListObject, isTable As Boolean
+    Dim centsBank As Long, tolCents As Long
+    Dim arr As Variant, rowsArr As Variant
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If (Not IsNumeric(ws.Name)) And (UCase$(ws.Name) <> "EST MP") Then GoTo NextWs
+        If CE_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        colDia = CE_FindHeader(ws, "Día", headerRow)
+        If colDia = 0 Then colDia = CE_FindHeader(ws, "Dia", headerRow)
+
+        If colDia = 0 And UCase$(ws.Name) = "EST MP" Then
+            colDia = CE_FindHeader(ws, "REFERENCE_ID", headerRow)
+            If colDia = 0 Then colDia = CE_FindHeader(ws, "REFERENCE ID", headerRow)
+        End If
+        If colDia = 0 Then GoTo NextWs
+
+        colCargo = CE_FindHeaderInRowExact(ws, headerRow, "Cargo")
+        If colCargo = 0 Then colCargo = CE_FindHeaderInRowExact(ws, headerRow, "cargo")
+
+        colAbono = CE_FindHeaderInRowExact(ws, headerRow, "Abono")
+        If colAbono = 0 Then colAbono = CE_FindHeaderInRowExact(ws, headerRow, "abonos")
+
+        If colCargo = 0 Or colAbono = 0 Then GoTo NextWs
+
+        colRFCB = CE_FindHeaderAny(ws, headerRow, Array("RFC", "RFC CLIENTE", "RFC Cliente", "RFC receptor", "RFC RECEPTOR"))
+        If colRFCB = 0 Then GoTo NextWs
+
+        isTable = False
+        Set targetLo = Nothing
+        For Each lo In ws.ListObjects
+            If lo.HeaderRowRange.Row = headerRow Then
+                isTable = True
+                Set targetLo = lo
+                Exit For
+            End If
+        Next lo
+
+        If isTable Then
+            colOBS = CE_EnsureTableColumn(targetLo, "OBS")
+            colCompl = CE_EnsureTableColumn(targetLo, "COMPL. CTA")
+            If targetLo.DataBodyRange Is Nothing Then GoTo NextWs
+            lastRow = targetLo.DataBodyRange.Rows.Count + headerRow
+        Else
+            colOBS = CE_EnsureHeaderColumn(ws, headerRow, "OBS")
+            colCompl = CE_EnsureHeaderColumn(ws, headerRow, "COMPL. CTA")
+            lastRow = ws.Cells(ws.Rows.Count, colDia).End(xlUp).Row
+        End If
+
+        If lastRow <= headerRow Then GoTo NextWs
+
+        For r = headerRow + 1 To lastRow
+
+            If Trim$(CStr(ws.Cells(r, colDia).Value)) = "" Then GoTo ContinueR
+            If UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))) <> "PPD" Then GoTo ContinueR
+            If Trim$(CStr(ws.Cells(r, colOBS).Value)) <> "" Then GoTo ContinueR
+
+            If UCase$(Trim$(CStr(ws.Cells(r, colRFCB).Value))) <> UCase$(Trim$(rfcTarget)) Then GoTo ContinueR
+
+            cargoVal = CE_GetNum(ws.Cells(r, colCargo).Value)
+            abonoVal = CE_GetNum(ws.Cells(r, colAbono).Value)
+            If Abs(cargoVal) <= 0.00001 Then GoTo ContinueR
+            If Abs(abonoVal) > 0.00001 Then GoTo ContinueR
+
+            centsBank = CE_Cents(Abs(cargoVal))
+            tolCents = CE_ToleranceCents(Abs(cargoVal))
+
+            If CE_TryPopMatch(dictOne, centsBank, tolCents, arr) Then
+                rowsArr = arr(2)
+                ws.Cells(r, colOBS).Value = CStr(arr(1))
+                CE_MarkRowsUsed wsCE, rowsArr, colCtaBanc, ws.Name
+                matchesIn = matchesIn + 1
+                Exit For
+            End If
+
+ContinueR:
+        Next r
+
+NextWs:
+        Set targetLo = Nothing
+    Next ws
+
+    CE_Match_RFCGroupAgainstBank_PPD = matchesIn
+End Function
+
+
+'========================
+' Helpers CE_*
+'========================
+Private Function CE_ToleranceCents(ByVal amt As Double) As Long
+    If amt < 50000# Then
+        CE_ToleranceCents = 10
+    Else
+        CE_ToleranceCents = 50
+    End If
+End Function
+
+Private Function CE_Cents(ByVal amt As Double) As Long
+    CE_Cents = CLng(Application.WorksheetFunction.Round(amt * 100, 0))
+End Function
+
+Private Sub CE_AddToDict(ByVal dict As Object, ByVal cents As Long, ByVal payload As Variant)
+    Dim k As String
+    Dim col As Collection
+    k = CStr(cents)
+
+    If Not dict.Exists(k) Then
+        Set col = New Collection
+        dict.Add k, col
+    Else
+        Set col = dict(k)
+    End If
+    col.Add payload
+End Sub
+
+Private Function CE_TryPopMatch(ByVal dict As Object, ByVal centsBank As Long, ByVal tolCents As Long, ByRef arrOut As Variant) As Boolean
+
+    Dim d As Long, candidateCents As Long, k As String
+    Dim bestDiff As Long, bestCents As Long
+    Dim col As Collection
+
+    bestDiff = tolCents + 1
+    bestCents = 2147483647
+
+    For d = 0 To tolCents
+
+        candidateCents = centsBank + d
+        k = CStr(candidateCents)
+        If dict.Exists(k) Then
+            Set col = dict(k)
+            If col.Count > 0 Then
+                If (d < bestDiff) Or (d = bestDiff And candidateCents < bestCents) Then
+                    bestDiff = d
+                    bestCents = candidateCents
+                End If
+            End If
+        End If
+
+        If d <> 0 Then
+            candidateCents = centsBank - d
+            k = CStr(candidateCents)
+            If dict.Exists(k) Then
+                Set col = dict(k)
+                If col.Count > 0 Then
+                    If (d < bestDiff) Or (d = bestDiff And candidateCents < bestCents) Then
+                        bestDiff = d
+                        bestCents = candidateCents
+                    End If
+                End If
+            End If
+        End If
+    Next d
+
+    If bestDiff <= tolCents Then
+        k = CStr(bestCents)
+        Set col = dict(k)
+        arrOut = col(1)
+        col.Remove 1
+        CE_TryPopMatch = True
+    Else
+        CE_TryPopMatch = False
+    End If
+End Function
+
+Private Function CE_CollectionToLongArray(ByVal col As Collection) As Variant
+    Dim arr() As Long, i As Long
+    ReDim arr(1 To col.Count)
+    For i = 1 To col.Count
+        arr(i) = CLng(col(i))
+    Next i
+    CE_CollectionToLongArray = arr
+End Function
+
+Private Sub CE_MarkRowsUsed(ByVal ws As Worksheet, ByVal rowsArr As Variant, ByVal colUsed As Long, ByVal markVal As String)
+    On Error GoTo SafeExit
+    Dim i As Long, idx As Long
+    For i = LBound(rowsArr) To UBound(rowsArr)
+        idx = CLng(rowsArr(i))
+        If Trim$(CStr(ws.Cells(idx, colUsed).Value)) = "" Then
+            ws.Cells(idx, colUsed).Value = markVal
+        End If
+    Next i
+SafeExit:
+End Sub
+
+Private Function CE_FindHeaderAny(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal candidates As Variant) As Long
+    Dim i As Long, c As Long, lastCol As Long
+    Dim cellVal As String, cand As String
+
+    For i = LBound(candidates) To UBound(candidates)
+        cand = LCase$(Trim$(CStr(candidates(i))))
+        c = CE_FindHeaderInRowExact(ws, rowNum, cand)
+        If c <> 0 Then
+            CE_FindHeaderAny = c
+            Exit Function
+        End If
+    Next i
+
+    lastCol = ws.Cells(rowNum, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        cellVal = LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value)))
+        If cellVal <> "" Then
+            For i = LBound(candidates) To UBound(candidates)
+                cand = LCase$(Trim$(CStr(candidates(i))))
+                If InStr(1, cellVal, cand, vbTextCompare) > 0 Then
+                    CE_FindHeaderAny = c
+                    Exit Function
+                End If
+            Next i
+        End If
+    Next c
+
+    CE_FindHeaderAny = 0
+End Function
+
+Private Function CE_GetLastRowMulti(ByVal ws As Worksheet, ByVal cols As Variant, ByVal startRow As Long) As Long
+    Dim i As Long, lr As Long, best As Long
+    best = startRow - 1
+    For i = LBound(cols) To UBound(cols)
+        lr = ws.Cells(ws.Rows.Count, CLng(cols(i))).End(xlUp).Row
+        If lr > best Then best = lr
+    Next i
+    CE_GetLastRowMulti = best
+End Function
+
+Private Function CE_FindHeader(ByVal ws As Worksheet, ByVal headerText As String, ByRef headerRow As Long) As Long
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=headerText, LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If Not f Is Nothing Then
+        headerRow = f.Row
+        CE_FindHeader = f.Column
+    Else
+        CE_FindHeader = 0
+    End If
+End Function
+
+Private Function CE_FindHeaderInRowExact(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal headerText As String) As Long
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(rowNum, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        If LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value))) = LCase$(headerText) Then
+            CE_FindHeaderInRowExact = c
+            Exit Function
+        End If
+    Next c
+    CE_FindHeaderInRowExact = 0
+End Function
+
+Private Function CE_EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+    Dim c As Long
+    c = CE_FindHeaderInRowExact(ws, headerRow, headerName)
+    If c = 0 Then c = CE_AddHeaderColumnSimple(ws, headerRow, headerName)
+    CE_EnsureHeaderColumn = c
+End Function
+
+Private Function CE_AddHeaderColumnSimple(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+    Dim lastCol As Long, newCol As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    newCol = lastCol + 1
+
+    ws.Cells(headerRow, newCol).Value = headerName
+    ws.Columns(newCol).ColumnWidth = 18
+
+    ws.Cells(headerRow, lastCol).Copy
+    ws.Cells(headerRow, newCol).PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+
+    CE_AddHeaderColumnSimple = newCol
+End Function
+
+Private Function CE_EnsureTableColumn(ByVal lo As ListObject, ByVal colName As String) As Long
+    Dim lc As ListColumn
+    For Each lc In lo.ListColumns
+        If LCase$(lc.Name) = LCase$(colName) Then
+            CE_EnsureTableColumn = lc.Range.Column
+            Exit Function
+        End If
+    Next lc
+    lo.ListColumns.Add
+    lo.ListColumns(lo.ListColumns.Count).Name = colName
+    CE_EnsureTableColumn = lo.ListColumns(lo.ListColumns.Count).Range.Column
+End Function
+
+Private Function CE_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    CE_SheetHasText = Not (f Is Nothing)
+End Function
+
+Private Function CE_GetNum(ByVal v As Variant) As Double
+    On Error GoTo SafeExit
+    If IsError(v) Or IsEmpty(v) Or Trim$(CStr(v)) = "" Then
+        CE_GetNum = 0
+    Else
+        Dim s As String
+        s = CStr(v)
+        s = Replace(s, "$", "")
+        s = Replace(s, ",", "")
+        s = Trim$(s)
+        If s = "-" Then s = "0"
+        CE_GetNum = CDbl(s)
+    End If
+    Exit Function
+SafeExit:
+    CE_GetNum = 0
+End Function

@@ -1,0 +1,213 @@
+Option Explicit
+
+'=========================================================
+' RESUMEN: Totales de CARGOS y ABONOS por cuenta (por hoja)
+' - Recorre TODAS las hojas de bancos (nombres numéricos) y también "EST MP" si existe
+' - Detecta encabezados:
+'     * Bancos: "Cargo" y "Abono"
+'     * EST MP: "cargo" y "abonos" (plural)
+' - Crea (o reemplaza) una hoja nueva: "RESUMEN_BANCOS"
+'=========================================================
+Public Sub RESUMEN_TOTALES_BANCOS()
+
+    Dim ws As Worksheet, wsOut As Worksheet
+    Dim outName As String: outName = "RESUMEN_BANCOS"
+    Dim rOut As Long: rOut = 2
+
+    Dim headerRow As Long
+    Dim colCargo As Long, colAbono As Long
+    Dim lastRow As Long
+    Dim totalCargos As Double, totalAbonos As Double
+    Dim nMovs As Long
+
+    On Error GoTo ErrH
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+
+    '--- borrar/crear hoja salida ---
+    On Error Resume Next
+    ThisWorkbook.Worksheets(outName).Delete
+    On Error GoTo ErrH
+
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsOut.Name = outName
+
+    '--- encabezados ---
+    With wsOut
+        .Cells(1, 1).Value = "CUENTA (HOJA)"
+        .Cells(1, 2).Value = "TOTAL CARGOS"
+        .Cells(1, 3).Value = "TOTAL ABONOS"
+        .Cells(1, 4).Value = "NETO (ABONOS - CARGOS)"
+        .Cells(1, 5).Value = "# MOVS (CON IMPORTE)"
+        .Rows(1).Font.Bold = True
+        .Columns("A:E").ColumnWidth = 22
+        .Columns("B:D").NumberFormat = "$#,##0.00"
+        .Columns("E:E").NumberFormat = "0"
+    End With
+
+    '--- recorrer hojas ---
+    For Each ws In ThisWorkbook.Worksheets
+
+        If ws.Name = outName Then GoTo NextWs
+
+        'Solo hojas numéricas (bancos) + "EST MP"
+        If (Not IsNumeric(ws.Name)) And (UCase$(ws.Name) <> "EST MP") Then GoTo NextWs
+        If SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        headerRow = 0: colCargo = 0: colAbono = 0
+
+        'Buscar encabezados
+        If Not FindCargoAbonoHeaders(ws, headerRow, colCargo, colAbono) Then GoTo NextWs
+
+        'Rango de datos
+        lastRow = ws.Cells(ws.Rows.Count, colCargo).End(xlUp).Row
+        If lastRow <= headerRow Then GoTo NextWs
+
+        'Sumas
+        totalCargos = 0
+        totalAbonos = 0
+        nMovs = 0
+
+        SumColumns ws, headerRow + 1, lastRow, colCargo, colAbono, totalCargos, totalAbonos, nMovs
+
+        'Salida
+        wsOut.Cells(rOut, 1).Value = ws.Name
+        wsOut.Cells(rOut, 2).Value = totalCargos
+        wsOut.Cells(rOut, 3).Value = totalAbonos
+        wsOut.Cells(rOut, 4).Value = totalAbonos - totalCargos
+        wsOut.Cells(rOut, 5).Value = nMovs
+        rOut = rOut + 1
+
+NextWs:
+    Next ws
+
+    'Total general
+    If rOut > 2 Then
+        wsOut.Cells(rOut, 1).Value = "TOTAL GENERAL"
+        wsOut.Cells(rOut, 2).Formula = "=SUM(B2:B" & (rOut - 1) & ")"
+        wsOut.Cells(rOut, 3).Formula = "=SUM(C2:C" & (rOut - 1) & ")"
+        wsOut.Cells(rOut, 4).Formula = "=SUM(D2:D" & (rOut - 1) & ")"
+        wsOut.Cells(rOut, 5).Formula = "=SUM(E2:E" & (rOut - 1) & ")"
+        wsOut.Rows(rOut).Font.Bold = True
+    End If
+
+    wsOut.Activate
+    wsOut.Range("A1").Select
+
+Fin:
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Resumen generado en '" & outName & "'.", vbInformation
+    Exit Sub
+
+ErrH:
+    MsgBox "Error en RESUMEN_TOTALES_BANCOS:" & vbCrLf & Err.Number & " - " & Err.Description, vbExclamation
+    Resume Fin
+End Sub
+
+
+'=========================================================
+' Encuentra headerRow + colCargo + colAbono / abonos
+'=========================================================
+Private Function FindCargoAbonoHeaders(ByVal ws As Worksheet, _
+                                      ByRef headerRow As Long, _
+                                      ByRef colCargo As Long, _
+                                      ByRef colAbono As Long) As Boolean
+    Dim f As Range
+
+    'Buscar "Cargo" (exacto) en toda la hoja
+    Set f = ws.Cells.Find(What:="Cargo", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If f Is Nothing Then
+        'En EST MP puede ser "cargo" (igual lo encuentra por MatchCase:=False, pero dejamos fallback)
+        Set f = ws.Cells.Find(What:="cargo", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+
+    If f Is Nothing Then
+        FindCargoAbonoHeaders = False
+        Exit Function
+    End If
+
+    headerRow = f.Row
+    colCargo = f.Column
+
+    'En la MISMA fila buscar "Abono" o "abonos"
+    colAbono = FindHeaderInRowExact(ws, headerRow, "Abono")
+    If colAbono = 0 Then colAbono = FindHeaderInRowExact(ws, headerRow, "abonos")
+
+    If colCargo > 0 And colAbono > 0 Then
+        FindCargoAbonoHeaders = True
+    Else
+        FindCargoAbonoHeaders = False
+    End If
+End Function
+
+
+'=========================================================
+' Suma columnas Cargo/Abono en un rango de filas
+' (cuenta movimientos donde al menos uno tenga importe)
+'=========================================================
+Private Sub SumColumns(ByVal ws As Worksheet, ByVal r1 As Long, ByVal r2 As Long, _
+                       ByVal cCargo As Long, ByVal cAbono As Long, _
+                       ByRef sumCargo As Double, ByRef sumAbono As Double, _
+                       ByRef movs As Long)
+
+    Dim arrC As Variant, arrA As Variant
+    Dim i As Long
+    Dim vC As Double, vA As Double
+
+    arrC = ws.Range(ws.Cells(r1, cCargo), ws.Cells(r2, cCargo)).Value2
+    arrA = ws.Range(ws.Cells(r1, cAbono), ws.Cells(r2, cAbono)).Value2
+
+    For i = 1 To UBound(arrC, 1)
+        vC = GetNum(arrC(i, 1))
+        vA = GetNum(arrA(i, 1))
+
+        If Abs(vC) > 0.00001 Or Abs(vA) > 0.00001 Then movs = movs + 1
+
+        sumCargo = sumCargo + vC
+        sumAbono = sumAbono + vA
+    Next i
+End Sub
+
+
+'=========================================================
+' Helpers básicos
+'=========================================================
+Private Function FindHeaderInRowExact(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal headerText As String) As Long
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(rowNum, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        If LCase$(Trim$(CStr(ws.Cells(rowNum, c).Value))) = LCase$(headerText) Then
+            FindHeaderInRowExact = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderInRowExact = 0
+End Function
+
+Private Function SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    SheetHasText = Not (f Is Nothing)
+End Function
+
+Private Function GetNum(ByVal v As Variant) As Double
+    On Error GoTo SafeExit
+    If IsError(v) Or IsEmpty(v) Or Trim$(CStr(v)) = "" Then
+        GetNum = 0
+    Else
+        Dim s As String
+        s = CStr(v)
+        s = Replace(s, "$", "")
+        s = Replace(s, ",", "")
+        s = Trim$(s)
+        If s = "-" Then s = "0"
+        GetNum = CDbl(s)
+    End If
+    Exit Function
+SafeExit:
+    GetNum = 0
+End Function

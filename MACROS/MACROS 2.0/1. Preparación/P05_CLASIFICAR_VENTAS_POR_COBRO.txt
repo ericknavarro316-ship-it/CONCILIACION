@@ -1,0 +1,308 @@
+Option Explicit
+
+Public Sub P05_CLASIFICAR_VENTAS_POR_COBRO()
+
+    Dim wsSrc As Worksheet
+    Dim wsMP As Worksheet, wsBBVA As Worksheet
+    Dim wsScooter As Worksheet, wsFisicoOtros As Worksheet, wsVacio As Worksheet
+
+    Dim hdrRow As Long, lastRow As Long, lastCol As Long
+    Dim colBanco As Long, colFecha As Long, colTrans As Long, colUUID As Long
+
+    Dim r As Long
+    Dim destino As Worksheet
+    Dim textoBanco As String
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsSrc = Nothing
+    On Error Resume Next
+    Set wsSrc = ThisWorkbook.Worksheets("NOTA DE VENTA")
+    On Error GoTo ErrHandler
+
+    If wsSrc Is Nothing Then
+        MsgBox "No existe la hoja 'NOTA DE VENTA'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrRow = VBC_FindHeaderRow(wsSrc)
+    If hdrRow = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en la hoja 'NOTA DE VENTA'.", vbExclamation
+        Exit Sub
+    End If
+
+    colBanco = VBC_FindHeaderCol(wsSrc, hdrRow, Array("bancos_cobro"))
+    If colBanco = 0 Then
+        MsgBox "No encontré la columna 'bancos_cobro' en la hoja 'NOTA DE VENTA'.", vbExclamation
+        Exit Sub
+    End If
+
+    colFecha = VBC_FindHeaderCol(wsSrc, hdrRow, Array("fecha"))
+    colTrans = VBC_FindHeaderCol(wsSrc, hdrRow, Array("numero_transaccion"))
+    colUUID = VBC_FindHeaderCol(wsSrc, hdrRow, Array("UUID"))
+
+    lastRow = VBC_LastUsedRow(wsSrc)
+    lastCol = VBC_LastUsedCol(wsSrc, hdrRow)
+
+    If lastRow <= hdrRow Then
+        MsgBox "No hay datos para separar en la hoja 'NOTA DE VENTA'.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    VBC_DeleteSheetIfExists "VENTAS_MP"
+    VBC_DeleteSheetIfExists "VENTAS_BBVA"
+    VBC_DeleteSheetIfExists "VENTAS_SCOOTERZONE"
+    VBC_DeleteSheetIfExists "VENTAS_FISICO_OTROS"
+    VBC_DeleteSheetIfExists "VENTAS_SIN_BANCO"
+
+    Set wsMP = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+    wsMP.Name = "VENTAS_MP"
+
+    Set wsBBVA = ThisWorkbook.Worksheets.Add(After:=wsMP)
+    wsBBVA.Name = "VENTAS_BBVA"
+
+    Set wsScooter = ThisWorkbook.Worksheets.Add(After:=wsBBVA)
+    wsScooter.Name = "VENTAS_SCOOTERZONE"
+
+    Set wsFisicoOtros = ThisWorkbook.Worksheets.Add(After:=wsScooter)
+    wsFisicoOtros.Name = "VENTAS_FISICO_OTROS"
+
+    Set wsVacio = ThisWorkbook.Worksheets.Add(After:=wsFisicoOtros)
+    wsVacio.Name = "VENTAS_SIN_BANCO"
+
+    wsMP.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+    wsBBVA.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+    wsScooter.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+    wsFisicoOtros.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+    wsVacio.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+
+    For r = hdrRow + 1 To lastRow
+
+        If Not VBC_RowIsEmpty(wsSrc, r, lastCol) Then
+
+            textoBanco = VBC_NormalizeBankText(wsSrc.Cells(r, colBanco).Text)
+
+            If textoBanco = "" Then
+                Set destino = wsVacio
+
+            ElseIf InStr(1, textoBanco, "MERCADO PAGO", vbTextCompare) > 0 Or _
+                   InStr(1, textoBanco, "MERCADOPAGO", vbTextCompare) > 0 Then
+                Set destino = wsMP
+
+            ElseIf InStr(1, textoBanco, "BBVA", vbTextCompare) > 0 Then
+                Set destino = wsBBVA
+
+            ElseIf InStr(1, textoBanco, "SCOOTERZONE", vbTextCompare) > 0 Or _
+                   InStr(1, textoBanco, "SCOOTER ZONE", vbTextCompare) > 0 Then
+                Set destino = wsScooter
+
+            Else
+                Set destino = wsFisicoOtros
+            End If
+
+            VBC_CopyRow wsSrc, destino, r, lastCol
+        End If
+    Next r
+
+    VBC_FormatOutput wsMP, lastCol, colFecha, colTrans, colUUID
+    VBC_FormatOutput wsBBVA, lastCol, colFecha, colTrans, colUUID
+    VBC_FormatOutput wsScooter, lastCol, colFecha, colTrans, colUUID
+    VBC_FormatOutput wsFisicoOtros, lastCol, colFecha, colTrans, colUUID
+    VBC_FormatOutput wsVacio, lastCol, colFecha, colTrans, colUUID
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Separación terminada desde la hoja 'NOTA DE VENTA'." & vbCrLf & vbCrLf & _
+           "Se generaron:" & vbCrLf & _
+           "- VENTAS_MP" & vbCrLf & _
+           "- VENTAS_BBVA" & vbCrLf & _
+           "- VENTAS_SCOOTERZONE" & vbCrLf & _
+           "- VENTAS_FISICO_OTROS" & vbCrLf & _
+           "- VENTAS_SIN_BANCO", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en P05_CLASIFICAR_VENTAS_POR_COBRO: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub VBC_CopyRow(ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal lastCol As Long)
+    Dim nextRow As Long
+    nextRow = VBC_LastUsedRow(wsDst) + 1
+    If nextRow < 2 Then nextRow = 2
+    wsDst.Cells(nextRow, 1).Resize(1, lastCol).Value = wsSrc.Cells(srcRow, 1).Resize(1, lastCol).Value
+End Sub
+
+
+Private Sub VBC_FormatOutput(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal colFecha As Long, ByVal colTrans As Long, ByVal colUUID As Long)
+
+    Dim lastRow As Long
+
+    lastRow = VBC_LastUsedRow(ws)
+
+    ws.Rows(1).Font.Bold = True
+
+    If colTrans > 0 Then ws.Columns(colTrans).NumberFormat = "@"
+    If colUUID > 0 Then ws.Columns(colUUID).NumberFormat = "@"
+
+    If colFecha > 0 And lastRow >= 2 Then
+        ws.Range(ws.Cells(2, colFecha), ws.Cells(lastRow, colFecha)).NumberFormat = "dd/mm/yyyy hh:mm"
+    End If
+
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(1, 1), ws.Cells(Application.Max(lastRow, 2), lastCol)).AutoFilter
+
+    If colFecha > 0 And lastRow >= 3 Then
+        ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Sort _
+            Key1:=ws.Range(ws.Cells(2, colFecha), ws.Cells(lastRow, colFecha)), _
+            Order1:=xlAscending, _
+            Header:=xlYes
+    End If
+
+    ws.Cells.EntireColumn.AutoFit
+End Sub
+
+
+Private Function VBC_FindHeaderRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If VBC_FindHeaderCol(ws, r, Array("id_venta")) > 0 And _
+           VBC_FindHeaderCol(ws, r, Array("bancos_cobro")) > 0 Then
+            VBC_FindHeaderRow = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function VBC_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = VBC_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = VBC_NormHeader(CStr(headerNames(i))) Then
+                VBC_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function VBC_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    VBC_NormHeader = s
+End Function
+
+
+Private Function VBC_NormalizeBankText(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, Chr(160), " ")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    VBC_NormalizeBankText = Trim$(s)
+End Function
+
+
+Private Function VBC_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        VBC_LastUsedRow = 0
+    Else
+        VBC_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function VBC_LastUsedCol(ByVal ws As Worksheet, ByVal hdrRow As Long) As Long
+    Dim c As Range
+
+    Set c = ws.Rows(hdrRow).Find(What:="*", _
+                                 After:=ws.Cells(hdrRow, 1), _
+                                 LookIn:=xlFormulas, _
+                                 LookAt:=xlPart, _
+                                 SearchOrder:=xlByColumns, _
+                                 SearchDirection:=xlPrevious, _
+                                 MatchCase:=False)
+
+    If c Is Nothing Then
+        VBC_LastUsedCol = 0
+    Else
+        VBC_LastUsedCol = c.Column
+    End If
+End Function
+
+
+Private Function VBC_RowIsEmpty(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal lastCol As Long) As Boolean
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim$(CStr(ws.Cells(rowNum, c).Text)) <> "" Then Exit Function
+    Next c
+    VBC_RowIsEmpty = True
+End Function
+
+
+Private Sub VBC_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub

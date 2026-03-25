@@ -1,0 +1,116 @@
+Option Explicit
+
+Public Sub CREAR_CASCARON_EXCEL()
+
+    Dim hojasDeseadas As Variant
+    Dim ws As Worksheet
+    Dim i As Long
+    Dim nombreHoja As String
+    Dim existe As Boolean
+    Dim hojaTemp As Worksheet
+
+    hojasDeseadas = Array( _
+        "21387", _
+        "6005", _
+        "25032", _
+        "34961", _
+        "23773", _
+        "25350", _
+        "95568", _
+        "70334", _
+        "EST MP", _
+        "MP", _
+        "CFDI E", _
+        "PAGOS E", _
+        "CFDI I", _
+        "PAGOS I", _
+        "NOTA DE VENTA" _
+    )
+
+    On Error GoTo ErrHandler
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+
+    'Crear hoja temporal para evitar error al borrar todas
+    Set hojaTemp = ThisWorkbook.Worksheets.Add
+    hojaTemp.Name = "TEMP_ELIMINAR"
+
+    'Eliminar todas las hojas que no estén en la lista
+    For i = ThisWorkbook.Worksheets.Count To 1 Step -1
+        Set ws = ThisWorkbook.Worksheets(i)
+
+        If ws.Name <> "TEMP_ELIMINAR" Then
+            If Not EstaEnLista(ws.Name, hojasDeseadas) Then
+                ws.Delete
+            End If
+        End If
+    Next i
+
+    'Crear las hojas faltantes
+    For i = LBound(hojasDeseadas) To UBound(hojasDeseadas)
+        nombreHoja = CStr(hojasDeseadas(i))
+        existe = False
+
+        For Each ws In ThisWorkbook.Worksheets
+            If ws.Name = nombreHoja Then
+                existe = True
+                Exit For
+            End If
+        Next ws
+
+        If Not existe Then
+            Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+            ws.Name = nombreHoja
+        End If
+    Next i
+
+    'Ordenar hojas exactamente como se pidió
+    For i = LBound(hojasDeseadas) To UBound(hojasDeseadas)
+        ThisWorkbook.Worksheets(CStr(hojasDeseadas(i))).Move After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count)
+    Next i
+
+    'Moverlas otra vez al inicio respetando el orden final
+    ThisWorkbook.Worksheets(CStr(hojasDeseadas(0))).Move Before:=ThisWorkbook.Worksheets(1)
+    For i = 1 To UBound(hojasDeseadas)
+        ThisWorkbook.Worksheets(CStr(hojasDeseadas(i))).Move After:=ThisWorkbook.Worksheets(CStr(hojasDeseadas(i - 1)))
+    Next i
+
+    'Dejar las hojas vacías (cascarón)
+    For i = LBound(hojasDeseadas) To UBound(hojasDeseadas)
+        With ThisWorkbook.Worksheets(CStr(hojasDeseadas(i)))
+            .Cells.Clear
+        End With
+    Next i
+
+    'Eliminar temporal
+    On Error Resume Next
+    ThisWorkbook.Worksheets("TEMP_ELIMINAR").Delete
+    On Error GoTo ErrHandler
+
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Listo. Se generó el cascarón del Excel con las hojas indicadas.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "Error: " & Err.Number & " - " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function EstaEnLista(ByVal nombre As String, ByVal lista As Variant) As Boolean
+    Dim i As Long
+    For i = LBound(lista) To UBound(lista)
+        If StrComp(nombre, CStr(lista(i)), vbTextCompare) = 0 Then
+            EstaEnLista = True
+            Exit Function
+        End If
+    Next i
+    EstaEnLista = False
+End Function

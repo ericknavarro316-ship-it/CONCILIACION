@@ -1,0 +1,279 @@
+Option Explicit
+
+Public Sub O03_REPORTE_REVISION_MP_VS_VENTAS()
+
+    Const SH_MP As String = "MP_BASE"
+    Const SH_V As String = "VENTAS_MP"
+    Const SH_OUT As String = "REVISION_MP_VS_VENTAS"
+    Const HDR_MP As Long = 1
+    Const HDR_V As Long = 1
+
+    Dim wsMP As Worksheet, wsV As Worksheet, wsOut As Worksheet
+
+    Dim colMpDia As Long, colMpDetalle As Long, colMpCargo As Long
+    Dim colMpOper As Long, colMpSucursal As Long, colMpValorOp As Long
+    Dim colMpId As Long, colMpUUID As Long, colMpStatus As Long
+
+    Dim colVId As Long, colVTrans As Long, colVUUID As Long
+
+    Dim lastMP As Long, lastV As Long
+    Dim r As Long, outRow As Long
+    Dim k As String, st As String
+
+    Dim dictCount As Object
+    Dim dictFirstId As Object
+    Dim dictFirstUUID As Object
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsMP = O03_GetSheet(SH_MP)
+    If wsMP Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_MP & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    Set wsV = O03_GetSheet(SH_V)
+    If wsV Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_V & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    ' MP_BASE
+    colMpDia = O03_FindHeaderCol(wsMP, HDR_MP, Array("Día", "Dia"))
+    colMpDetalle = O03_FindHeaderCol(wsMP, HDR_MP, Array("Detalle"))
+    colMpCargo = O03_FindHeaderCol(wsMP, HDR_MP, Array("Valor del cargo"))
+    colMpOper = O03_FindHeaderCol(wsMP, HDR_MP, Array("Operación relacionada", "Operacion relacionada"))
+    colMpSucursal = O03_FindHeaderCol(wsMP, HDR_MP, Array("Nombre de sucursal"))
+    colMpValorOp = O03_FindHeaderCol(wsMP, HDR_MP, Array("Valor de la operación", "Valor de la operacion"))
+    colMpId = O03_FindHeaderCol(wsMP, HDR_MP, Array("id_venta"))
+    colMpUUID = O03_FindHeaderCol(wsMP, HDR_MP, Array("UUID"))
+    colMpStatus = O03_FindHeaderCol(wsMP, HDR_MP, Array("Estatus_Conciliacion"))
+
+    If colMpOper = 0 Or colMpStatus = 0 Then
+        MsgBox "No encontré 'Operación relacionada' y/o 'Estatus_Conciliacion' en MP_BASE.", vbExclamation
+        Exit Sub
+    End If
+
+    ' VENTAS_MP
+    colVId = O03_FindHeaderCol(wsV, HDR_V, Array("id_venta"))
+    colVTrans = O03_FindHeaderCol(wsV, HDR_V, Array("numero_transaccion"))
+    colVUUID = O03_FindHeaderCol(wsV, HDR_V, Array("UUID"))
+
+    If colVId = 0 Or colVTrans = 0 Or colVUUID = 0 Then
+        MsgBox "No encontré 'id_venta', 'numero_transaccion' y/o 'UUID' en VENTAS_MP.", vbExclamation
+        Exit Sub
+    End If
+
+    lastMP = wsMP.Cells(wsMP.Rows.Count, colMpOper).End(xlUp).Row
+    lastV = wsV.Cells(wsV.Rows.Count, colVId).End(xlUp).Row
+
+    If lastMP < 2 Then
+        MsgBox "MP_BASE no tiene datos.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    ' Índices de VENTAS_MP
+    Set dictCount = CreateObject("Scripting.Dictionary")
+    Set dictFirstId = CreateObject("Scripting.Dictionary")
+    Set dictFirstUUID = CreateObject("Scripting.Dictionary")
+
+    For r = 2 To lastV
+        k = O03_NormKey(wsV.Cells(r, colVTrans).Value)
+        If k <> "" Then
+            If Not dictCount.Exists(k) Then
+                dictCount.Add k, 1
+                dictFirstId.Add k, Trim$(CStr(wsV.Cells(r, colVId).Value))
+                dictFirstUUID.Add k, Trim$(CStr(wsV.Cells(r, colVUUID).Value))
+            Else
+                dictCount(k) = CLng(dictCount(k)) + 1
+            End If
+        End If
+    Next r
+
+    O03_DeleteSheetIfExists SH_OUT
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=wsV)
+    wsOut.Name = SH_OUT
+
+    ' Encabezados
+    wsOut.Range("A1:N1").Value = Array( _
+        "Día", _
+        "Detalle", _
+        "Valor del cargo", _
+        "Operación relacionada", _
+        "Nombre de sucursal", _
+        "Valor de la operación", _
+        "id_venta", _
+        "UUID", _
+        "Estatus_Conciliacion", _
+        "ventas_match", _
+        "id_venta_sugerido", _
+        "UUID_sugerido", _
+        "conteo_en_ventas", _
+        "OBS_REVISION")
+
+    wsOut.Cells(1, 15).Value = "APLICAR"
+
+    outRow = 2
+
+    For r = 2 To lastMP
+
+        st = UCase$(Trim$(CStr(wsMP.Cells(r, colMpStatus).Value)))
+
+        If st = "PENDIENTE" Or st = "REVISA_DUP_VENTAS" Then
+
+            k = O03_NormKey(wsMP.Cells(r, colMpOper).Value)
+
+            wsOut.Cells(outRow, 1).Value = IIf(colMpDia > 0, wsMP.Cells(r, colMpDia).Value, "")
+            wsOut.Cells(outRow, 2).Value = IIf(colMpDetalle > 0, wsMP.Cells(r, colMpDetalle).Value, "")
+            wsOut.Cells(outRow, 3).Value = IIf(colMpCargo > 0, wsMP.Cells(r, colMpCargo).Value, "")
+            wsOut.Cells(outRow, 4).Value = wsMP.Cells(r, colMpOper).Value
+            wsOut.Cells(outRow, 5).Value = IIf(colMpSucursal > 0, wsMP.Cells(r, colMpSucursal).Value, "")
+            wsOut.Cells(outRow, 6).Value = IIf(colMpValorOp > 0, wsMP.Cells(r, colMpValorOp).Value, "")
+            wsOut.Cells(outRow, 7).Value = IIf(colMpId > 0, wsMP.Cells(r, colMpId).Value, "")
+            wsOut.Cells(outRow, 8).Value = IIf(colMpUUID > 0, wsMP.Cells(r, colMpUUID).Value, "")
+            wsOut.Cells(outRow, 9).Value = wsMP.Cells(r, colMpStatus).Value
+
+            If k <> "" And dictCount.Exists(k) Then
+                wsOut.Cells(outRow, 13).Value = dictCount(k)
+
+                If CLng(dictCount(k)) = 1 Then
+                    wsOut.Cells(outRow, 10).Value = "SI"
+                    wsOut.Cells(outRow, 11).Value = dictFirstId(k)
+                    wsOut.Cells(outRow, 12).Value = dictFirstUUID(k)
+                Else
+                    wsOut.Cells(outRow, 10).Value = "MULTI"
+                    wsOut.Cells(outRow, 11).Value = "#MULTI"
+                    wsOut.Cells(outRow, 12).Value = "#MULTI"
+                End If
+            Else
+                wsOut.Cells(outRow, 10).Value = "NO"
+                wsOut.Cells(outRow, 13).Value = 0
+            End If
+
+            outRow = outRow + 1
+        End If
+    Next r
+
+    wsOut.Rows(1).Font.Bold = True
+    wsOut.Columns(4).NumberFormat = "@"
+    wsOut.Columns(8).NumberFormat = "@"
+    wsOut.Columns(11).NumberFormat = "@"
+    wsOut.Columns(12).NumberFormat = "@"
+
+    If outRow > 2 Then
+        wsOut.Range("A2:A" & outRow - 1).NumberFormat = "dd/mm/yyyy"
+        wsOut.Range("C2:C" & outRow - 1).NumberFormat = "#,##0.00"
+        wsOut.Range("F2:F" & outRow - 1).NumberFormat = "#,##0.00"
+    End If
+
+    If wsOut.AutoFilterMode Then wsOut.AutoFilterMode = False
+    wsOut.Range("A1:O" & Application.Max(2, outRow - 1)).AutoFilter
+    wsOut.Columns("A:O").EntireColumn.AutoFit
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Reporte de revisión generado en '" & SH_OUT & "'.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en O03_REPORTE_REVISION_MP_VS_VENTAS: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function O03_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set O03_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function O03_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = O03_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = O03_NormHeader(CStr(headerNames(i))) Then
+                O03_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O03_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    O03_NormHeader = s
+End Function
+
+
+Private Function O03_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    If IsNumeric(s) Then
+        If Len(s) <= 15 Then
+            s = Format$(CDbl(s), "0")
+        End If
+    End If
+
+    O03_NormKey = s
+End Function
+
+
+Private Sub O03_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub

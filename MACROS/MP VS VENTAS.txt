@@ -1,0 +1,1112 @@
+Option Explicit
+
+'===========================================================
+'  PROCESO COMPLETO (te dice el paso exacto donde truena)
+'===========================================================
+Public Sub MP_VS_CFDI()
+
+    Dim stepName As String
+    On Error GoTo EH
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    stepName = "M01_Limpiar_MP_ConMovimiento"
+    Call M01_Limpiar_MP_ConMovimiento
+
+    stepName = "M02_Actualizar_MP_Base_SinDuplicar"
+    Call M02_Actualizar_MP_Base_SinDuplicar
+
+    stepName = "M03_Conciliar_MPBASE_vs_VENTAS"
+    Call M03_Conciliar_MPBASE_vs_VENTAS
+
+    stepName = "M04_Reporte_Pendientes_MP"
+    Call M04_Reporte_Pendientes_MP
+
+    stepName = "M08_Marcar_Efectivo_OKMP"
+    Call M08_Marcar_Efectivo_OKMP
+
+    stepName = "M09_Preparar_EST_MP_CargosAbonos"
+    Call M09_Preparar_EST_MP_CargosAbonos
+
+    stepName = "M10_Conciliar_ESTMP_con_MPBASE"
+    Call M10_Conciliar_ESTMP_con_MPBASE
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Proceso MP_VS_CFDI terminado." & vbCrLf & _
+           "Si deseas aplicar correcciones desde 'REVISION_PENDIENTES', ejecuta M06.", vbInformation
+    Exit Sub
+
+EH:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "Error en " & stepName & ": " & Err.Number & " - " & Err.Description, vbExclamation
+End Sub
+
+'===========================================================
+'  M01 - LIMPIAR MP (encabezados en fila 8, datos desde fila 9)
+'===========================================================
+Public Sub M01_Limpiar_MP_ConMovimiento()
+
+    Const SH_SRC As String = "MP"
+    Const SH_OUT As String = "MP_Limpio"
+    Const HEADER_ROW As Long = 8
+    Const DATA_ROW As Long = 9
+
+    Dim wsS As Worksheet, wsO As Worksheet
+    Dim lastRow As Long, outLastRow As Long
+    Dim cols As Variant, i As Long, colLet As String
+
+    Set wsS = ThisWorkbook.Worksheets(SH_SRC)
+
+    cols = Array("D", "B", "E", "I", "K", "N", "Q")
+
+    lastRow = wsS.Cells(wsS.Rows.Count, "D").End(xlUp).Row
+    If lastRow < DATA_ROW Then
+        MsgBox "No hay datos a partir de la fila " & DATA_ROW & " en la hoja MP.", vbExclamation
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    Set wsO = ThisWorkbook.Worksheets(SH_OUT)
+    On Error GoTo 0
+
+    If wsO Is Nothing Then
+        Set wsO = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        wsO.Name = SH_OUT
+    Else
+        wsO.Cells.Clear
+    End If
+
+    outLastRow = lastRow - DATA_ROW + 2
+
+    For i = LBound(cols) To UBound(cols)
+        colLet = cols(i)
+
+        wsO.Cells(1, i + 1).Value = wsS.Range(colLet & HEADER_ROW).Value
+
+        wsO.Range(wsO.Cells(2, i + 1), wsO.Cells(outLastRow, i + 1)).Value = _
+            wsS.Range(colLet & DATA_ROW & ":" & colLet & lastRow).Value
+    Next i
+
+    wsO.Rows(1).Font.Bold = True
+    wsO.Columns.AutoFit
+    wsO.Range("A1").AutoFilter
+
+    With wsO.Range("A2:A" & outLastRow)
+        .FormatConditions.Delete
+        .FormatConditions.Add Type:=xlExpression, _
+            Formula1:="=AND($A2<>"""",COUNTIF($A:$A,$A2)>1)"
+        With .FormatConditions(1)
+            .Font.Bold = True
+            .Interior.ColorIndex = 6
+        End With
+    End With
+
+    MsgBox "Listo: MP_Limpio generado (D + B,E,I,K,N,Q) y duplicados marcados por Número del movimiento.", vbInformation
+End Sub
+
+'===========================================================
+'  M02 - ACTUALIZAR MP_BASE SIN DUPLICAR
+'===========================================================
+Public Sub M02_Actualizar_MP_Base_SinDuplicar()
+
+    Const SH_SRC As String = "MP_Limpio"
+    Const SH_DST As String = "MP_BASE"
+    Const SRC_FIRST_DATA_ROW As Long = 2
+    Const KEY_COL_SRC As Long = 1
+    Const COPY_COLS As Long = 7
+
+    Dim wsS As Worksheet, wsD As Worksheet
+    Dim lastS As Long, lastD As Long, nextRow As Long
+    Dim dict As Object
+    Dim r As Long, key As String
+    Dim nuevos As Long, duplicados As Long
+
+    On Error Resume Next
+    Set wsS = ThisWorkbook.Worksheets(SH_SRC)
+    On Error GoTo 0
+    If wsS Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_SRC & "'. Primero corre M01.", vbExclamation
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    Set wsD = ThisWorkbook.Worksheets(SH_DST)
+    On Error GoTo 0
+
+    If wsD Is Nothing Then
+        Set wsD = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        wsD.Name = SH_DST
+        wsD.Range("A1").Resize(1, COPY_COLS).Value = wsS.Range("A1").Resize(1, COPY_COLS).Value
+        wsD.Rows(1).Font.Bold = True
+    End If
+
+    lastS = wsS.Cells(wsS.Rows.Count, KEY_COL_SRC).End(xlUp).Row
+    If lastS < SRC_FIRST_DATA_ROW Then
+        MsgBox "'" & SH_SRC & "' no tiene datos para anexar.", vbExclamation
+        Exit Sub
+    End If
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    lastD = wsD.Cells(wsD.Rows.Count, 1).End(xlUp).Row
+    If lastD < 2 Then lastD = 1
+
+    For r = 2 To lastD
+        key = NormKey(wsD.Cells(r, 1).Value)
+        If key <> "" Then
+            If Not dict.Exists(key) Then dict.Add key, True
+        End If
+    Next r
+
+    nextRow = wsD.Cells(wsD.Rows.Count, 1).End(xlUp).Row + 1
+    If nextRow < 2 Then nextRow = 2
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    For r = SRC_FIRST_DATA_ROW To lastS
+        key = NormKey(wsS.Cells(r, KEY_COL_SRC).Value)
+        If key = "" Then GoTo ContinueLoop
+
+        If dict.Exists(key) Then
+            duplicados = duplicados + 1
+        Else
+            wsD.Cells(nextRow, 1).Resize(1, COPY_COLS).Value = wsS.Cells(r, 1).Resize(1, COPY_COLS).Value
+            dict.Add key, True
+            nextRow = nextRow + 1
+            nuevos = nuevos + 1
+        End If
+
+ContinueLoop:
+    Next r
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    wsD.Columns.AutoFit
+
+    MsgBox "MP_BASE actualizado sin duplicar." & vbCrLf & _
+           "Nuevos anexados: " & nuevos & vbCrLf & _
+           "Duplicados omitidos: " & duplicados, vbInformation
+End Sub
+
+'===========================================================
+'  M03 - CONCILIAR MP_BASE vs VENTAS
+'===========================================================
+Public Sub M03_Conciliar_MPBASE_vs_VENTAS()
+
+    Const SH_MP As String = "MP_BASE"
+    Const SH_V As String = "VENTAS"
+    Const MP_HEADER_ROW As Long = 1
+    Const V_HEADER_ROW As Long = 1
+
+    Dim wsMP As Worksheet, wsV As Worksheet
+
+    On Error Resume Next
+    Set wsMP = ThisWorkbook.Worksheets(SH_MP)
+    On Error GoTo 0
+    If wsMP Is Nothing Then
+        MsgBox "No existe '" & SH_MP & "'. Primero corre M02.", vbExclamation
+        Exit Sub
+    End If
+
+    Set wsV = ThisWorkbook.Worksheets(SH_V)
+
+    Dim colMpOper As Long, colMpId As Long, colMpStatus As Long
+    Dim colVId As Long, colVTrans As Long, colVOk As Long
+
+    colMpOper = FindColByHeader(wsMP, MP_HEADER_ROW, "operacion relacionada")
+    If colMpOper = 0 Then
+        MsgBox "No encontré 'Operación relacionada' en MP_BASE.", vbExclamation
+        Exit Sub
+    End If
+
+    colVId = FindColByHeader(wsV, V_HEADER_ROW, "id_venta")
+    colVTrans = FindColByHeader(wsV, V_HEADER_ROW, "numero_transaccion")
+    If colVId = 0 Or colVTrans = 0 Then
+        MsgBox "No encontré 'id_venta' y/o 'numero_transaccion' en VENTAS.", vbExclamation
+        Exit Sub
+    End If
+
+    colMpId = EnsureHeaderCol(wsMP, MP_HEADER_ROW, "id_venta")
+    colMpStatus = EnsureHeaderCol(wsMP, MP_HEADER_ROW, "Estatus_Conciliacion")
+    colVOk = EnsureHeaderCol(wsV, V_HEADER_ROW, "OK_MP")
+
+    Dim lastMP As Long, lastV As Long
+    lastMP = wsMP.Cells(wsMP.Rows.Count, colMpOper).End(xlUp).Row
+    lastV = wsV.Cells(wsV.Rows.Count, colVId).End(xlUp).Row
+
+    If lastMP < 2 Then
+        MsgBox "MP_BASE no tiene datos para conciliar.", vbExclamation
+        Exit Sub
+    End If
+    If lastV < 2 Then
+        MsgBox "VENTAS no tiene datos para conciliar.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Dim arrVId As Variant, arrVTrans As Variant
+    arrVId = wsV.Range(wsV.Cells(2, colVId), wsV.Cells(lastV, colVId)).Value
+    arrVTrans = wsV.Range(wsV.Cells(2, colVTrans), wsV.Cells(lastV, colVTrans)).Value
+
+    Dim dictVenta As Object: Set dictVenta = CreateObject("Scripting.Dictionary")
+    Dim i As Long, k As String, idv As String
+
+    For i = 1 To UBound(arrVId, 1)
+        k = NormKey(arrVTrans(i, 1))
+        idv = NormKey(arrVId(i, 1))
+
+        If k <> "" Then
+            If Not dictVenta.Exists(k) Then
+                dictVenta.Add k, idv
+            Else
+                If dictVenta(k) <> idv Then dictVenta(k) = "#DUP_VENTAS"
+            End If
+        End If
+    Next i
+
+    Dim arrMpOper As Variant
+    arrMpOper = wsMP.Range(wsMP.Cells(2, colMpOper), wsMP.Cells(lastMP, colMpOper)).Value
+
+    Dim outId() As Variant, outSt() As Variant
+    ReDim outId(1 To UBound(arrMpOper, 1), 1 To 1)
+    ReDim outSt(1 To UBound(arrMpOper, 1), 1 To 1)
+
+    Dim matched As Object: Set matched = CreateObject("Scripting.Dictionary")
+    Dim mpOper As String, vIdVenta As String
+
+    For i = 1 To UBound(arrMpOper, 1)
+        mpOper = NormKey(arrMpOper(i, 1))
+
+        If mpOper = "" Then
+            outId(i, 1) = ""
+            outSt(i, 1) = ""
+        ElseIf dictVenta.Exists(mpOper) Then
+            vIdVenta = dictVenta(mpOper)
+
+            If vIdVenta = "#DUP_VENTAS" Then
+                outId(i, 1) = ""
+                outSt(i, 1) = "REVISA_DUP_VENTAS"
+            Else
+                outId(i, 1) = vIdVenta
+                outSt(i, 1) = "OK"
+            End If
+
+            If Not matched.Exists(mpOper) Then matched.Add mpOper, True
+        Else
+            outId(i, 1) = ""
+            outSt(i, 1) = "PENDIENTE"
+        End If
+    Next i
+
+    wsMP.Range(wsMP.Cells(2, colMpId), wsMP.Cells(lastMP, colMpId)).Value = outId
+    wsMP.Range(wsMP.Cells(2, colMpStatus), wsMP.Cells(lastMP, colMpStatus)).Value = outSt
+
+    Dim outOk() As Variant
+    ReDim outOk(1 To UBound(arrVTrans, 1), 1 To 1)
+
+    For i = 1 To UBound(arrVTrans, 1)
+        k = NormKey(arrVTrans(i, 1))
+        If k <> "" And matched.Exists(k) Then
+            outOk(i, 1) = "OK"
+        Else
+            outOk(i, 1) = ""
+        End If
+    Next i
+
+    wsV.Range(wsV.Cells(2, colVOk), wsV.Cells(lastV, colVOk)).Value = outOk
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Conciliación lista (M03)." & vbCrLf & _
+           "MP_BASE actualizado y VENTAS OK_MP actualizado.", vbInformation
+End Sub
+
+'===========================================================
+'  M04 - REPORTE DE PENDIENTES
+'===========================================================
+Public Sub M04_Reporte_Pendientes_MP()
+
+    Const SH_MP As String = "MP_BASE"
+    Const SH_V As String = "VENTAS"
+    Const SH_OUT As String = "REVISION_PENDIENTES"
+    Const INCLUDE_REVISA_DUP As Boolean = True
+
+    Dim wsMP As Worksheet, wsV As Worksheet, wsO As Worksheet
+    Set wsMP = ThisWorkbook.Worksheets(SH_MP)
+    Set wsV = ThisWorkbook.Worksheets(SH_V)
+
+    Dim mpColOper As Long, mpColSt As Long
+    mpColOper = FindColByHeader(wsMP, 1, "operacion relacionada")
+    mpColSt = FindColByHeader(wsMP, 1, "estatus_conciliacion")
+
+    If mpColOper = 0 Or mpColSt = 0 Then
+        MsgBox "No encontré 'Operación relacionada' y/o 'Estatus_Conciliacion' en MP_BASE.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim vColId As Long, vColTrans As Long
+    vColId = FindColByHeader(wsV, 1, "id_venta")
+
+    vColTrans = FindColByHeader(wsV, 1, "trans_norm")
+    If vColTrans = 0 Then vColTrans = FindColByHeader(wsV, 1, "numero_transaccion")
+
+    If vColId = 0 Or vColTrans = 0 Then
+        MsgBox "No encontré 'id_venta' y/o ('trans_norm' o 'numero_transaccion') en VENTAS.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim dictV As Object: Set dictV = CreateObject("Scripting.Dictionary")
+    Dim dictCount As Object: Set dictCount = CreateObject("Scripting.Dictionary")
+
+    Dim lastV As Long: lastV = wsV.Cells(wsV.Rows.Count, vColId).End(xlUp).Row
+    Dim r As Long, k As String, idv As String
+
+    For r = 2 To lastV
+        k = NormKey(wsV.Cells(r, vColTrans).Value)
+        idv = SafeStr(wsV.Cells(r, vColId).Value)
+
+        If k <> "" Then
+            If Not dictCount.Exists(k) Then dictCount.Add k, 0
+            dictCount(k) = dictCount(k) + 1
+
+            If Not dictV.Exists(k) Then
+                dictV.Add k, idv
+            Else
+                If dictV(k) <> idv Then dictV(k) = "#MULTI"
+            End If
+        End If
+    Next r
+
+    Application.DisplayAlerts = False
+    On Error Resume Next
+    ThisWorkbook.Worksheets(SH_OUT).Delete
+    On Error GoTo 0
+    Application.DisplayAlerts = True
+
+    Set wsO = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    wsO.Name = SH_OUT
+
+    Dim lastColMP As Long, lastRowMP As Long
+    lastColMP = wsMP.Cells(1, wsMP.Columns.Count).End(xlToLeft).Column
+    lastRowMP = wsMP.Cells(wsMP.Rows.Count, mpColSt).End(xlUp).Row
+
+    wsO.Range("A1").Resize(1, lastColMP).Value = wsMP.Range(wsMP.Cells(1, 1), wsMP.Cells(1, lastColMP)).Value
+    wsO.Cells(1, lastColMP + 1).Value = "operacion_norm"
+    wsO.Cells(1, lastColMP + 2).Value = "observaciones"
+    wsO.Cells(1, lastColMP + 3).Value = "ventas_match"
+    wsO.Cells(1, lastColMP + 4).Value = "id_venta_sugerido"
+    wsO.Cells(1, lastColMP + 5).Value = "conteo_en_ventas"
+    wsO.Rows(1).Font.Bold = True
+
+    Dim outR As Long: outR = 2
+    Dim st As String, operRaw As String, operNorm As String
+    Dim obs As String, match As String, sug As String, cnt As Variant
+
+    For r = 2 To lastRowMP
+        st = UCase$(Trim$(SafeStr(wsMP.Cells(r, mpColSt).Value)))
+
+        If st = "PENDIENTE" Or (INCLUDE_REVISA_DUP And st = "REVISA_DUP_VENTAS") Then
+
+            wsO.Cells(outR, 1).Resize(1, lastColMP).Value = wsMP.Cells(r, 1).Resize(1, lastColMP).Value
+
+            operRaw = SafeStr(wsMP.Cells(r, mpColOper).Value)
+            operNorm = NormKey(operRaw)
+            obs = ObservacionesOperacion(operRaw, operNorm)
+
+            If operNorm <> "" And dictV.Exists(operNorm) Then
+                match = "SI"
+                sug = dictV(operNorm)
+                cnt = dictCount(operNorm)
+            Else
+                match = "NO"
+                sug = ""
+                cnt = ""
+            End If
+
+            wsO.Cells(outR, lastColMP + 1).Value = operNorm
+            wsO.Cells(outR, lastColMP + 2).Value = obs
+            wsO.Cells(outR, lastColMP + 3).Value = match
+            wsO.Cells(outR, lastColMP + 4).Value = sug
+            wsO.Cells(outR, lastColMP + 5).Value = cnt
+
+            outR = outR + 1
+        End If
+    Next r
+
+    wsO.Columns.AutoFit
+    wsO.Range("A1").AutoFilter
+
+    MsgBox "Reporte listo: " & SH_OUT & vbCrLf & "Filas exportadas: " & (outR - 2), vbInformation
+End Sub
+
+'===========================================================
+'  M06 - APLICAR CORRECCIONES DESDE REVISION_PENDIENTES
+'===========================================================
+Public Sub M06_Aplicar_Correcciones_Desde_Revision()
+
+    Const SH_REV As String = "REVISION_PENDIENTES"
+    Const SH_MP As String = "MP_BASE"
+    Const SH_V As String = "VENTAS"
+
+    Dim wsR As Worksheet, wsMP As Worksheet, wsV As Worksheet
+    Set wsR = ThisWorkbook.Worksheets(SH_REV)
+    Set wsMP = ThisWorkbook.Worksheets(SH_MP)
+    Set wsV = ThisWorkbook.Worksheets(SH_V)
+
+    Dim colR_mov As Long, colR_match As Long, colR_sug As Long, colR_apl As Long
+    colR_mov = 1
+    colR_match = FindColByHeader(wsR, 1, "ventas_match")
+    colR_sug = FindColByHeader(wsR, 1, "id_venta_sugerido")
+    If colR_match = 0 Or colR_sug = 0 Then
+        MsgBox "No encontré 'ventas_match' o 'id_venta_sugerido' en " & SH_REV & ".", vbExclamation
+        Exit Sub
+    End If
+
+    colR_apl = FindColByHeader(wsR, 1, "aplicado")
+    If colR_apl = 0 Then
+        colR_apl = wsR.Cells(1, wsR.Columns.Count).End(xlToLeft).Column + 1
+        wsR.Cells(1, colR_apl).Value = "APLICADO"
+        wsR.Cells(1, colR_apl).Font.Bold = True
+    End If
+
+    Dim colMP_id As Long, colMP_st As Long
+    colMP_id = EnsureHeaderCol(wsMP, 1, "id_venta")
+    colMP_st = EnsureHeaderCol(wsMP, 1, "Estatus_Conciliacion")
+
+    Dim colV_id As Long, colV_ok As Long
+    colV_id = FindColByHeader(wsV, 1, "id_venta")
+    If colV_id = 0 Then
+        MsgBox "No encontré 'id_venta' en VENTAS.", vbExclamation
+        Exit Sub
+    End If
+    colV_ok = EnsureHeaderCol(wsV, 1, "OK_MP")
+
+    Dim dictMP As Object: Set dictMP = CreateObject("Scripting.Dictionary")
+    Dim lastMP As Long: lastMP = wsMP.Cells(wsMP.Rows.Count, 1).End(xlUp).Row
+    Dim r As Long, k As String
+
+    For r = 2 To lastMP
+        k = NormKey(wsMP.Cells(r, 1).Value)
+        If k <> "" And Not dictMP.Exists(k) Then dictMP.Add k, r
+    Next r
+
+    Dim dictV As Object: Set dictV = CreateObject("Scripting.Dictionary")
+    Dim lastV As Long: lastV = wsV.Cells(wsV.Rows.Count, colV_id).End(xlUp).Row
+    Dim idv As String
+
+    For r = 2 To lastV
+        idv = NormKey(wsV.Cells(r, colV_id).Value)
+        If idv <> "" And Not dictV.Exists(idv) Then dictV.Add idv, r
+    Next r
+
+    Dim lastR As Long: lastR = wsR.Cells(wsR.Rows.Count, colR_mov).End(xlUp).Row
+    Dim mov As String, match As String, sug As String
+    Dim rowMP As Long, rowV As Long
+    Dim aplicadas As Long, noEncontradas As Long, omitidasMulti As Long
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    For r = 2 To lastR
+
+        match = UCase$(Trim$(SafeStr(wsR.Cells(r, colR_match).Value)))
+        sug = Trim$(SafeStr(wsR.Cells(r, colR_sug).Value))
+        mov = NormKey(wsR.Cells(r, colR_mov).Value)
+
+        If match <> "SI" Then GoTo ContinueLoop
+        If sug = "" Then GoTo ContinueLoop
+        If UCase$(sug) = "#MULTI" Or InStr(1, UCase$(sug), "MULTI") > 0 Then
+            omitidasMulti = omitidasMulti + 1
+            GoTo ContinueLoop
+        End If
+        If mov = "" Then GoTo ContinueLoop
+
+        If dictMP.Exists(mov) Then
+            rowMP = dictMP(mov)
+
+            Dim stNow As String
+            stNow = UCase$(Trim$(SafeStr(wsMP.Cells(rowMP, colMP_st).Value)))
+            If stNow = "PENDIENTE" Or stNow = "REVISA_DUP_VENTAS" Or stNow = "" Then
+                wsMP.Cells(rowMP, colMP_id).Value = sug
+                wsMP.Cells(rowMP, colMP_st).Value = "OK_CORREGIDO"
+            End If
+
+            If dictV.Exists(NormKey(sug)) Then
+                rowV = dictV(NormKey(sug))
+                wsV.Cells(rowV, colV_ok).Value = "OK"
+            End If
+
+            wsR.Cells(r, colR_apl).Value = "APLICADO"
+            aplicadas = aplicadas + 1
+        Else
+            wsR.Cells(r, colR_apl).Value = "NO_EN_MP_BASE"
+            noEncontradas = noEncontradas + 1
+        End If
+
+ContinueLoop:
+    Next r
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Correcciones aplicadas: " & aplicadas & vbCrLf & _
+           "Omitidas (#MULTI): " & omitidasMulti & vbCrLf & _
+           "No encontradas en MP_BASE: " & noEncontradas, vbInformation
+End Sub
+
+'===========================================================
+'  M08 - MARCAR EFECTIVO EN VENTAS.OK_MP
+'===========================================================
+Public Sub M08_Marcar_Efectivo_OKMP()
+
+    Const SH_V As String = "VENTAS"
+    Const HDR As Long = 1
+
+    Dim ws As Worksheet: Set ws = ThisWorkbook.Worksheets(SH_V)
+
+    Dim colBancos As Long, colOK As Long
+    colBancos = FindColByHeader(ws, HDR, "bancos_cobro")
+    If colBancos = 0 Then
+        MsgBox "No encontré 'bancos_cobro' en VENTAS.", vbExclamation
+        Exit Sub
+    End If
+
+    colOK = EnsureHeaderCol(ws, HDR, "OK_MP")
+
+    Dim lastRow As Long, r As Long
+    lastRow = ws.Cells(ws.Rows.Count, colBancos).End(xlUp).Row
+    If lastRow < 2 Then Exit Sub
+
+    Dim raw As String, okNow As String
+    Dim tokens() As String, t As Variant
+    Dim cleaned As String, token As String
+    Dim valid As Boolean, countTok As Long
+    Dim updated As Long
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    For r = 2 To lastRow
+
+        okNow = Trim$(SafeStr(ws.Cells(r, colOK).Value))
+        If okNow <> "" Then GoTo NextR
+
+        raw = Trim$(SafeStr(ws.Cells(r, colBancos).Value))
+        If raw = "" Then GoTo NextR
+
+        cleaned = UCase$(raw)
+        cleaned = RemoveAccents(cleaned)
+        cleaned = Replace(cleaned, ";", ",")
+        cleaned = Replace(cleaned, vbTab, " ")
+
+        tokens = Split(cleaned, ",")
+
+        valid = True
+        countTok = 0
+
+        For Each t In tokens
+            token = Trim$(SafeStr(t))
+            If token <> "" Then
+                countTok = countTok + 1
+                If token <> "FISICO" And token <> "ALIANTEXTIL" Then
+                    valid = False
+                    Exit For
+                End If
+            End If
+        Next t
+
+        If valid And countTok >= 1 Then
+            ws.Cells(r, colOK).Value = "EFECTIVO"
+            updated = updated + 1
+        End If
+
+NextR:
+    Next r
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Listo (M08). Filas marcadas como EFECTIVO: " & updated, vbInformation
+End Sub
+
+'===========================================================
+'  M09 - PREPARAR EST MP: cargos/abonos y PARTIAL_BALANCE al final
+'===========================================================
+Public Sub M09_Preparar_EST_MP_CargosAbonos()
+
+    Const SH As String = "EST MP"
+
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(SH)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        MsgBox "No existe la hoja '" & SH & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim hdrRow As Long
+    hdrRow = FindHeaderRow(ws, "TRANSACTION_NET_AMOUNT")
+    If hdrRow = 0 Then
+        MsgBox "No encontré 'TRANSACTION_NET_AMOUNT' en '" & SH & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim colRef As Long, colNet As Long, colBal As Long
+    colRef = FindHeaderColExact(ws, hdrRow, "REFERENCE_ID")
+    colNet = FindHeaderColExact(ws, hdrRow, "TRANSACTION_NET_AMOUNT")
+    colBal = FindHeaderColExact(ws, hdrRow, "PARTIAL_BALANCE")
+
+    If colRef = 0 Or colNet = 0 Or colBal = 0 Then
+        MsgBox "Faltan columnas. Requiero: REFERENCE_ID, TRANSACTION_NET_AMOUNT, PARTIAL_BALANCE.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, colNet).End(xlUp).Row
+    If lastRow <= hdrRow Then
+        MsgBox "No hay datos debajo del encabezado.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Dim colCargos As Long, colAbonos As Long
+    colCargos = FindHeaderColExact(ws, hdrRow, "cargos")
+    colAbonos = FindHeaderColExact(ws, hdrRow, "abonos")
+
+    If colCargos = 0 And colAbonos = 0 Then
+        ws.Columns(colNet + 1).Insert Shift:=xlToRight
+        ws.Cells(hdrRow, colNet).Value = "cargos"
+        ws.Cells(hdrRow, colNet + 1).Value = "abonos"
+        colCargos = colNet
+        colAbonos = colNet + 1
+
+        If colBal > colNet Then colBal = colBal + 1
+    Else
+        If colCargos = 0 Or colAbonos = 0 Then
+            MsgBox "Detecté solo una de las columnas (cargos/abonos). Revisa encabezados.", vbExclamation
+            GoTo SafeExit
+        End If
+    End If
+
+    Dim r As Long
+    Dim vNet As Variant, vBal As Variant
+    Dim rawRef As String
+
+    For r = hdrRow + 1 To lastRow
+
+        rawRef = Trim$(SafeStr(ws.Cells(r, colRef).Value))
+        If rawRef <> "" Then
+            rawRef = Replace(rawRef, " ", "")
+            rawRef = Replace(rawRef, Chr(160), "")
+            If Len(rawRef) <= 15 And IsNumeric(rawRef) Then
+                ws.Cells(r, colRef).NumberFormat = "0"
+                ws.Cells(r, colRef).Value = CDbl(rawRef)
+            End If
+        End If
+
+        vNet = ParseNumberInvariant(ws.Cells(r, colCargos).Value)
+
+        If IsEmpty(vNet) Then
+            ws.Cells(r, colCargos).ClearContents
+            ws.Cells(r, colAbonos).ClearContents
+        Else
+            If vNet < 0 Then
+                ws.Cells(r, colCargos).Value = Abs(vNet)
+                ws.Cells(r, colAbonos).ClearContents
+            Else
+                ws.Cells(r, colAbonos).Value = vNet
+                ws.Cells(r, colCargos).ClearContents
+            End If
+        End If
+
+        vBal = ParseNumberInvariant(ws.Cells(r, colBal).Value)
+        If Not IsEmpty(vBal) Then ws.Cells(r, colBal).Value = vBal
+    Next r
+
+    If colBal <> colAbonos + 1 Then
+        ws.Columns(colBal).Cut
+        ws.Columns(colAbonos + 1).Insert Shift:=xlToRight
+        colBal = colAbonos + 1
+    End If
+
+    ws.Columns(colCargos).NumberFormat = "#,##0.00"
+    ws.Columns(colAbonos).NumberFormat = "#,##0.00"
+    ws.Columns(colBal).NumberFormat = "#,##0.00"
+
+SafeExit:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "EST MP listo (M09): cargos/abonos separados y cargos sin signo negativo.", vbInformation
+End Sub
+
+'===========================================================
+'  M10 - CONCILIAR EST MP vs MP_BASE (REFERENCE_ID vs Operación relacionada)
+'===========================================================
+Public Sub M10_Conciliar_ESTMP_con_MPBASE()
+
+    Const SH_EST As String = "EST MP"
+    Const SH_MP As String = "MP_BASE"
+    Const overwrite As Boolean = False
+
+    Dim wsE As Worksheet, wsM As Worksheet
+    Set wsE = ThisWorkbook.Worksheets(SH_EST)
+    Set wsM = ThisWorkbook.Worksheets(SH_MP)
+
+    Dim hdrE As Long: hdrE = FindHeaderRow(wsE, "REFERENCE_ID")
+    If hdrE = 0 Then
+        MsgBox "No encontré 'REFERENCE_ID' en EST MP.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim hdrM As Long: hdrM = 1
+
+    Dim colE_ref As Long
+    colE_ref = FindHeaderColExact(wsE, hdrE, "REFERENCE_ID")
+    If colE_ref = 0 Then
+        MsgBox "No encontré la columna 'REFERENCE_ID' en EST MP.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim colE_valop As Long, colE_point As Long, colE_cuotas As Long, colE_idv As Long
+    colE_valop = EnsureHeaderCol(wsE, hdrE, "Valor de la operación")
+    colE_point = EnsureHeaderCol(wsE, hdrE, "POINT")
+    colE_cuotas = EnsureHeaderCol(wsE, hdrE, "CUOTAS TC")
+    colE_idv = EnsureHeaderCol(wsE, hdrE, "id_venta")
+
+    Dim colM_oper As Long, colM_det As Long, colM_valop As Long, colM_valcargo As Long, colM_idv As Long, colM_est As Long
+    colM_oper = FindColByHeader(wsM, hdrM, "Operación relacionada")
+    colM_det = FindColByHeader(wsM, hdrM, "Detalle")
+    colM_valop = FindColByHeader(wsM, hdrM, "Valor de la operación")
+    colM_valcargo = FindColByHeader(wsM, hdrM, "Valor del cargo")
+    colM_idv = FindColByHeader(wsM, hdrM, "id_venta")
+
+    If colM_oper = 0 Or colM_det = 0 Or colM_valop = 0 Or colM_valcargo = 0 Then
+        MsgBox "En MP_BASE faltan columnas: Operación relacionada, Detalle, Valor de la operación, Valor del cargo.", vbExclamation
+        Exit Sub
+    End If
+
+    colM_est = EnsureHeaderCol(wsM, hdrM, "EST")
+
+    Dim lastE As Long, lastM As Long
+    lastE = wsE.Cells(wsE.Rows.Count, colE_ref).End(xlUp).Row
+    lastM = wsM.Cells(wsM.Rows.Count, colM_oper).End(xlUp).Row
+
+    If lastE <= hdrE Then
+        MsgBox "EST MP no tiene datos debajo del encabezado.", vbExclamation
+        Exit Sub
+    End If
+    If lastM <= hdrM Then
+        MsgBox "MP_BASE no tiene datos debajo del encabezado.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Dim mpDict As Object: Set mpDict = CreateObject("Scripting.Dictionary")
+    Dim r As Long, key As String
+    Dim rec As Object
+    Dim det As String, v As Variant, idv As String
+
+    For r = hdrM + 1 To lastM
+        key = NormKey(wsM.Cells(r, colM_oper).Value)
+        If key = "" Then GoTo NextM
+
+        If Not mpDict.Exists(key) Then
+            Set rec = CreateObject("Scripting.Dictionary")
+            rec("valorOp") = Empty
+            rec("point") = Empty
+            rec("cuotas") = Empty
+            rec("idv") = ""
+            mpDict.Add key, rec
+        Else
+            Set rec = mpDict(key)
+        End If
+
+        If IsEmpty(rec("valorOp")) Or rec("valorOp") = "" Then
+            v = ParseNumberInvariant(wsM.Cells(r, colM_valop).Value)
+            If Not IsEmpty(v) Then rec("valorOp") = v
+        End If
+
+        If colM_idv > 0 Then
+            idv = Trim$(SafeStr(wsM.Cells(r, colM_idv).Value))
+            If idv <> "" Then
+                If rec("idv") = "" Then
+                    rec("idv") = idv
+                ElseIf rec("idv") <> idv And rec("idv") <> "#MULTI" Then
+                    rec("idv") = "#MULTI"
+                End If
+            End If
+        End If
+
+        det = UCase$(Trim$(SafeStr(wsM.Cells(r, colM_det).Value)))
+        det = RemoveAccents(det)
+
+        If InStr(1, det, "CARGO POR COBRAR CON POINT", vbTextCompare) > 0 Then
+            v = ParseNumberInvariant(wsM.Cells(r, colM_valcargo).Value)
+            If Not IsEmpty(v) Then rec("point") = Abs(v)
+        ElseIf InStr(1, det, "CARGO POR OFRECER CUOTAS CON TARJETA DE CREDITO", vbTextCompare) > 0 Then
+            v = ParseNumberInvariant(wsM.Cells(r, colM_valcargo).Value)
+            If Not IsEmpty(v) Then rec("cuotas") = Abs(v)
+        End If
+
+NextM:
+    Next r
+
+    Dim hitKeys As Object: Set hitKeys = CreateObject("Scripting.Dictionary")
+    Dim matched As Long, notFound As Long
+    Dim valOp As Variant, point As Variant, cuotas As Variant, idVenta As Variant
+
+    For r = hdrE + 1 To lastE
+        key = NormKey(wsE.Cells(r, colE_ref).Value)
+        If key = "" Then GoTo NextE
+
+        If mpDict.Exists(key) Then
+            Set rec = mpDict(key)
+
+            valOp = rec("valorOp")
+            point = rec("point")
+            cuotas = rec("cuotas")
+            idVenta = rec("idv")
+
+            WriteIf wsE.Cells(r, colE_valop), valOp, overwrite
+            WriteIf wsE.Cells(r, colE_point), point, overwrite
+            WriteIf wsE.Cells(r, colE_cuotas), cuotas, overwrite
+            WriteIf wsE.Cells(r, colE_idv), idVenta, overwrite
+
+            If Not hitKeys.Exists(key) Then hitKeys.Add key, True
+            matched = matched + 1
+        Else
+            notFound = notFound + 1
+        End If
+
+NextE:
+    Next r
+
+    Dim markedRows As Long
+    For r = hdrM + 1 To lastM
+        key = NormKey(wsM.Cells(r, colM_oper).Value)
+        If key <> "" Then
+            If hitKeys.Exists(key) Then
+                If SafeStr(wsM.Cells(r, colM_est).Value) <> "EST" Then
+                    wsM.Cells(r, colM_est).Value = "EST"
+                    markedRows = markedRows + 1
+                End If
+            End If
+        End If
+    Next r
+
+    wsE.Columns(colE_valop).NumberFormat = "#,##0.00"
+    wsE.Columns(colE_point).NumberFormat = "#,##0.00"
+    wsE.Columns(colE_cuotas).NumberFormat = "#,##0.00"
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Conciliación EST MP vs MP_BASE lista (M10)." & vbCrLf & _
+           "Coincidencias en EST MP: " & matched & vbCrLf & _
+           "Sin match: " & notFound & vbCrLf & _
+           "Filas marcadas 'EST' en MP_BASE: " & markedRows, vbInformation
+End Sub
+
+'===========================================================
+'  HELPERS COMUNES (anti-Null)
+'===========================================================
+Private Function SafeStr(ByVal v As Variant) As String
+    On Error GoTo EH
+    If IsError(v) Then SafeStr = "": Exit Function
+    If IsNull(v) Then SafeStr = "": Exit Function
+    If IsEmpty(v) Then SafeStr = "": Exit Function
+    SafeStr = CStr(v)
+    Exit Function
+EH:
+    SafeStr = ""
+End Function
+
+Private Function NormKey(v As Variant) As String
+    If IsError(v) Or IsNull(v) Then
+        NormKey = ""
+        Exit Function
+    End If
+
+    Dim s As String
+    If IsNumeric(v) Then
+        s = Format$(v, "0")
+    Else
+        s = SafeStr(v)
+    End If
+
+    s = Trim$(s)
+    s = Replace(s, Chr(160), " ")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    NormKey = s
+End Function
+
+Private Function NormalizeHeaderText(ByVal v As Variant) As String
+    Dim s As String
+    s = LCase$(Trim$(SafeStr(v)))
+    s = Replace(s, "á", "a")
+    s = Replace(s, "é", "e")
+    s = Replace(s, "í", "i")
+    s = Replace(s, "ó", "o")
+    s = Replace(s, "ú", "u")
+    s = Replace(s, "ü", "u")
+    s = Replace(s, " ", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, "-", "")
+    NormalizeHeaderText = s
+End Function
+
+Private Function FindColByHeader(ws As Worksheet, headerRow As Long, headerNeedle As String) As Long
+    Dim lastCol As Long, c As Long
+    Dim target As String, cellText As String
+
+    target = NormalizeHeaderText(headerNeedle)
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = NormalizeHeaderText(ws.Cells(headerRow, c).Value)
+        If cellText = target Or InStr(1, cellText, target, vbTextCompare) > 0 Then
+            FindColByHeader = c
+            Exit Function
+        End If
+    Next c
+
+    FindColByHeader = 0
+End Function
+
+Private Function EnsureHeaderCol(ws As Worksheet, headerRow As Long, headerText As String) As Long
+    Dim lastCol As Long, c As Long
+    Dim target As String, cellText As String
+
+    target = NormalizeHeaderText(headerText)
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then lastCol = 1
+
+    For c = 1 To lastCol
+        cellText = NormalizeHeaderText(ws.Cells(headerRow, c).Value)
+        If cellText = target Then
+            EnsureHeaderCol = c
+            Exit Function
+        End If
+    Next c
+
+    ws.Cells(headerRow, lastCol + 1).Value = headerText
+    ws.Cells(headerRow, lastCol + 1).Font.Bold = True
+    EnsureHeaderCol = lastCol + 1
+End Function
+
+Private Function RemoveAccents(ByVal s As String) As String
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, "á", "A")
+    s = Replace(s, "é", "E")
+    s = Replace(s, "í", "I")
+    s = Replace(s, "ó", "O")
+    s = Replace(s, "ú", "U")
+    s = Replace(s, "ü", "U")
+    RemoveAccents = s
+End Function
+
+Private Function FindHeaderRow(ws As Worksheet, headerText As String) As Long
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=headerText, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    If f Is Nothing Then
+        FindHeaderRow = 0
+    Else
+        FindHeaderRow = f.Row
+    End If
+End Function
+
+Private Function FindHeaderColExact(ws As Worksheet, headerRow As Long, headerText As String) As Long
+    Dim lastCol As Long, c As Long, v As String
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        v = LCase$(Trim$(SafeStr(ws.Cells(headerRow, c).Value)))
+        If v = LCase$(headerText) Then
+            FindHeaderColExact = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderColExact = 0
+End Function
+
+Private Function ParseNumberInvariant(ByVal v As Variant) As Variant
+    Dim t As String, neg As Boolean
+
+    t = Trim$(SafeStr(v))
+    If t = "" Then
+        ParseNumberInvariant = Empty
+        Exit Function
+    End If
+
+    t = Replace(t, Chr(160), " ")
+    t = Replace(t, " ", "")
+    t = Replace(t, "$", "")
+    t = Replace(t, "MXN", "", , , vbTextCompare)
+
+    If Left$(t, 1) = "(" And Right$(t, 1) = ")" Then
+        neg = True
+        t = Mid$(t, 2, Len(t) - 2)
+    End If
+
+    If InStr(t, ",") > 0 And InStr(t, ".") > 0 Then
+        If InStrRev(t, ".") > InStrRev(t, ",") Then
+            t = Replace(t, ",", "")
+        Else
+            t = Replace(t, ".", "")
+            t = Replace(t, ",", ".")
+        End If
+    ElseIf InStr(t, ",") > 0 And InStr(t, ".") = 0 Then
+        t = Replace(t, ",", ".")
+    End If
+
+    If Not IsNumeric(t) Then
+        ParseNumberInvariant = Empty
+        Exit Function
+    End If
+
+    ParseNumberInvariant = CDbl(t)
+    If neg Then ParseNumberInvariant = -ParseNumberInvariant
+End Function
+
+Private Sub WriteIf(ByVal cell As Range, ByVal val As Variant, ByVal overwrite As Boolean)
+    If Not overwrite Then
+        If Trim$(SafeStr(cell.Value)) <> "" Then Exit Sub
+    End If
+    If IsEmpty(val) Then Exit Sub
+    If SafeStr(val) = "" Then Exit Sub
+    cell.Value = val
+End Sub
+
+Private Function ObservacionesOperacion(ByVal raw As String, ByVal norm As String) As String
+    Dim o As String: o = ""
+    If Trim$(raw) = "" Then o = o & "vacío; "
+    If InStr(1, raw, " ") > 0 Then o = o & "tiene espacios; "
+    If InStr(1, raw, "-") > 0 Then o = o & "tiene guiones; "
+    If norm <> "" Then
+        Dim cleaned As String
+        cleaned = Replace(Replace(raw, " ", ""), "-", "")
+        If Not IsNumeric(cleaned) Then o = o & "no es numérico; "
+    End If
+    If o = "" Then o = "revisar formato"
+    ObservacionesOperacion = o
+End Function

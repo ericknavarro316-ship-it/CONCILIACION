@@ -1,0 +1,299 @@
+Option Explicit
+
+Public Sub P02_HOMOLOGAR_ESTADO_MP
+
+    Dim ws As Worksheet
+    Dim wsBk As Worksheet
+    Dim hdrRow As Long, lastRow As Long, lastCol As Long
+    Dim colDate As Long, colType As Long, colRef As Long, colNet As Long, colBal As Long
+    Dim n As Long, i As Long
+    Dim arrOut() As Variant
+    Dim dt As Date
+    Dim netVal As Double, balVal As Double
+    Dim refTxt As String
+    Dim bkName As String
+
+    On Error GoTo ErrHandler
+
+    Set ws = ThisWorkbook.Worksheets("EST MP")
+
+    ' ===== RESPALDO =====
+    bkName = "BK_ESTMP_" & Format(Now, "yymmdd_hhnnss")
+    ws.Copy After:=ws
+    Set wsBk = ActiveSheet
+    On Error Resume Next
+    wsBk.Name = bkName
+    On Error GoTo ErrHandler
+
+    ' ===== UBICAR ENCABEZADO =====
+    hdrRow = M09_FindHeaderRow(ws)
+    If hdrRow = 0 Then
+        MsgBox "No se encontró el encabezado de EST MP.", vbExclamation
+        Exit Sub
+    End If
+
+    colDate = M09_FindColByHeader(ws, hdrRow, "RELEASE_DATE")
+    colType = M09_FindColByHeader(ws, hdrRow, "TRANSACTION_TYPE")
+    colRef = M09_FindColByHeader(ws, hdrRow, "REFERENCE_ID")
+    colNet = M09_FindColByHeader(ws, hdrRow, "TRANSACTION_NET_AMOUNT")
+    colBal = M09_FindColByHeader(ws, hdrRow, "PARTIAL_BALANCE")
+
+    If colDate = 0 Or colType = 0 Or colRef = 0 Or colNet = 0 Or colBal = 0 Then
+        MsgBox "Faltan columnas requeridas en EST MP." & vbCrLf & _
+               "Se necesita: RELEASE_DATE, TRANSACTION_TYPE, REFERENCE_ID, TRANSACTION_NET_AMOUNT y PARTIAL_BALANCE.", vbExclamation
+        Exit Sub
+    End If
+
+    lastRow = M09_LastUsedRow(ws)
+    lastCol = M09_LastUsedCol(ws, hdrRow)
+
+    If lastRow <= hdrRow Then
+        MsgBox "No hay datos debajo del encabezado en EST MP.", vbExclamation
+        Exit Sub
+    End If
+
+    n = lastRow - hdrRow
+    ReDim arrOut(1 To n, 1 To 6)
+
+    ' ===== ARMAR NUEVA ESTRUCTURA =====
+    For i = 1 To n
+
+        ' Día
+        If M09_TryParseDateCell(ws.Cells(hdrRow + i, colDate), dt) Then
+            arrOut(i, 1) = dt
+        Else
+            arrOut(i, 1) = ws.Cells(hdrRow + i, colDate).Text
+        End If
+
+        ' Concepto
+        arrOut(i, 2) = Trim$(CStr(ws.Cells(hdrRow + i, colType).Value))
+
+        ' REFERENCE_ID
+        refTxt = M09_NormalizeReference(ws.Cells(hdrRow + i, colRef))
+        arrOut(i, 3) = refTxt
+
+        ' Neto -> cargo / abono
+        netVal = M09_ParseNumber(ws.Cells(hdrRow + i, colNet))
+        If netVal < 0 Then
+            arrOut(i, 4) = Abs(netVal)   ' cargo
+            arrOut(i, 5) = vbNullString  ' abono
+        ElseIf netVal > 0 Then
+            arrOut(i, 4) = vbNullString
+            arrOut(i, 5) = netVal
+        Else
+            arrOut(i, 4) = vbNullString
+            arrOut(i, 5) = vbNullString
+        End If
+
+        ' Saldo
+        balVal = M09_ParseNumber(ws.Cells(hdrRow + i, colBal))
+        If balVal <> 0 Then
+            arrOut(i, 6) = balVal
+        Else
+            arrOut(i, 6) = vbNullString
+        End If
+
+    Next i
+
+    ' ===== LIMPIAR BLOQUE ACTUAL =====
+    ws.Range(ws.Cells(hdrRow, 1), ws.Cells(lastRow, Application.Max(lastCol, 6))).ClearContents
+
+    ' ===== ESCRIBIR NUEVA ESTRUCTURA =====
+    ws.Cells(hdrRow, 1).Value = "Día"
+    ws.Cells(hdrRow, 2).Value = "Concepto"
+    ws.Cells(hdrRow, 3).Value = "REFERENCE_ID"
+    ws.Cells(hdrRow, 4).Value = "cargo"
+    ws.Cells(hdrRow, 5).Value = "abono"
+    ws.Cells(hdrRow, 6).Value = "Saldo"
+
+    ws.Columns(3).NumberFormat = "@"
+    ws.Cells(hdrRow + 1, 1).Resize(n, 6).Value = arrOut
+
+    ' ===== FORMATOS =====
+    ws.Range(ws.Cells(hdrRow + 1, 1), ws.Cells(hdrRow + n, 1)).NumberFormat = "dd/mm/yyyy"
+    ws.Range(ws.Cells(hdrRow + 1, 4), ws.Cells(hdrRow + n, 6)).NumberFormat = "#,##0.00"
+
+    ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, 6)).Font.Bold = True
+
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow + n, 6)).AutoFilter
+
+    ws.Columns("A:F").EntireColumn.AutoFit
+
+    MsgBox "EST MP quedó preparado correctamente." & vbCrLf & _
+           "Se creó respaldo: " & wsBk.Name, vbInformation
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error en M09_PREPARAR_EST_MP_MEJORADO: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function M09_FindHeaderRow(ByVal ws As Worksheet) As Long
+    Dim f As Range
+
+    Set f = ws.Cells.Find(What:="TRANSACTION_NET_AMOUNT", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If Not f Is Nothing Then
+        M09_FindHeaderRow = f.Row
+        Exit Function
+    End If
+
+    Set f = ws.Cells.Find(What:="RELEASE_DATE", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If Not f Is Nothing Then
+        M09_FindHeaderRow = f.Row
+    End If
+End Function
+
+
+Private Function M09_FindColByHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim c As Long
+    Dim lastCol As Long
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        If UCase$(Trim$(CStr(ws.Cells(hdrRow, c).Value))) = UCase$(Trim$(headerText)) Then
+            M09_FindColByHeader = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+
+Private Function M09_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        M09_LastUsedRow = 0
+    Else
+        M09_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function M09_LastUsedCol(ByVal ws As Worksheet, ByVal hdrRow As Long) As Long
+    Dim c As Range
+
+    Set c = ws.Rows(hdrRow).Find(What:="*", _
+                                 After:=ws.Cells(hdrRow, 1), _
+                                 LookIn:=xlFormulas, _
+                                 LookAt:=xlPart, _
+                                 SearchOrder:=xlByColumns, _
+                                 SearchDirection:=xlPrevious, _
+                                 MatchCase:=False)
+
+    If c Is Nothing Then
+        M09_LastUsedCol = 0
+    Else
+        M09_LastUsedCol = c.Column
+    End If
+End Function
+
+
+Private Function M09_NormalizeReference(ByVal cel As Range) As String
+    Dim s As String
+
+    s = Trim$(CStr(cel.Text))
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+
+    If s <> "" Then
+        M09_NormalizeReference = s
+        Exit Function
+    End If
+
+    If IsNumeric(cel.Value2) Then
+        M09_NormalizeReference = Format$(cel.Value2, "0")
+    Else
+        M09_NormalizeReference = Trim$(CStr(cel.Value))
+    End If
+End Function
+
+
+Private Function M09_ParseNumber(ByVal cel As Range) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    s = Trim$(CStr(cel.Text))
+    If s = "" Then
+        M09_ParseNumber = 0
+        Exit Function
+    End If
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        M09_ParseNumber = CDbl(s)
+        If neg Then M09_ParseNumber = -M09_ParseNumber
+    Else
+        M09_ParseNumber = 0
+    End If
+    Exit Function
+
+ErrHandler:
+    M09_ParseNumber = 0
+End Function
+
+
+Private Function M09_TryParseDateCell(ByVal cel As Range, ByRef outDate As Date) As Boolean
+    Dim s As String
+    Dim p() As String
+    Dim dd As Long, mm As Long, yy As Long
+    Dim dt As Date
+
+    On Error GoTo ErrHandler
+
+    M09_TryParseDateCell = False
+
+    If VarType(cel.Value) = vbDate Then
+        outDate = CDate(cel.Value)
+        M09_TryParseDateCell = True
+        Exit Function
+    End If
+
+    s = Trim$(CStr(cel.Text))
+    s = Replace(s, ".", "/")
+    s = Replace(s, "-", "/")
+    s = Replace(s, Chr(160), "")
+
+    If s = "" Then Exit Function
+
+    p = Split(s, "/")
+    If UBound(p) <> 2 Then Exit Function
+
+    dd = Val(p(0))
+    mm = Val(p(1))
+    yy = Val(p(2))
+
+    If yy < 100 Then yy = 2000 + yy
+
+    dt = DateSerial(yy, mm, dd)
+
+    If Year(dt) <> yy Or Month(dt) <> mm Or Day(dt) <> dd Then Exit Function
+
+    outDate = dt
+    M09_TryParseDateCell = True
+    Exit Function
+
+ErrHandler:
+    M09_TryParseDateCell = False
+End Function

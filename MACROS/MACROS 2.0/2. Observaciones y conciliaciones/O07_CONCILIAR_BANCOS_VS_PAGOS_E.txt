@@ -1,0 +1,719 @@
+Option Explicit
+
+Public Sub O07_CONCILIAR_BANCOS_VS_PAGOS_E()
+
+    Dim wsPagos As Worksheet, ws As Worksheet, wsEST As Worksheet
+    Dim hdrPagos As Long, lastPagos As Long, r As Long
+
+    Dim colPagUUID As Long, colPagUUIDMadre As Long
+    Dim colPagFecha As Long, colPagTotal As Long, colPagCta As Long
+
+    Dim dictSum As Object
+    Dim dictRows As Object
+    Dim dictFirstUUID As Object
+    Dim dictFirstMother As Object
+    Dim dictPeriod As Object
+    Dim dictBuckets As Object
+
+    Dim matchedBancos As Long, matchedEST As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsPagos = O08_FindPagosSheet()
+    If wsPagos Is Nothing Then
+        MsgBox "No encontré la hoja de pagos. Intenté con: PAGOS E / COMPL. E.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrPagos = O08_FindHeaderRowPagos(wsPagos)
+    If hdrPagos = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en la hoja de pagos.", vbExclamation
+        Exit Sub
+    End If
+
+    colPagUUID = O08_FindHeaderCol(wsPagos, hdrPagos, Array("UUID"))
+    colPagUUIDMadre = O08_FindHeaderCol(wsPagos, hdrPagos, Array("UUID Madre", "UUID MADRE", "UUID_MADRE"))
+    colPagFecha = O08_FindHeaderCol(wsPagos, hdrPagos, Array("Fecha Pago", "Fecha de Pago", "FECHA PAGO"))
+    colPagTotal = O08_FindHeaderCol(wsPagos, hdrPagos, Array("Total Pagado", "TOTAL PAGADO", "Total", "Monto"))
+    colPagCta = O08_FindHeaderCol(wsPagos, hdrPagos, Array("Cuenta bancaria"))
+
+    If colPagUUID = 0 Or colPagFecha = 0 Or colPagTotal = 0 Then
+        MsgBox "Faltan columnas requeridas en la hoja de pagos." & vbCrLf & _
+               "Se requiere: UUID, Fecha Pago y Total Pagado.", vbExclamation
+        Exit Sub
+    End If
+
+    If colPagUUIDMadre = 0 Then
+        colPagUUIDMadre = O08_EnsureHeaderCol(wsPagos, hdrPagos, "UUID Madre")
+    End If
+
+    If colPagCta = 0 Then
+        colPagCta = O08_EnsureHeaderCol(wsPagos, hdrPagos, "Cuenta bancaria")
+    End If
+
+    lastPagos = O08_LastUsedRow(wsPagos)
+    If lastPagos <= hdrPagos Then
+        MsgBox "La hoja de pagos no tiene datos.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    ' ===========================================
+    ' AGRUPAR PAGOS POR UUID MADRE + MES
+    ' ===========================================
+    Set dictSum = CreateObject("Scripting.Dictionary")
+    Set dictRows = CreateObject("Scripting.Dictionary")
+    Set dictFirstUUID = CreateObject("Scripting.Dictionary")
+    Set dictFirstMother = CreateObject("Scripting.Dictionary")
+    Set dictPeriod = CreateObject("Scripting.Dictionary")
+    Set dictBuckets = CreateObject("Scripting.Dictionary")
+
+    O08_CargarPagosAgrupados wsPagos, hdrPagos, lastPagos, _
+        colPagUUID, colPagUUIDMadre, colPagFecha, colPagTotal, colPagCta, _
+        dictSum, dictRows, dictFirstUUID, dictFirstMother, dictPeriod, dictBuckets
+
+    ' ===========================================
+    ' RECORRER HOJAS BANCARIAS NUMERICAS
+    ' ===========================================
+    For Each ws In ThisWorkbook.Worksheets
+        If O08_EsHojaNumerica(ws.Name) Then
+            If Not O08_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                matchedBancos = matchedBancos + O08_ProcesarHojaBanco( _
+                    ws, wsPagos, _
+                    colPagCta, _
+                    dictRows, dictFirstUUID, dictFirstMother, dictBuckets)
+            End If
+        End If
+    Next ws
+
+    ' ===========================================
+    ' RECORRER EST MP
+    ' ===========================================
+    Set wsEST = O08_GetSheet("EST MP")
+    If Not wsEST Is Nothing Then
+        matchedEST = O08_ProcesarESTMP( _
+            wsEST, wsPagos, _
+            colPagCta, _
+            dictRows, dictFirstUUID, dictFirstMother, dictBuckets)
+    End If
+
+    wsPagos.Columns(colPagUUID).NumberFormat = "@"
+    wsPagos.Columns(colPagUUIDMadre).NumberFormat = "@"
+    wsPagos.Columns(colPagCta).NumberFormat = "@"
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Conciliación PAGOS E terminada." & vbCrLf & vbCrLf & _
+           "Matches en bancos: " & matchedBancos & vbCrLf & _
+           "Matches en EST MP: " & matchedEST, vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en O08_CONCILIAR_BANCOS_VS_PAGOS_E: " & Err.Description, vbExclamation
+End Sub
+
+
+' =====================================================
+' CARGAR PAGOS AGRUPADOS
+' =====================================================
+Private Sub O08_CargarPagosAgrupados( _
+    ByVal ws As Worksheet, _
+    ByVal hdrRow As Long, _
+    ByVal lastRow As Long, _
+    ByVal colUUID As Long, _
+    ByVal colMother As Long, _
+    ByVal colFecha As Long, _
+    ByVal colTotal As Long, _
+    ByVal colCta As Long, _
+    ByVal dictSum As Object, _
+    ByVal dictRows As Object, _
+    ByVal dictFirstUUID As Object, _
+    ByVal dictFirstMother As Object, _
+    ByVal dictPeriod As Object, _
+    ByVal dictBuckets As Object)
+
+    Dim r As Long
+    Dim uuid As String, mother As String, motherKey As String
+    Dim periodKey As String, groupKey As String, bucketKey As String
+    Dim cents As Long
+    Dim coll As Collection
+
+    For r = hdrRow + 1 To lastRow
+
+        uuid = Trim$(CStr(ws.Cells(r, colUUID).Value))
+        If uuid = "" Then GoTo SiguienteR
+
+        If Trim$(CStr(ws.Cells(r, colCta).Value)) <> "" Then GoTo SiguienteR
+
+        periodKey = O08_GetPeriodKey(ws.Cells(r, colFecha).Value)
+        If periodKey = "" Then GoTo SiguienteR
+
+        cents = O08_ToCents(ws.Cells(r, colTotal).Value)
+        If cents = 0 Then GoTo SiguienteR
+
+        mother = Trim$(CStr(ws.Cells(r, colMother).Value))
+        motherKey = O08_NormKey(mother)
+
+        ' Si no hay UUID Madre, no agrupar: usar la propia fila como grupo
+        If motherKey = "" Then motherKey = "ROW_" & Format$(r, "000000")
+
+        groupKey = periodKey & "|" & motherKey
+
+        If Not dictSum.Exists(groupKey) Then
+            dictSum.Add groupKey, CLng(0)
+
+            Set coll = New Collection
+            dictRows.Add groupKey, coll
+
+            dictFirstUUID.Add groupKey, uuid
+            dictFirstMother.Add groupKey, mother
+            dictPeriod.Add groupKey, periodKey
+        End If
+
+        dictSum(groupKey) = CLng(dictSum(groupKey)) + cents
+
+        Set coll = dictRows(groupKey)
+        coll.Add r
+
+SiguienteR:
+    Next r
+
+    ' Crear buckets por MES + CENTAVOS
+    Dim k As Variant
+    For Each k In dictSum.Keys
+        bucketKey = dictPeriod(k) & "|" & CStr(dictSum(k))
+
+        If Not dictBuckets.Exists(bucketKey) Then
+            Set coll = New Collection
+            dictBuckets.Add bucketKey, coll
+        End If
+
+        Set coll = dictBuckets(bucketKey)
+        coll.Add CStr(k)
+    Next k
+End Sub
+
+
+' =====================================================
+' PROCESAR HOJA BANCARIA
+' =====================================================
+Private Function O08_ProcesarHojaBanco( _
+    ByVal ws As Worksheet, _
+    ByVal wsPagos As Worksheet, _
+    ByVal colPagCta As Long, _
+    ByVal dictRows As Object, _
+    ByVal dictFirstUUID As Object, _
+    ByVal dictFirstMother As Object, _
+    ByVal dictBuckets As Object) As Long
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long
+    Dim colObs As Long, colCompl As Long, colMother As Long
+    Dim lastRow As Long, r As Long
+
+    Dim cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim periodKey As String
+    Dim groupKey As String
+    Dim obsTxt As String, complTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Function
+
+    hdrRow = hdrDia.Row
+    colDia = hdrDia.Column
+
+    Set hdrCargo = O08_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = O08_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Function
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+
+    colObs = O08_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colCompl = O08_EnsureHeaderCol(ws, hdrRow, "COMPL. CTA")
+    colMother = O08_EnsureHeaderCol(ws, hdrRow, "UUID MADRE")
+
+    lastRow = O08_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        cargoVal = O08_ParseNumber(ws.Cells(r, colCargo).Value)
+        If cargoVal = 0 Then GoTo SiguienteR
+
+        If O08_ParseNumber(ws.Cells(r, colAbono).Value) <> 0 Then GoTo SiguienteR
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        complTxt = UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value)))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If complTxt <> "" And complTxt <> "PPD" Then GoTo SiguienteR
+
+        periodKey = O08_GetPeriodKey(ws.Cells(r, colDia).Value)
+        If periodKey = "" Then GoTo SiguienteR
+
+        cents = O08_ToCents(cargoVal)
+        tol = O08_ToleranceCents(cents)
+
+        If O08_TryPopGroupedMatch(dictBuckets, periodKey, cents, tol, groupKey) Then
+
+            ws.Cells(r, colObs).Value = dictFirstUUID(groupKey)
+            ws.Cells(r, colCompl).Value = "PPD"
+
+            If Trim$(CStr(dictFirstMother(groupKey))) <> "" Then
+                ws.Cells(r, colMother).Value = dictFirstMother(groupKey)
+            End If
+
+            O08_MarcarCuentaBancaria wsPagos, dictRows(groupKey), colPagCta, ws.Name
+            O08_ProcesarHojaBanco = O08_ProcesarHojaBanco + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colObs).NumberFormat = "@"
+    ws.Columns(colCompl).NumberFormat = "@"
+    ws.Columns(colMother).NumberFormat = "@"
+End Function
+
+
+' =====================================================
+' PROCESAR EST MP
+' =====================================================
+Private Function O08_ProcesarESTMP( _
+    ByVal ws As Worksheet, _
+    ByVal wsPagos As Worksheet, _
+    ByVal colPagCta As Long, _
+    ByVal dictRows As Object, _
+    ByVal dictFirstUUID As Object, _
+    ByVal dictFirstMother As Object, _
+    ByVal dictBuckets As Object) As Long
+
+    Dim hdrRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long
+    Dim colObs As Long, colCompl As Long, colMother As Long
+    Dim lastRow As Long, r As Long
+
+    Dim cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim periodKey As String
+    Dim groupKey As String
+    Dim obsTxt As String, complTxt As String
+
+    hdrRow = O08_FindHeaderRowEST(ws)
+    If hdrRow = 0 Then Exit Function
+
+    colDia = O08_FindHeaderCol(ws, hdrRow, Array("Día", "Dia"))
+    colCargo = O08_FindHeaderCol(ws, hdrRow, Array("cargo"))
+    colAbono = O08_FindHeaderCol(ws, hdrRow, Array("abono"))
+
+    If colDia = 0 Or colCargo = 0 Then Exit Function
+
+    colObs = O08_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colCompl = O08_EnsureHeaderCol(ws, hdrRow, "COMPL. CTA")
+    colMother = O08_EnsureHeaderCol(ws, hdrRow, "UUID MADRE")
+
+    lastRow = O08_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        cargoVal = O08_ParseNumber(ws.Cells(r, colCargo).Value)
+        If cargoVal = 0 Then GoTo SiguienteR
+
+        If colAbono > 0 Then
+            If O08_ParseNumber(ws.Cells(r, colAbono).Value) <> 0 Then GoTo SiguienteR
+        End If
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        complTxt = UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value)))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If complTxt <> "" And complTxt <> "PPD" Then GoTo SiguienteR
+
+        periodKey = O08_GetPeriodKey(ws.Cells(r, colDia).Value)
+        If periodKey = "" Then GoTo SiguienteR
+
+        cents = O08_ToCents(cargoVal)
+        tol = O08_ToleranceCents(cents)
+
+        If O08_TryPopGroupedMatch(dictBuckets, periodKey, cents, tol, groupKey) Then
+
+            ws.Cells(r, colObs).Value = dictFirstUUID(groupKey)
+            ws.Cells(r, colCompl).Value = "PPD"
+
+            If Trim$(CStr(dictFirstMother(groupKey))) <> "" Then
+                ws.Cells(r, colMother).Value = dictFirstMother(groupKey)
+            End If
+
+            O08_MarcarCuentaBancaria wsPagos, dictRows(groupKey), colPagCta, "EST MP"
+            O08_ProcesarESTMP = O08_ProcesarESTMP + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colObs).NumberFormat = "@"
+    ws.Columns(colCompl).NumberFormat = "@"
+    ws.Columns(colMother).NumberFormat = "@"
+End Function
+
+
+' =====================================================
+' MARCAR CUENTA BANCARIA EN PAGOS
+' =====================================================
+Private Sub O08_MarcarCuentaBancaria( _
+    ByVal wsPagos As Worksheet, _
+    ByVal rowsColl As Collection, _
+    ByVal colPagCta As Long, _
+    ByVal sourceName As String)
+
+    Dim i As Long, rr As Long
+
+    For i = 1 To rowsColl.Count
+        rr = CLng(rowsColl(i))
+        If Trim$(CStr(wsPagos.Cells(rr, colPagCta).Value)) = "" Then
+            wsPagos.Cells(rr, colPagCta).Value = sourceName
+        End If
+    Next i
+End Sub
+
+
+' =====================================================
+' MATCH AGRUPADO POR MES + IMPORTE CON TOLERANCIA
+' =====================================================
+Private Function O08_TryPopGroupedMatch( _
+    ByVal dictBuckets As Object, _
+    ByVal periodKey As String, _
+    ByVal centsBase As Long, _
+    ByVal tolCents As Long, _
+    ByRef groupKey As String) As Boolean
+
+    Dim d As Long
+    Dim bucketKey As String
+    Dim coll As Collection
+
+    For d = 0 To tolCents
+
+        bucketKey = periodKey & "|" & CStr(centsBase + d)
+        If dictBuckets.Exists(bucketKey) Then
+            Set coll = dictBuckets(bucketKey)
+            If coll.Count > 0 Then
+                groupKey = CStr(coll(1))
+                coll.Remove 1
+                If coll.Count = 0 Then dictBuckets.Remove bucketKey
+                O08_TryPopGroupedMatch = True
+                Exit Function
+            End If
+        End If
+
+        If d > 0 Then
+            bucketKey = periodKey & "|" & CStr(centsBase - d)
+            If dictBuckets.Exists(bucketKey) Then
+                Set coll = dictBuckets(bucketKey)
+                If coll.Count > 0 Then
+                    groupKey = CStr(coll(1))
+                    coll.Remove 1
+                    If coll.Count = 0 Then dictBuckets.Remove bucketKey
+                    O08_TryPopGroupedMatch = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next d
+End Function
+
+
+' =====================================================
+' HELPERS
+' =====================================================
+Private Function O08_FindPagosSheet() As Worksheet
+    Dim arr, i As Long
+    arr = Array("PAGOS E", "COMPL. E", "PAGOS_E", "COMPL E")
+
+    For i = LBound(arr) To UBound(arr)
+        Set O08_FindPagosSheet = O08_GetSheet(CStr(arr(i)))
+        If Not O08_FindPagosSheet Is Nothing Then Exit Function
+    Next i
+End Function
+
+
+Private Function O08_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set O08_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function O08_FindHeaderRowPagos(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 10
+        If O08_FindHeaderCol(ws, r, Array("UUID")) > 0 And _
+           O08_FindHeaderCol(ws, r, Array("Fecha Pago", "Fecha de Pago", "FECHA PAGO")) > 0 And _
+           O08_FindHeaderCol(ws, r, Array("Total Pagado", "TOTAL PAGADO", "Total", "Monto")) > 0 Then
+            O08_FindHeaderRowPagos = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function O08_FindHeaderRowEST(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 20
+        If O08_FindHeaderCol(ws, r, Array("Día", "Dia")) > 0 And _
+           O08_FindHeaderCol(ws, r, Array("cargo")) > 0 Then
+            O08_FindHeaderRowEST = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function O08_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = O08_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = O08_NormHeader(CStr(headers(i))) Then
+                Set O08_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O08_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = O08_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = O08_NormHeader(CStr(headerNames(i))) Then
+                O08_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O08_EnsureHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim col As Long
+
+    col = O08_FindHeaderCol(ws, hdrRow, Array(headerText))
+
+    If col > 0 Then
+        O08_EnsureHeaderCol = col
+    Else
+        O08_EnsureHeaderCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, O08_EnsureHeaderCol).Value = headerText
+        ws.Cells(hdrRow, O08_EnsureHeaderCol).Font.Bold = True
+    End If
+End Function
+
+
+Private Function O08_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    O08_NormHeader = s
+End Function
+
+
+Private Function O08_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        O08_LastUsedRow = 0
+    Else
+        O08_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function O08_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        O08_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        O08_ParseNumber = CDbl(s)
+        If neg Then O08_ParseNumber = -O08_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    O08_ParseNumber = 0
+End Function
+
+
+Private Function O08_ToCents(ByVal v As Variant) As Long
+    O08_ToCents = CLng(Round(O08_ParseNumber(v) * 100, 0))
+End Function
+
+
+Private Function O08_ToleranceCents(ByVal centsAmount As Long) As Long
+    If Abs(centsAmount) < 5000000 Then
+        O08_ToleranceCents = 10
+    Else
+        O08_ToleranceCents = 50
+    End If
+End Function
+
+
+Private Function O08_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    O08_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function O08_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    O08_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function O08_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    O08_NormKey = s
+End Function
+
+
+Private Function O08_GetPeriodKey(ByVal v As Variant) As String
+    Dim dt As Date
+
+    If O08_TryParseDate(v, dt) Then
+        O08_GetPeriodKey = Format$(dt, "yyyymm")
+    End If
+End Function
+
+
+Private Function O08_TryParseDate(ByVal v As Variant, ByRef outDate As Date) As Boolean
+    Dim s As String, p() As String
+    Dim yy As Long, mm As Long, dd As Long
+    Dim dt As Date
+
+    On Error GoTo ErrHandler
+
+    If IsDate(v) Then
+        outDate = CDate(v)
+        O08_TryParseDate = True
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, "T", " ")
+    s = Split(s, " ")(0)
+    s = Replace(s, ".", "-")
+    s = Replace(s, "/", "-")
+
+    p = Split(s, "-")
+    If UBound(p) <> 2 Then Exit Function
+
+    If Len(p(0)) = 4 Then
+        yy = Val(p(0))
+        mm = Val(p(1))
+        dd = Val(p(2))
+    Else
+        dd = Val(p(0))
+        mm = Val(p(1))
+        yy = Val(p(2))
+        If yy < 100 Then yy = 2000 + yy
+    End If
+
+    dt = DateSerial(yy, mm, dd)
+
+    If Year(dt) <> yy Or Month(dt) <> mm Or Day(dt) <> dd Then Exit Function
+
+    outDate = dt
+    O08_TryParseDate = True
+    Exit Function
+
+ErrHandler:
+    O08_TryParseDate = False
+End Function

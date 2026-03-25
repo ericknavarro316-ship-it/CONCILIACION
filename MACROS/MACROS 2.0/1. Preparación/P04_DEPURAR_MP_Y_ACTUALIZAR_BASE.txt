@@ -1,0 +1,511 @@
+Option Explicit
+
+' =========================================================
+' MACRO PRINCIPAL
+' =========================================================
+Public Sub P04_DEPURAR_MP_Y_ACTUALIZAR_BASE
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    MP_CrearLimpio
+    MP_ActualizarBaseSinDuplicados
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Proceso terminado: MP_LIMPIO y MP_BASE listos.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en MP_PREPARAR_LIMPIO_Y_BASE: " & Err.Description, vbExclamation
+End Sub
+
+
+' =========================================================
+' PROCESO 1: CREAR MP_LIMPIO
+' =========================================================
+Private Sub MP_CrearLimpio()
+
+    Dim wsSrc As Worksheet
+    Dim wsOut As Worksheet
+    Dim hdrRow As Long
+    Dim lastRow As Long
+
+    Dim colFecha As Long
+    Dim colDetalle As Long
+    Dim colCargo As Long
+    Dim colOperacion As Long
+    Dim colSucursal As Long
+    Dim colValorOp As Long
+
+    Dim r As Long
+    Dim outRow As Long
+    Dim dt As Date
+
+    Set wsSrc = MP_GetSheet("MP")
+    If wsSrc Is Nothing Then
+        Err.Raise vbObjectError + 1001, , "No existe la hoja 'MP'."
+    End If
+
+    hdrRow = MP_FindHeaderRow(wsSrc)
+    If hdrRow = 0 Then
+        Err.Raise vbObjectError + 1002, , "No pude identificar la fila de encabezados en la hoja MP."
+    End If
+
+    colFecha = MP_FindHeaderCol(wsSrc, hdrRow, Array("Fecha del cargo"))
+    colDetalle = MP_FindHeaderCol(wsSrc, hdrRow, Array("Detalle"))
+    colCargo = MP_FindHeaderCol(wsSrc, hdrRow, Array("Valor del cargo"))
+    colOperacion = MP_FindHeaderCol(wsSrc, hdrRow, Array("Operación relacionada", "Operacion relacionada"))
+    colSucursal = MP_FindHeaderCol(wsSrc, hdrRow, Array("Nombre de sucursal"))
+    colValorOp = MP_FindHeaderCol(wsSrc, hdrRow, Array("Valor de la operación", "Valor de la operacion"))
+
+    If colFecha = 0 Or colDetalle = 0 Or colCargo = 0 Or colOperacion = 0 Or colSucursal = 0 Or colValorOp = 0 Then
+        Err.Raise vbObjectError + 1003, , _
+            "Faltan columnas requeridas en MP." & vbCrLf & _
+            "Se necesitan: Fecha del cargo, Detalle, Valor del cargo, Operación relacionada, Nombre de sucursal y Valor de la operación."
+    End If
+
+    lastRow = MP_LastUsedRow(wsSrc)
+    If lastRow <= hdrRow Then
+        Err.Raise vbObjectError + 1004, , "No hay datos debajo del encabezado en MP."
+    End If
+
+    MP_DeleteSheetIfExists "MP_LIMPIO"
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+    wsOut.Name = "MP_LIMPIO"
+
+    ' Encabezados finales
+    wsOut.Cells(1, 1).Value = "Día"
+    wsOut.Cells(1, 2).Value = "Detalle"
+    wsOut.Cells(1, 3).Value = "Valor del cargo"
+    wsOut.Cells(1, 4).Value = "Operación relacionada"
+    wsOut.Cells(1, 5).Value = "Nombre de sucursal"
+    wsOut.Cells(1, 6).Value = "Valor de la operación"
+
+    ' Formato texto para evitar notación científica
+    wsOut.Columns(4).NumberFormat = "@"
+
+    outRow = 2
+
+    For r = hdrRow + 1 To lastRow
+
+        If MP_RowTieneDatos(wsSrc, r, Array(colFecha, colDetalle, colCargo, colOperacion, colSucursal, colValorOp)) Then
+
+            ' Día
+            If MP_TryParseDateCell(wsSrc.Cells(r, colFecha), dt) Then
+                wsOut.Cells(outRow, 1).Value = dt
+            Else
+                wsOut.Cells(outRow, 1).Value = wsSrc.Cells(r, colFecha).Text
+            End If
+
+            ' Detalle
+            wsOut.Cells(outRow, 2).Value = Trim$(CStr(wsSrc.Cells(r, colDetalle).Value))
+
+            ' Valor del cargo
+            wsOut.Cells(outRow, 3).Value = MP_ParseNumber(wsSrc.Cells(r, colCargo))
+
+            ' Operación relacionada
+            wsOut.Cells(outRow, 4).Value = MP_NormalizeTextKey(wsSrc.Cells(r, colOperacion))
+
+            ' Nombre de sucursal
+            wsOut.Cells(outRow, 5).Value = Trim$(CStr(wsSrc.Cells(r, colSucursal).Value))
+
+            ' Valor de la operación
+            wsOut.Cells(outRow, 6).Value = MP_ParseNumber(wsSrc.Cells(r, colValorOp))
+
+            outRow = outRow + 1
+        End If
+    Next r
+
+    ' Formatos
+    wsOut.Rows(1).Font.Bold = True
+
+    If outRow > 2 Then
+        wsOut.Range("A2:A" & (outRow - 1)).NumberFormat = "dd/mm/yyyy"
+        wsOut.Range("C2:C" & (outRow - 1)).NumberFormat = "#,##0.00"
+        wsOut.Range("F2:F" & (outRow - 1)).NumberFormat = "#,##0.00"
+    End If
+
+    ' Ordenar por Día
+    If outRow > 2 Then
+        wsOut.Range("A1:F" & (outRow - 1)).Sort _
+            Key1:=wsOut.Range("A2:A" & (outRow - 1)), _
+            Order1:=xlAscending, _
+            Header:=xlYes
+    End If
+
+    If wsOut.AutoFilterMode Then wsOut.AutoFilterMode = False
+    wsOut.Range("A1:F" & Application.Max(outRow - 1, 2)).AutoFilter
+    wsOut.Columns("A:F").EntireColumn.AutoFit
+
+End Sub
+
+
+' =========================================================
+' PROCESO 2: CREAR / ACTUALIZAR MP_BASE SIN DUPLICADOS
+' =========================================================
+Private Sub MP_ActualizarBaseSinDuplicados()
+
+    Dim wsSrc As Worksheet
+    Dim wsBase As Worksheet
+
+    Dim lastRowSrc As Long
+    Dim lastRowBase As Long
+    Dim r As Long
+    Dim outRow As Long
+
+    Dim dict As Object
+    Dim key As String
+
+    Set wsSrc = MP_GetSheet("MP_LIMPIO")
+    If wsSrc Is Nothing Then
+        Err.Raise vbObjectError + 1101, , "No existe la hoja 'MP_LIMPIO'."
+    End If
+
+    Set wsBase = MP_GetSheet("MP_BASE")
+
+    If wsBase Is Nothing Then
+        Set wsBase = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+        wsBase.Name = "MP_BASE"
+
+        wsBase.Range("A1:F1").Value = wsSrc.Range("A1:F1").Value
+        wsBase.Rows(1).Font.Bold = True
+        wsBase.Columns(4).NumberFormat = "@"
+    End If
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    ' Cargar llaves existentes de MP_BASE
+    lastRowBase = MP_LastUsedRow(wsBase)
+    If lastRowBase >= 2 Then
+        For r = 2 To lastRowBase
+            key = MP_BuildBaseKey( _
+                    wsBase.Cells(r, 1).Value, _
+                    wsBase.Cells(r, 2).Value, _
+                    wsBase.Cells(r, 3).Value, _
+                    wsBase.Cells(r, 4).Value, _
+                    wsBase.Cells(r, 5).Value, _
+                    wsBase.Cells(r, 6).Value)
+
+            If key <> "" Then
+                If Not dict.Exists(key) Then dict.Add key, True
+            End If
+        Next r
+    End If
+
+    ' Agregar nuevos desde MP_LIMPIO
+    lastRowSrc = MP_LastUsedRow(wsSrc)
+    outRow = Application.Max(2, lastRowBase + 1)
+
+    If lastRowSrc >= 2 Then
+        For r = 2 To lastRowSrc
+
+            key = MP_BuildBaseKey( _
+                    wsSrc.Cells(r, 1).Value, _
+                    wsSrc.Cells(r, 2).Value, _
+                    wsSrc.Cells(r, 3).Value, _
+                    wsSrc.Cells(r, 4).Value, _
+                    wsSrc.Cells(r, 5).Value, _
+                    wsSrc.Cells(r, 6).Value)
+
+            If key <> "" Then
+                If Not dict.Exists(key) Then
+                    wsBase.Cells(outRow, 1).Resize(1, 6).Value = wsSrc.Cells(r, 1).Resize(1, 6).Value
+                    wsBase.Cells(outRow, 4).NumberFormat = "@"
+                    dict.Add key, True
+                    outRow = outRow + 1
+                End If
+            End If
+        Next r
+    End If
+
+    lastRowBase = MP_LastUsedRow(wsBase)
+
+    ' Formatos
+    If lastRowBase >= 2 Then
+        wsBase.Range("A2:A" & lastRowBase).NumberFormat = "dd/mm/yyyy"
+        wsBase.Range("C2:C" & lastRowBase).NumberFormat = "#,##0.00"
+        wsBase.Range("F2:F" & lastRowBase).NumberFormat = "#,##0.00"
+    End If
+
+    ' Ordenar
+    If lastRowBase >= 3 Then
+        wsBase.Range("A1:F" & lastRowBase).Sort _
+            Key1:=wsBase.Range("A2:A" & lastRowBase), _
+            Order1:=xlAscending, _
+            Header:=xlYes
+    End If
+
+    If wsBase.AutoFilterMode Then wsBase.AutoFilterMode = False
+    wsBase.Range("A1:F" & Application.Max(lastRowBase, 2)).AutoFilter
+    wsBase.Columns("A:F").EntireColumn.AutoFit
+
+End Sub
+
+
+' =========================================================
+' FUNCIONES DE APOYO
+' =========================================================
+Private Function MP_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set MP_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Sub MP_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+
+
+Private Function MP_FindHeaderRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 15
+        If MP_FindHeaderCol(ws, r, Array("Fecha del cargo")) > 0 And _
+           MP_FindHeaderCol(ws, r, Array("Detalle")) > 0 Then
+            MP_FindHeaderRow = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function MP_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = MP_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = MP_NormHeader(CStr(headerNames(i))) Then
+                MP_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function MP_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    MP_NormHeader = s
+End Function
+
+
+Private Function MP_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        MP_LastUsedRow = 0
+    Else
+        MP_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function MP_RowTieneDatos(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal cols As Variant) As Boolean
+    Dim i As Long
+    For i = LBound(cols) To UBound(cols)
+        If Trim$(CStr(ws.Cells(rowNum, CLng(cols(i))).Text)) <> "" Then
+            MP_RowTieneDatos = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+
+Private Function MP_NormalizeTextKey(ByVal cel As Range) As String
+    Dim s As String
+
+    On Error GoTo Fallback
+
+    If IsEmpty(cel.Value2) Then Exit Function
+    If IsError(cel.Value2) Then Exit Function
+
+    If IsNumeric(cel.Value2) Then
+        MP_NormalizeTextKey = Format$(cel.Value2, "0")
+        Exit Function
+    End If
+
+Fallback:
+    s = Trim$(CStr(cel.Value2))
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    MP_NormalizeTextKey = s
+End Function
+
+
+Private Function MP_ParseNumber(ByVal cel As Range) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(cel.Value) Then
+        MP_ParseNumber = CDbl(cel.Value)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(cel.Text))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        MP_ParseNumber = CDbl(s)
+        If neg Then MP_ParseNumber = -MP_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    MP_ParseNumber = 0
+End Function
+
+
+Private Function MP_TryParseDateCell(ByVal cel As Range, ByRef outDate As Date) As Boolean
+    Dim s As String
+    Dim p() As String
+    Dim yy As Long, mm As Long, dd As Long
+    Dim dt As Date
+
+    On Error GoTo ErrHandler
+    MP_TryParseDateCell = False
+
+    If VarType(cel.Value) = vbDate Then
+        outDate = CDate(cel.Value)
+        MP_TryParseDateCell = True
+        Exit Function
+    End If
+
+    s = Trim$(CStr(cel.Text))
+    s = Replace(s, "T", " ")
+    s = Split(s, " ")(0)
+    s = Replace(s, ".", "-")
+    s = Replace(s, "/", "-")
+
+    If s = "" Then Exit Function
+
+    p = Split(s, "-")
+    If UBound(p) <> 2 Then Exit Function
+
+    If Len(p(0)) = 4 Then
+        yy = Val(p(0))
+        mm = Val(p(1))
+        dd = Val(p(2))
+    Else
+        dd = Val(p(0))
+        mm = Val(p(1))
+        yy = Val(p(2))
+        If yy < 100 Then yy = 2000 + yy
+    End If
+
+    dt = DateSerial(yy, mm, dd)
+
+    If Year(dt) <> yy Or Month(dt) <> mm Or Day(dt) <> dd Then Exit Function
+
+    outDate = dt
+    MP_TryParseDateCell = True
+    Exit Function
+
+ErrHandler:
+    MP_TryParseDateCell = False
+End Function
+
+
+Private Function MP_BuildBaseKey( _
+    ByVal vDia As Variant, _
+    ByVal vDetalle As Variant, _
+    ByVal vCargo As Variant, _
+    ByVal vOperacion As Variant, _
+    ByVal vSucursal As Variant, _
+    ByVal vValorOperacion As Variant) As String
+
+    Dim sDia As String
+    Dim sDetalle As String
+    Dim sCargo As String
+    Dim sOperacion As String
+    Dim sSucursal As String
+    Dim sValorOperacion As String
+
+    If IsDate(vDia) Then
+        sDia = Format$(CDate(vDia), "yyyymmdd")
+    Else
+        sDia = Trim$(CStr(vDia))
+    End If
+
+    sDetalle = UCase$(Trim$(CStr(vDetalle)))
+    sDetalle = Replace(sDetalle, Chr(160), "")
+    sDetalle = Replace(sDetalle, " ", "")
+
+    sCargo = Format$(Val(vCargo), "0.00")
+
+    sOperacion = Trim$(CStr(vOperacion))
+    sOperacion = Replace(sOperacion, Chr(160), "")
+    sOperacion = Replace(sOperacion, " ", "")
+
+    sSucursal = UCase$(Trim$(CStr(vSucursal)))
+    sSucursal = Replace(sSucursal, Chr(160), "")
+    sSucursal = Replace(sSucursal, " ", "")
+
+    sValorOperacion = Format$(Val(vValorOperacion), "0.00")
+
+    MP_BuildBaseKey = sDia & "|" & sDetalle & "|" & sCargo & "|" & sOperacion & "|" & sSucursal & "|" & sValorOperacion
+End Function

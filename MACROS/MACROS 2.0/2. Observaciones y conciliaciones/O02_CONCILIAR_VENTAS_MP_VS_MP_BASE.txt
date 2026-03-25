@@ -1,0 +1,270 @@
+Option Explicit
+
+Public Sub O02_CONCILIAR_VENTAS_MP_VS_MP_BASE()
+
+    Const SH_MP As String = "MP_BASE"
+    Const SH_V As String = "VENTAS_MP"
+    Const HDR_MP As Long = 1
+    Const HDR_V As Long = 1
+
+    Dim wsMP As Worksheet, wsV As Worksheet
+    Dim colMpOper As Long, colMpId As Long, colMpUUID As Long, colMpStatus As Long
+    Dim colVId As Long, colVTrans As Long, colVUUID As Long, colVOk As Long
+
+    Dim lastMP As Long, lastV As Long
+    Dim arrVId As Variant, arrVTrans As Variant, arrVUUID As Variant
+    Dim arrMpOper As Variant
+
+    Dim dictVenta As Object
+    Dim matched As Object
+
+    Dim outId() As Variant, outUUID() As Variant, outSt() As Variant, outOk() As Variant
+    Dim i As Long, k As String, idv As String, uuidv As String, mpOper As String
+    Dim rec As Variant
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsMP = O02_GetSheet(SH_MP)
+    If wsMP Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_MP & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    Set wsV = O02_GetSheet(SH_V)
+    If wsV Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_V & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    ' MP_BASE
+    colMpOper = O02_FindHeaderCol(wsMP, HDR_MP, Array("Operación relacionada", "Operacion relacionada"))
+    If colMpOper = 0 Then
+        MsgBox "No encontré 'Operación relacionada' en MP_BASE.", vbExclamation
+        Exit Sub
+    End If
+
+    colMpId = O02_EnsureHeaderCol(wsMP, HDR_MP, "id_venta")
+    colMpUUID = O02_EnsureHeaderCol(wsMP, HDR_MP, "UUID")
+    colMpStatus = O02_EnsureHeaderCol(wsMP, HDR_MP, "Estatus_Conciliacion")
+
+    ' VENTAS_MP
+    colVId = O02_FindHeaderCol(wsV, HDR_V, Array("id_venta"))
+    colVTrans = O02_FindHeaderCol(wsV, HDR_V, Array("numero_transaccion"))
+    colVUUID = O02_FindHeaderCol(wsV, HDR_V, Array("UUID"))
+    colVOk = O02_EnsureHeaderCol(wsV, HDR_V, "OK_MP")
+
+    If colVId = 0 Or colVTrans = 0 Then
+        MsgBox "No encontré 'id_venta' y/o 'numero_transaccion' en VENTAS_MP.", vbExclamation
+        Exit Sub
+    End If
+
+    If colVUUID = 0 Then
+        MsgBox "No encontré 'UUID' en VENTAS_MP.", vbExclamation
+        Exit Sub
+    End If
+
+    lastMP = wsMP.Cells(wsMP.Rows.Count, colMpOper).End(xlUp).Row
+    lastV = wsV.Cells(wsV.Rows.Count, colVId).End(xlUp).Row
+
+    If lastMP < 2 Then
+        MsgBox "MP_BASE no tiene datos para conciliar.", vbExclamation
+        Exit Sub
+    End If
+
+    If lastV < 2 Then
+        MsgBox "VENTAS_MP no tiene datos para conciliar.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    arrVId = wsV.Range(wsV.Cells(2, colVId), wsV.Cells(lastV, colVId)).Value
+    arrVTrans = wsV.Range(wsV.Cells(2, colVTrans), wsV.Cells(lastV, colVTrans)).Value
+    arrVUUID = wsV.Range(wsV.Cells(2, colVUUID), wsV.Cells(lastV, colVUUID)).Value
+
+    Set dictVenta = CreateObject("Scripting.Dictionary")
+
+    ' Diccionario: numero_transaccion -> Array(id_venta, UUID)
+    ' Si encuentra conflicto, guarda "#DUP_VENTAS"
+    For i = 1 To UBound(arrVId, 1)
+        k = O02_NormKey(arrVTrans(i, 1))
+        idv = Trim$(CStr(arrVId(i, 1)))
+        uuidv = Trim$(CStr(arrVUUID(i, 1)))
+
+        If k <> "" Then
+            If Not dictVenta.Exists(k) Then
+                dictVenta.Add k, Array(idv, uuidv)
+            Else
+                rec = dictVenta(k)
+
+                If UCase$(CStr(rec(0))) <> UCase$(idv) Or UCase$(CStr(rec(1))) <> UCase$(uuidv) Then
+                    dictVenta(k) = Array("#DUP_VENTAS", "#DUP_VENTAS")
+                End If
+            End If
+        End If
+    Next i
+
+    arrMpOper = wsMP.Range(wsMP.Cells(2, colMpOper), wsMP.Cells(lastMP, colMpOper)).Value
+
+    ReDim outId(1 To UBound(arrMpOper, 1), 1 To 1)
+    ReDim outUUID(1 To UBound(arrMpOper, 1), 1 To 1)
+    ReDim outSt(1 To UBound(arrMpOper, 1), 1 To 1)
+
+    Set matched = CreateObject("Scripting.Dictionary")
+
+    For i = 1 To UBound(arrMpOper, 1)
+        mpOper = O02_NormKey(arrMpOper(i, 1))
+
+        If mpOper = "" Then
+            outId(i, 1) = ""
+            outUUID(i, 1) = ""
+            outSt(i, 1) = ""
+
+        ElseIf dictVenta.Exists(mpOper) Then
+            rec = dictVenta(mpOper)
+
+            If rec(0) = "#DUP_VENTAS" Then
+                outId(i, 1) = ""
+                outUUID(i, 1) = ""
+                outSt(i, 1) = "REVISA_DUP_VENTAS"
+            Else
+                outId(i, 1) = rec(0)
+                outUUID(i, 1) = rec(1)
+                outSt(i, 1) = "OK"
+            End If
+
+            If Not matched.Exists(mpOper) Then matched.Add mpOper, True
+
+        Else
+            outId(i, 1) = ""
+            outUUID(i, 1) = ""
+            outSt(i, 1) = "PENDIENTE"
+        End If
+    Next i
+
+    wsMP.Range(wsMP.Cells(2, colMpId), wsMP.Cells(lastMP, colMpId)).Value = outId
+    wsMP.Range(wsMP.Cells(2, colMpUUID), wsMP.Cells(lastMP, colMpUUID)).Value = outUUID
+    wsMP.Range(wsMP.Cells(2, colMpStatus), wsMP.Cells(lastMP, colMpStatus)).Value = outSt
+
+    ReDim outOk(1 To UBound(arrVTrans, 1), 1 To 1)
+
+    For i = 1 To UBound(arrVTrans, 1)
+        k = O02_NormKey(arrVTrans(i, 1))
+        If k <> "" And matched.Exists(k) Then
+            outOk(i, 1) = "OK"
+        Else
+            outOk(i, 1) = ""
+        End If
+    Next i
+
+    wsV.Range(wsV.Cells(2, colVOk), wsV.Cells(lastV, colVOk)).Value = outOk
+
+    wsMP.Columns(colMpUUID).NumberFormat = "@"
+    wsV.Columns(colVUUID).NumberFormat = "@"
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Conciliación lista." & vbCrLf & _
+           "MP_BASE actualizado con id_venta, UUID y Estatus_Conciliacion." & vbCrLf & _
+           "VENTAS_MP actualizado con OK_MP.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en O02_CONCILIAR_VENTAS_MP_VS_MP_BASE: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function O02_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set O02_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function O02_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = O02_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = O02_NormHeader(CStr(headerNames(i))) Then
+                O02_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O02_EnsureHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim col As Long
+    col = O02_FindHeaderCol(ws, hdrRow, Array(headerText))
+
+    If col > 0 Then
+        O02_EnsureHeaderCol = col
+    Else
+        O02_EnsureHeaderCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, O02_EnsureHeaderCol).Value = headerText
+        ws.Cells(hdrRow, O02_EnsureHeaderCol).Font.Bold = True
+    End If
+End Function
+
+
+Private Function O02_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    O02_NormHeader = s
+End Function
+
+
+Private Function O02_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    If IsNumeric(s) Then
+        If Len(s) <= 15 Then
+            s = Format$(CDbl(s), "0")
+        End If
+    End If
+
+    O02_NormKey = s
+End Function

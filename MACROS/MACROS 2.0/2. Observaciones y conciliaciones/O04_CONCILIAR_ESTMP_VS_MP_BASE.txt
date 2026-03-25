@@ -1,0 +1,375 @@
+Option Explicit
+
+Public Sub O04_CONCILIAR_ESTMP_VS_MP_BASE()
+
+    Const SH_EST As String = "EST MP"
+    Const SH_MP As String = "MP_BASE"
+
+    Dim wsEst As Worksheet, wsMP As Worksheet
+    Dim hdrEst As Long, hdrMP As Long
+    Dim lastEst As Long, lastMP As Long
+
+    Dim colEstDia As Long, colEstRef As Long
+    Dim colEstValOp As Long, colEstPoint As Long, colEstCuotas As Long
+    Dim colEstIdVenta As Long, colEstUUID As Long
+
+    Dim colMpOper As Long, colMpDetalle As Long, colMpCargo As Long
+    Dim colMpValOp As Long, colMpIdVenta As Long, colMpUUID As Long
+    Dim colMpEST As Long, colMpDiaEst As Long
+
+    Dim dictInfo As Object
+    Dim dictRows As Object
+    Dim rec As Variant
+    Dim coll As Collection
+
+    Dim r As Long, i As Long
+    Dim k As String, detalle As String
+    Dim cargoVal As Double, valOp As Double
+    Dim diaEst As Variant
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsEst = O04_GetSheet(SH_EST)
+    If wsEst Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_EST & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    Set wsMP = O04_GetSheet(SH_MP)
+    If wsMP Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_MP & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrEst = O04_FindHeaderRowEST(wsEst)
+    If hdrEst = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en 'EST MP'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrMP = 1
+
+    ' ===== EST MP =====
+    colEstDia = O04_FindHeaderCol(wsEst, hdrEst, Array("Día", "Dia"))
+    colEstRef = O04_FindHeaderCol(wsEst, hdrEst, Array("REFERENCE_ID"))
+
+    If colEstDia = 0 Or colEstRef = 0 Then
+        MsgBox "Faltan columnas requeridas en 'EST MP'." & vbCrLf & _
+               "Se requiere: Día y REFERENCE_ID.", vbExclamation
+        Exit Sub
+    End If
+
+    colEstValOp = O04_EnsureHeaderCol(wsEst, hdrEst, "Valor de la operación")
+    colEstPoint = O04_EnsureHeaderCol(wsEst, hdrEst, "POINT")
+    colEstCuotas = O04_EnsureHeaderCol(wsEst, hdrEst, "CUOTAS TC")
+    colEstIdVenta = O04_EnsureHeaderCol(wsEst, hdrEst, "id_venta")
+    colEstUUID = O04_EnsureHeaderCol(wsEst, hdrEst, "UUID")
+
+    ' ===== MP_BASE =====
+    colMpOper = O04_FindHeaderCol(wsMP, hdrMP, Array("Operación relacionada", "Operacion relacionada"))
+    colMpDetalle = O04_FindHeaderCol(wsMP, hdrMP, Array("Detalle"))
+    colMpCargo = O04_FindHeaderCol(wsMP, hdrMP, Array("Valor del cargo"))
+    colMpValOp = O04_FindHeaderCol(wsMP, hdrMP, Array("Valor de la operación", "Valor de la operacion"))
+    colMpIdVenta = O04_FindHeaderCol(wsMP, hdrMP, Array("id_venta"))
+    colMpUUID = O04_FindHeaderCol(wsMP, hdrMP, Array("UUID"))
+
+    If colMpOper = 0 Or colMpDetalle = 0 Or colMpCargo = 0 Or colMpValOp = 0 Then
+        MsgBox "Faltan columnas requeridas en 'MP_BASE'." & vbCrLf & _
+               "Se requiere: Operación relacionada, Detalle, Valor del cargo y Valor de la operación.", vbExclamation
+        Exit Sub
+    End If
+
+    If colMpIdVenta = 0 Then colMpIdVenta = O04_EnsureHeaderCol(wsMP, hdrMP, "id_venta")
+    If colMpUUID = 0 Then colMpUUID = O04_EnsureHeaderCol(wsMP, hdrMP, "UUID")
+
+    colMpEST = O04_EnsureHeaderCol(wsMP, hdrMP, "EST")
+    colMpDiaEst = O04_EnsureHeaderCol(wsMP, hdrMP, "Día_EST_MP")
+
+    lastEst = O04_LastUsedRow(wsEst)
+    lastMP = O04_LastUsedRow(wsMP)
+
+    If lastEst <= hdrEst Then
+        MsgBox "'EST MP' no tiene datos para conciliar.", vbExclamation
+        Exit Sub
+    End If
+
+    If lastMP <= hdrMP Then
+        MsgBox "'MP_BASE' no tiene datos para conciliar.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set dictInfo = CreateObject("Scripting.Dictionary")
+    Set dictRows = CreateObject("Scripting.Dictionary")
+
+    ' =====================================================
+    ' CARGAR MP_BASE POR Operación relacionada
+    ' dictInfo(key) = Array(ValorOperacion, POINT, CUOTAS, id_venta, UUID)
+    ' dictRows(key) = Collection(rows)
+    ' =====================================================
+    For r = 2 To lastMP
+
+        k = O04_NormKey(wsMP.Cells(r, colMpOper).Value)
+        If k <> "" Then
+
+            detalle = O04_CleanText(wsMP.Cells(r, colMpDetalle).Text)
+            cargoVal = O04_ParseNumber(wsMP.Cells(r, colMpCargo).Value)
+            valOp = O04_ParseNumber(wsMP.Cells(r, colMpValOp).Value)
+
+            If Not dictInfo.Exists(k) Then
+                rec = Array(0#, 0#, 0#, "", "")
+                Set coll = New Collection
+                dictInfo.Add k, rec
+                dictRows.Add k, coll
+            End If
+
+            rec = dictInfo(k)
+
+            ' Valor de la operación: tomar el primero no cero
+            If CDbl(rec(0)) = 0 And valOp <> 0 Then rec(0) = valOp
+
+            ' POINT / CUOTAS TC según detalle
+            If InStr(1, detalle, "POINT", vbTextCompare) > 0 Then
+                rec(1) = CDbl(rec(1)) + cargoVal
+            End If
+
+            If InStr(1, detalle, "CUOTAS", vbTextCompare) > 0 Then
+                rec(2) = CDbl(rec(2)) + cargoVal
+            End If
+
+            ' id_venta / UUID: tomar el primero no vacío
+            If Trim$(CStr(rec(3))) = "" Then
+                rec(3) = Trim$(CStr(wsMP.Cells(r, colMpIdVenta).Value))
+            End If
+
+            If Trim$(CStr(rec(4))) = "" Then
+                rec(4) = Trim$(CStr(wsMP.Cells(r, colMpUUID).Value))
+            End If
+
+            dictInfo(k) = rec
+            Set coll = dictRows(k)
+            coll.Add r
+        End If
+    Next r
+
+    ' =====================================================
+    ' ESCRIBIR EN EST MP Y MARCAR MP_BASE
+    ' =====================================================
+    For r = hdrEst + 1 To lastEst
+
+        k = O04_NormKey(wsEst.Cells(r, colEstRef).Value)
+        If k <> "" Then
+
+            If dictInfo.Exists(k) Then
+                rec = dictInfo(k)
+
+                If CDbl(rec(0)) <> 0 Then wsEst.Cells(r, colEstValOp).Value = rec(0)
+                If CDbl(rec(1)) <> 0 Then wsEst.Cells(r, colEstPoint).Value = rec(1)
+                If CDbl(rec(2)) <> 0 Then wsEst.Cells(r, colEstCuotas).Value = rec(2)
+                If Trim$(CStr(rec(3))) <> "" Then wsEst.Cells(r, colEstIdVenta).Value = rec(3)
+                If Trim$(CStr(rec(4))) <> "" Then wsEst.Cells(r, colEstUUID).Value = rec(4)
+
+                diaEst = wsEst.Cells(r, colEstDia).Value
+
+                Set coll = dictRows(k)
+                For i = 1 To coll.Count
+                    wsMP.Cells(coll(i), colMpEST).Value = "OK"
+                    wsMP.Cells(coll(i), colMpDiaEst).Value = diaEst
+                Next i
+            End If
+        End If
+    Next r
+
+    ' Formatos
+    wsEst.Columns(colEstUUID).NumberFormat = "@"
+    wsMP.Columns(colMpUUID).NumberFormat = "@"
+    wsEst.Columns(colEstIdVenta).NumberFormat = "@"
+    wsMP.Columns(colMpIdVenta).NumberFormat = "@"
+    wsMP.Columns(colMpDiaEst).NumberFormat = "dd/mm/yyyy"
+    wsEst.Columns(colEstValOp).NumberFormat = "#,##0.00"
+    wsEst.Columns(colEstPoint).NumberFormat = "#,##0.00"
+    wsEst.Columns(colEstCuotas).NumberFormat = "#,##0.00"
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Cruce EST MP vs MP_BASE terminado.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en O04_CONCILIAR_ESTMP_VS_MP_BASE: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function O04_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set O04_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function O04_FindHeaderRowEST(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 20
+        If O04_FindHeaderCol(ws, r, Array("REFERENCE_ID")) > 0 And _
+           O04_FindHeaderCol(ws, r, Array("Día", "Dia")) > 0 Then
+            O04_FindHeaderRowEST = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function O04_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = O04_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = O04_NormHeader(CStr(headerNames(i))) Then
+                O04_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O04_EnsureHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim col As Long
+
+    col = O04_FindHeaderCol(ws, hdrRow, Array(headerText))
+
+    If col > 0 Then
+        O04_EnsureHeaderCol = col
+    Else
+        O04_EnsureHeaderCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, O04_EnsureHeaderCol).Value = headerText
+        ws.Cells(hdrRow, O04_EnsureHeaderCol).Font.Bold = True
+    End If
+End Function
+
+
+Private Function O04_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        O04_LastUsedRow = 0
+    Else
+        O04_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function O04_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    O04_NormHeader = s
+End Function
+
+
+Private Function O04_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    If IsNumeric(s) Then
+        If Len(s) <= 15 Then
+            s = Format$(CDbl(s), "0")
+        End If
+    End If
+
+    O04_NormKey = s
+End Function
+
+
+Private Function O04_CleanText(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, Chr(160), " ")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    O04_CleanText = Trim$(s)
+End Function
+
+
+Private Function O04_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        O04_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        O04_ParseNumber = CDbl(s)
+        If neg Then O04_ParseNumber = -O04_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    O04_ParseNumber = 0
+End Function

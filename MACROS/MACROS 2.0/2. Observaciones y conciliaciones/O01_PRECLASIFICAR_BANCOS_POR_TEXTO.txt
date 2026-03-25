@@ -1,0 +1,341 @@
+Option Explicit
+
+Public Sub O01_PRECLASIFICAR_BANCOS_POR_TEXTO()
+
+    Dim ws As Worksheet
+    Dim hdrDia As Range, hdrConcepto As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colDia As Long, colConcepto As Long, colCargo As Long, colAbono As Long
+    Dim colObs As Long, colCompl As Long
+    Dim lastRow As Long
+    Dim r As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        ' Solo hojas numéricas
+        If Not B02_EsHojaNumerica(ws.Name) Then GoTo SiguienteHoja
+
+        ' Saltar hojas sin movimientos
+        If B02_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo SiguienteHoja
+
+        ' Buscar encabezados
+        Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+        If hdrDia Is Nothing Then
+            Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+        End If
+        If hdrDia Is Nothing Then GoTo SiguienteHoja
+
+        hdrRow = hdrDia.Row
+        colDia = hdrDia.Column
+
+        Set hdrConcepto = B02_FindHeader(ws, hdrRow, Array("Concepto / Referencia", "Concepto", "Referencia", "Concepto/Referencia"))
+        Set hdrCargo = B02_FindHeader(ws, hdrRow, Array("Cargo"))
+        Set hdrAbono = B02_FindHeader(ws, hdrRow, Array("Abono"))
+
+        If hdrConcepto Is Nothing Or hdrCargo Is Nothing Or hdrAbono Is Nothing Then GoTo SiguienteHoja
+
+        colConcepto = hdrConcepto.Column
+        colCargo = hdrCargo.Column
+        colAbono = hdrAbono.Column
+
+        ' Crear / asegurar columnas OBS y COMPL. CTA
+        colObs = B02_EnsureHeader(ws, hdrRow, "OBS")
+        colCompl = B02_EnsureHeader(ws, hdrRow, "COMPL. CTA")
+
+        lastRow = B02_LastUsedRow(ws)
+        If lastRow <= hdrRow Then GoTo SiguienteHoja
+
+        For r = hdrRow + 1 To lastRow
+            B02_ApplyRules ws, r, colConcepto, colCargo, colAbono, colObs, colCompl
+        Next r
+
+SiguienteHoja:
+        Set hdrDia = Nothing
+        Set hdrConcepto = Nothing
+        Set hdrCargo = Nothing
+        Set hdrAbono = Nothing
+    Next ws
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Preclasificación bancaria terminada.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en C01_PRECLASIFICAR_BANCOS_POR_TEXTO: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub B02_ApplyRules( _
+    ByVal ws As Worksheet, _
+    ByVal rowNum As Long, _
+    ByVal colConcepto As Long, _
+    ByVal colCargo As Long, _
+    ByVal colAbono As Long, _
+    ByVal colObs As Long, _
+    ByVal colCompl As Long)
+
+    Dim txt As String
+    Dim cargoVal As Double
+    Dim abonoVal As Double
+    Dim cuentaExtraida As String
+
+    txt = B02_NormalizeText(ws.Cells(rowNum, colConcepto).Text)
+    If txt = "" Then Exit Sub
+
+    cargoVal = B02_ParseNumber(ws.Cells(rowNum, colCargo).Value)
+    abonoVal = B02_ParseNumber(ws.Cells(rowNum, colAbono).Value)
+
+    ' 1) TERMINALES PUNTO DE VENTA + cargo = ND-COMISION
+    If InStr(1, txt, "TERMINALES PUNTO DE VENTA", vbTextCompare) > 0 Then
+
+        If cargoVal <> 0 Then
+            ws.Cells(rowNum, colObs).Value = "ND-COMISION"
+            Exit Sub
+        End If
+
+        ' 2) TERMINALES PUNTO DE VENTA + abono SOLO en cuenta 21387 = INGRESO T
+        If abonoVal <> 0 Then
+            If ws.Name = "21387" Then
+                ws.Cells(rowNum, colObs).Value = "INGRESO T"
+            End If
+            Exit Sub
+        End If
+    End If
+
+    ' 3) TRASPASO CUENTAS PROPIAS
+    If InStr(1, txt, "TRASPASO CUENTAS PROPIAS", vbTextCompare) > 0 Then
+        ws.Cells(rowNum, colObs).Value = "TRASPASO CUENTAS PROPIAS"
+
+        cuentaExtraida = B02_ExtractCuenta(txt)
+        If cuentaExtraida <> "" Then
+            ws.Cells(rowNum, colCompl).Value = cuentaExtraida
+        End If
+        Exit Sub
+    End If
+
+    ' 4) PAGO SUA
+    If InStr(1, txt, "PAGO SUA", vbTextCompare) > 0 Then
+        ws.Cells(rowNum, colObs).Value = "IMSS"
+        Exit Sub
+    End If
+
+    ' 5) SAT/GUIA
+    If InStr(1, txt, "SAT/GUIA", vbTextCompare) > 0 Then
+        ws.Cells(rowNum, colObs).Value = "IMPUESTOS SAT"
+        Exit Sub
+    End If
+
+    ' 6) PREST.
+    If InStr(1, txt, "PREST.", vbTextCompare) > 0 Or InStr(1, txt, "PREST ", vbTextCompare) > 0 Then
+        ws.Cells(rowNum, colObs).Value = "PRESTAMO"
+        Exit Sub
+    End If
+
+    ' 7) EFECTIVALE
+    If InStr(1, txt, "EFECTIVALE", vbTextCompare) > 0 Then
+        ws.Cells(rowNum, colObs).Value = "EFECTIVALE"
+        Exit Sub
+    End If
+
+    ' 8) NAL. AMEX
+    If InStr(1, txt, "NAL. AMEX", vbTextCompare) > 0 Or InStr(1, txt, "NAL AMEX", vbTextCompare) > 0 Then
+        ws.Cells(rowNum, colObs).Value = "ND-COMISION"
+        Exit Sub
+    End If
+
+    ' 9) NOMINA
+    If InStr(1, txt, "NOMINA", vbTextCompare) > 0 Then
+        ws.Cells(rowNum, colObs).Value = "PAGO NOMINA"
+        Exit Sub
+    End If
+
+    ' 10) RECIBO NO.
+    If InStr(1, txt, "RECIBO NO.", vbTextCompare) > 0 Or InStr(1, txt, "RECIBO NO", vbTextCompare) > 0 Then
+        ws.Cells(rowNum, colObs).Value = "ND-SEGURO"
+        Exit Sub
+    End If
+
+    ' Lo no clasificado no hace nada
+End Sub
+
+
+Private Function B02_EnsureHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim f As Range
+    Dim lastCol As Long
+
+    Set f = B02_FindHeader(ws, hdrRow, Array(headerText))
+    If Not f Is Nothing Then
+        B02_EnsureHeader = f.Column
+        Exit Function
+    End If
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+    ws.Cells(hdrRow, lastCol).Value = headerText
+    B02_EnsureHeader = lastCol
+End Function
+
+
+Private Function B02_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = B02_NormalizeHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = B02_NormalizeHeader(CStr(headers(i))) Then
+                Set B02_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function B02_NormalizeHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    B02_NormalizeHeader = s
+End Function
+
+
+Private Function B02_NormalizeText(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, Chr(160), " ")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    B02_NormalizeText = Trim$(s)
+End Function
+
+
+Private Function B02_ExtractCuenta(ByVal txt As String) As String
+    Dim p As Long
+    Dim s As String
+    Dim i As Long
+    Dim ch As String
+    Dim outTxt As String
+
+    p = InStr(1, txt, "CUENTA:", vbTextCompare)
+    If p = 0 Then Exit Function
+
+    s = Mid$(txt, p + Len("CUENTA:"))
+
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "#" Then
+            outTxt = outTxt & ch
+        ElseIf outTxt <> "" Then
+            Exit For
+        End If
+    Next i
+
+    B02_ExtractCuenta = outTxt
+End Function
+
+
+Private Function B02_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        B02_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        B02_ParseNumber = CDbl(s)
+        If neg Then B02_ParseNumber = -B02_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    B02_ParseNumber = 0
+End Function
+
+
+Private Function B02_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        B02_LastUsedRow = 0
+    Else
+        B02_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function B02_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    B02_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function B02_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    B02_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function

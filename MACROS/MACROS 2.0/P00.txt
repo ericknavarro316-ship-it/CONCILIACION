@@ -1,0 +1,2344 @@
+Option Explicit
+
+Private P00_MODO_MAESTRO As Boolean
+Private P00_CANCELADO As Boolean
+Private Const B01_TOP_HEADER_ROWS As Long = 20
+Private Const B01_MARCAR_ADVERTENCIAS As Boolean = True
+
+Public Sub P01_PREPARAR_BANCOS_POR_FECHA()
+
+    Dim ws As Worksheet
+    Dim hdr As Range
+    Dim sortRange As Range
+    Dim keyRange As Range
+    Dim c As Range
+
+    Dim diaCol As Long, hdrRow As Long
+    Dim lastRow As Long, lastCol As Long
+
+    Dim mesConc As Long, anioConc As Long
+    Dim resp As Variant
+
+    Dim dt As Date
+    Dim ok As Boolean, changed As Boolean, needsReview As Boolean
+
+    Dim hojasProcesadas As Long
+    Dim filasProcesadas As Long
+    Dim fechasConvertidas As Long
+    Dim advertencias As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo SalidaConError
+
+    resp = Application.InputBox( _
+        Prompt:="Ingresa el MES de conciliación (1 a 12)." & vbCrLf & _
+                "Ejemplo: 2 para febrero, 3 para marzo.", _
+        Title:="Mes de conciliación", Type:=1)
+
+    If VarType(resp) = vbBoolean Then
+        P00_CANCELADO = True
+        Exit Sub
+    End If
+    mesConc = CLng(resp)
+
+    If mesConc < 1 Or mesConc > 12 Then
+        MsgBox "Mes inválido. Debe estar entre 1 y 12.", vbExclamation
+        P00_CANCELADO = True
+        Exit Sub
+    End If
+
+    resp = Application.InputBox( _
+        Prompt:="Ingresa el AÑO de conciliación." & vbCrLf & _
+                "Ejemplo: 2026", _
+        Title:="Año de conciliación", Type:=1)
+
+    If VarType(resp) = vbBoolean Then
+        P00_CANCELADO = True
+        Exit Sub
+    End If
+    anioConc = CLng(resp)
+
+    If anioConc < 2000 Or anioConc > 2100 Then
+        MsgBox "Año inválido.", vbExclamation
+        P00_CANCELADO = True
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If Not B01_EsHojaNumerica(ws.Name) Then GoTo SiguienteWs
+        If B01_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo SiguienteWs
+
+        Set hdr = B01_FindHeader(ws, Array("Día", "Dia"))
+        If hdr Is Nothing Then GoTo SiguienteWs
+
+        hdrRow = hdr.Row
+        diaCol = hdr.Column
+
+        lastRow = B01_LastUsedRow(ws)
+        lastCol = B01_LastUsedCol(ws, hdrRow)
+
+        If lastRow <= hdrRow Then GoTo SiguienteWs
+        If lastCol <= 0 Then GoTo SiguienteWs
+
+        hojasProcesadas = hojasProcesadas + 1
+
+        For Each c In ws.Range(ws.Cells(hdrRow + 1, diaCol), ws.Cells(lastRow, diaCol)).Cells
+
+            ok = False
+            changed = False
+            needsReview = False
+
+            If Len(Trim$(CStr(c.Text))) > 0 Or Len(Trim$(CStr(c.Value2))) > 0 Then
+                filasProcesadas = filasProcesadas + 1
+            End If
+
+            ok = B01_NormalizarFechaCelda(c, mesConc, anioConc, dt, changed, needsReview)
+
+            If ok Then
+                c.Value = dt
+                c.NumberFormat = "dd/mm/yyyy"
+
+                If changed Then fechasConvertidas = fechasConvertidas + 1
+
+                If needsReview Then
+                    advertencias = advertencias + 1
+                    If B01_MARCAR_ADVERTENCIAS Then B01_MarcarAdvertencia c
+                End If
+            Else
+                If Len(Trim$(CStr(c.Text))) > 0 Or Len(Trim$(CStr(c.Value2))) > 0 Then
+                    advertencias = advertencias + 1
+                    If B01_MARCAR_ADVERTENCIAS Then B01_MarcarAdvertencia c
+                End If
+            End If
+        Next c
+
+        Set sortRange = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(lastRow, lastCol))
+        Set keyRange = ws.Range(ws.Cells(hdrRow + 1, diaCol), ws.Cells(lastRow, diaCol))
+
+        sortRange.Sort Key1:=keyRange, _
+                       Order1:=xlAscending, _
+                       Header:=xlYes, _
+                       Orientation:=xlTopToBottom, _
+                       DataOption1:=xlSortNormal
+
+SiguienteWs:
+        Set hdr = Nothing
+        Set sortRange = Nothing
+        Set keyRange = Nothing
+    Next ws
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    If Not P00_MODO_MAESTRO Then
+        MsgBox "Proceso terminado." & vbCrLf & vbCrLf & _
+               "Hojas procesadas: " & hojasProcesadas & vbCrLf & _
+               "Filas revisadas: " & filasProcesadas & vbCrLf & _
+               "Fechas convertidas/corregidas: " & fechasConvertidas & vbCrLf & _
+               "Advertencias marcadas: " & advertencias, vbInformation
+    End If
+    Exit Sub
+
+SalidaConError:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en B01_ORDENAR_BANCOS_POR_DIA: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function B01_NormalizarFechaCelda( _
+    ByVal cel As Range, _
+    ByVal mesConc As Long, _
+    ByVal anioConc As Long, _
+    ByRef outDate As Date, _
+    ByRef wasChanged As Boolean, _
+    ByRef needsReview As Boolean) As Boolean
+
+    Dim txtVisible As String
+    Dim dtActual As Date
+    Dim tieneFechaInterna As Boolean
+    Dim dtSwap As Date
+
+    On Error GoTo ErrHandler
+
+    B01_NormalizarFechaCelda = False
+    wasChanged = False
+    needsReview = False
+
+    txtVisible = B01_CleanDateText(cel.Text)
+
+    ' 1) Si lo visible parece fecha, usar eso primero.
+    '    Esto permite corregir fechas que Excel ya interpretó "mal".
+    If B01_TryParseDisplayedDate(txtVisible, mesConc, anioConc, outDate, needsReview) Then
+        tieneFechaInterna = B01_TryGetUnderlyingDate(cel.Value2, dtActual)
+
+        If tieneFechaInterna Then
+            wasChanged = (CLng(CDbl(dtActual)) <> CLng(CDbl(outDate)))
+        Else
+            wasChanged = True
+        End If
+
+        B01_NormalizarFechaCelda = True
+        Exit Function
+    End If
+
+    ' 2) Si no se pudo con lo visible, intentar con el valor interno
+    If B01_TryGetUnderlyingDate(cel.Value2, dtActual) Then
+
+        outDate = dtActual
+
+        ' Si el día coincide con el mes de conciliación pero el mes no,
+        ' intentamos corregir inversión clásica mm/dd vs dd/mm
+        If Month(outDate) <> mesConc And Day(outDate) = mesConc Then
+            If B01_TryBuildDate(Year(outDate), mesConc, Month(outDate), dtSwap) Then
+                outDate = dtSwap
+            End If
+        End If
+
+        wasChanged = (CLng(CDbl(dtActual)) <> CLng(CDbl(outDate)))
+        needsReview = (Month(outDate) <> mesConc Or Year(outDate) <> anioConc)
+
+        B01_NormalizarFechaCelda = True
+        Exit Function
+    End If
+
+    Exit Function
+
+ErrHandler:
+    B01_NormalizarFechaCelda = False
+End Function
+
+
+Private Function B01_TryParseDisplayedDate( _
+    ByVal displayText As String, _
+    ByVal mesConc As Long, _
+    ByVal anioConc As Long, _
+    ByRef outDate As Date, _
+    ByRef needsReview As Boolean) As Boolean
+
+    Dim s As String
+    Dim p() As String
+    Dim a As Long, b As Long, y As Long
+
+    Dim candDMY As Date, candMDY As Date
+    Dim okDMY As Boolean, okMDY As Boolean
+    Dim matchDMY As Boolean, matchMDY As Boolean
+
+    On Error GoTo ErrHandler
+
+    B01_TryParseDisplayedDate = False
+    needsReview = False
+
+    s = B01_CleanDateText(displayText)
+    If s = "" Then Exit Function
+    If InStr(1, s, "/") = 0 Then Exit Function
+
+    p = Split(s, "/")
+    If UBound(p) <> 2 Then Exit Function
+
+    ' Caso yyyy/mm/dd
+    If Len(p(0)) = 4 Then
+        y = Val(p(0))
+        a = Val(p(1))
+        b = Val(p(2))
+
+        If B01_TryBuildDate(y, a, b, outDate) Then
+            needsReview = (Month(outDate) <> mesConc Or Year(outDate) <> anioConc)
+            B01_TryParseDisplayedDate = True
+        End If
+        Exit Function
+    End If
+
+    a = Val(p(0))
+    b = Val(p(1))
+    y = Val(p(2))
+
+    If y < 100 Then y = 2000 + y
+
+    ' Candidato 1: dd/mm/yyyy
+    okDMY = B01_TryBuildDate(y, b, a, candDMY)
+
+    ' Candidato 2: mm/dd/yyyy
+    okMDY = B01_TryBuildDate(y, a, b, candMDY)
+
+    If Not okDMY And Not okMDY Then Exit Function
+
+    If okDMY And Not okMDY Then
+        outDate = candDMY
+
+    ElseIf okMDY And Not okDMY Then
+        outDate = candMDY
+
+    Else
+        matchDMY = (Month(candDMY) = mesConc)
+        matchMDY = (Month(candMDY) = mesConc)
+
+        If matchDMY And Not matchMDY Then
+            outDate = candDMY
+        ElseIf matchMDY And Not matchDMY Then
+            outDate = candMDY
+        Else
+            ' Si ambas o ninguna coinciden, se toma dd/mm por defecto
+            outDate = candDMY
+        End If
+    End If
+
+    needsReview = (Month(outDate) <> mesConc Or Year(outDate) <> anioConc)
+    B01_TryParseDisplayedDate = True
+    Exit Function
+
+ErrHandler:
+    B01_TryParseDisplayedDate = False
+End Function
+
+
+Private Function B01_TryGetUnderlyingDate(ByVal rawValue As Variant, ByRef outDate As Date) As Boolean
+    On Error GoTo ErrHandler
+
+    B01_TryGetUnderlyingDate = False
+
+    If IsEmpty(rawValue) Then Exit Function
+    If IsError(rawValue) Then Exit Function
+
+    If VarType(rawValue) = vbDate Then
+        outDate = CDate(rawValue)
+        B01_TryGetUnderlyingDate = True
+        Exit Function
+    End If
+
+    If IsNumeric(rawValue) Then
+        ' Evita interpretar números pequeños como fechas 1900 irreales
+        If CDbl(rawValue) > 1000 Then
+            outDate = CDate(CDbl(rawValue))
+            B01_TryGetUnderlyingDate = True
+        End If
+    End If
+
+    Exit Function
+
+ErrHandler:
+    B01_TryGetUnderlyingDate = False
+End Function
+
+
+Private Function B01_TryBuildDate(ByVal yy As Long, ByVal mm As Long, ByVal dd As Long, ByRef outDate As Date) As Boolean
+    Dim dt As Date
+
+    On Error GoTo ErrHandler
+
+    B01_TryBuildDate = False
+
+    If yy <= 0 Or mm <= 0 Or dd <= 0 Then Exit Function
+    If mm > 12 Then Exit Function
+    If dd > 31 Then Exit Function
+
+    dt = DateSerial(yy, mm, dd)
+
+    If Year(dt) <> yy Then Exit Function
+    If Month(dt) <> mm Then Exit Function
+    If Day(dt) <> dd Then Exit Function
+
+    outDate = dt
+    B01_TryBuildDate = True
+    Exit Function
+
+ErrHandler:
+    B01_TryBuildDate = False
+End Function
+
+
+Private Function B01_CleanDateText(ByVal s As String) As String
+    s = Trim$(s)
+    s = Replace(s, Chr(160), " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ".", "/")
+    s = Replace(s, "-", "/")
+
+    If Left$(s, 1) = "'" Then s = Mid$(s, 2)
+
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+
+    ' Si viene con hora, tomar solo la parte de fecha
+    If InStr(s, " ") > 0 Then
+        s = Split(s, " ")(0)
+    End If
+
+    B01_CleanDateText = Trim$(s)
+End Function
+
+
+Private Function B01_FindHeader(ByVal ws As Worksheet, ByVal headerNames As Variant) As Range
+    Dim i As Long
+    Dim f As Range
+
+    For i = LBound(headerNames) To UBound(headerNames)
+        Set f = ws.Rows("1:" & B01_TOP_HEADER_ROWS).Find( _
+                    What:=CStr(headerNames(i)), _
+                    LookIn:=xlValues, _
+                    LookAt:=xlWhole, _
+                    MatchCase:=False)
+        If Not f Is Nothing Then
+            Set B01_FindHeader = f
+            Exit Function
+        End If
+    Next i
+End Function
+
+
+Private Function B01_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        B01_LastUsedRow = 0
+    Else
+        B01_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function B01_LastUsedCol(ByVal ws As Worksheet, ByVal headerRow As Long) As Long
+    Dim c As Range
+
+    Set c = ws.Rows(headerRow).Find(What:="*", _
+                                    After:=ws.Cells(headerRow, 1), _
+                                    LookIn:=xlFormulas, _
+                                    LookAt:=xlPart, _
+                                    SearchOrder:=xlByColumns, _
+                                    SearchDirection:=xlPrevious, _
+                                    MatchCase:=False)
+
+    If c Is Nothing Then
+        B01_LastUsedCol = 0
+    Else
+        B01_LastUsedCol = c.Column
+    End If
+End Function
+
+
+Private Function B01_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    B01_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function B01_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    B01_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Sub B01_MarcarAdvertencia(ByVal cel As Range)
+    cel.Interior.Color = RGB(255, 235, 156)
+End Sub
+
+Public Sub P02_HOMOLOGAR_ESTADO_MP()
+
+    Dim ws As Worksheet
+    Dim wsBk As Worksheet
+    Dim hdrRow As Long, lastRow As Long, lastCol As Long
+    Dim colDate As Long, colType As Long, colRef As Long, colNet As Long, colBal As Long
+    Dim n As Long, i As Long
+    Dim arrOut() As Variant
+    Dim dt As Date
+    Dim netVal As Double, balVal As Double
+    Dim refTxt As String
+    Dim bkName As String
+
+    On Error GoTo ErrHandler
+
+    Set ws = ThisWorkbook.Worksheets("EST MP")
+
+    ' ===== RESPALDO =====
+    bkName = "BK_ESTMP_" & Format(Now, "yymmdd_hhnnss")
+    ws.Copy After:=ws
+    Set wsBk = ActiveSheet
+    On Error Resume Next
+    wsBk.Name = bkName
+    On Error GoTo ErrHandler
+
+    ' ===== UBICAR ENCABEZADO =====
+    hdrRow = M09_FindHeaderRow(ws)
+    If hdrRow = 0 Then
+        MsgBox "No se encontró el encabezado de EST MP.", vbExclamation
+        Exit Sub
+    End If
+
+    colDate = M09_FindColByHeader(ws, hdrRow, "RELEASE_DATE")
+    colType = M09_FindColByHeader(ws, hdrRow, "TRANSACTION_TYPE")
+    colRef = M09_FindColByHeader(ws, hdrRow, "REFERENCE_ID")
+    colNet = M09_FindColByHeader(ws, hdrRow, "TRANSACTION_NET_AMOUNT")
+    colBal = M09_FindColByHeader(ws, hdrRow, "PARTIAL_BALANCE")
+
+    If colDate = 0 Or colType = 0 Or colRef = 0 Or colNet = 0 Or colBal = 0 Then
+        MsgBox "Faltan columnas requeridas en EST MP." & vbCrLf & _
+               "Se necesita: RELEASE_DATE, TRANSACTION_TYPE, REFERENCE_ID, TRANSACTION_NET_AMOUNT y PARTIAL_BALANCE.", vbExclamation
+        Exit Sub
+    End If
+
+    lastRow = M09_LastUsedRow(ws)
+    lastCol = M09_LastUsedCol(ws, hdrRow)
+
+    If lastRow <= hdrRow Then
+        MsgBox "No hay datos debajo del encabezado en EST MP.", vbExclamation
+        Exit Sub
+    End If
+
+    n = lastRow - hdrRow
+    ReDim arrOut(1 To n, 1 To 6)
+
+    ' ===== ARMAR NUEVA ESTRUCTURA =====
+    For i = 1 To n
+
+        ' Día
+        If M09_TryParseDateCell(ws.Cells(hdrRow + i, colDate), dt) Then
+            arrOut(i, 1) = dt
+        Else
+            arrOut(i, 1) = ws.Cells(hdrRow + i, colDate).Text
+        End If
+
+        ' Concepto
+        arrOut(i, 2) = Trim$(CStr(ws.Cells(hdrRow + i, colType).Value))
+
+        ' REFERENCE_ID
+        refTxt = M09_NormalizeReference(ws.Cells(hdrRow + i, colRef))
+        arrOut(i, 3) = refTxt
+
+        ' Neto -> cargo / abono
+        netVal = M09_ParseNumber(ws.Cells(hdrRow + i, colNet))
+        If netVal < 0 Then
+            arrOut(i, 4) = Abs(netVal)   ' cargo
+            arrOut(i, 5) = vbNullString  ' abono
+        ElseIf netVal > 0 Then
+            arrOut(i, 4) = vbNullString
+            arrOut(i, 5) = netVal
+        Else
+            arrOut(i, 4) = vbNullString
+            arrOut(i, 5) = vbNullString
+        End If
+
+        ' Saldo
+        balVal = M09_ParseNumber(ws.Cells(hdrRow + i, colBal))
+        If balVal <> 0 Then
+            arrOut(i, 6) = balVal
+        Else
+            arrOut(i, 6) = vbNullString
+        End If
+
+    Next i
+
+    ' ===== LIMPIAR BLOQUE ACTUAL =====
+    ws.Range(ws.Cells(hdrRow, 1), ws.Cells(lastRow, Application.Max(lastCol, 6))).ClearContents
+
+    ' ===== ESCRIBIR NUEVA ESTRUCTURA =====
+    ws.Cells(hdrRow, 1).Value = "Día"
+    ws.Cells(hdrRow, 2).Value = "Concepto"
+    ws.Cells(hdrRow, 3).Value = "REFERENCE_ID"
+    ws.Cells(hdrRow, 4).Value = "cargo"
+    ws.Cells(hdrRow, 5).Value = "abono"
+    ws.Cells(hdrRow, 6).Value = "Saldo"
+
+    ws.Columns(3).NumberFormat = "@"
+    ws.Cells(hdrRow + 1, 1).Resize(n, 6).Value = arrOut
+
+    ' ===== FORMATOS =====
+    ws.Range(ws.Cells(hdrRow + 1, 1), ws.Cells(hdrRow + n, 1)).NumberFormat = "dd/mm/yyyy"
+    ws.Range(ws.Cells(hdrRow + 1, 4), ws.Cells(hdrRow + n, 6)).NumberFormat = "#,##0.00"
+
+    ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, 6)).Font.Bold = True
+
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow + n, 6)).AutoFilter
+
+    ws.Columns("A:F").EntireColumn.AutoFit
+
+    If Not P00_MODO_MAESTRO Then
+        MsgBox "EST MP quedó preparado correctamente." & vbCrLf & _
+               "Se creó respaldo: " & wsBk.Name, vbInformation
+    End If
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error en M09_PREPARAR_EST_MP_MEJORADO: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function M09_FindHeaderRow(ByVal ws As Worksheet) As Long
+    Dim f As Range
+
+    Set f = ws.Cells.Find(What:="TRANSACTION_NET_AMOUNT", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If Not f Is Nothing Then
+        M09_FindHeaderRow = f.Row
+        Exit Function
+    End If
+
+    Set f = ws.Cells.Find(What:="RELEASE_DATE", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If Not f Is Nothing Then
+        M09_FindHeaderRow = f.Row
+    End If
+End Function
+
+
+Private Function M09_FindColByHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim c As Long
+    Dim lastCol As Long
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        If UCase$(Trim$(CStr(ws.Cells(hdrRow, c).Value))) = UCase$(Trim$(headerText)) Then
+            M09_FindColByHeader = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+
+Private Function M09_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        M09_LastUsedRow = 0
+    Else
+        M09_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function M09_LastUsedCol(ByVal ws As Worksheet, ByVal hdrRow As Long) As Long
+    Dim c As Range
+
+    Set c = ws.Rows(hdrRow).Find(What:="*", _
+                                 After:=ws.Cells(hdrRow, 1), _
+                                 LookIn:=xlFormulas, _
+                                 LookAt:=xlPart, _
+                                 SearchOrder:=xlByColumns, _
+                                 SearchDirection:=xlPrevious, _
+                                 MatchCase:=False)
+
+    If c Is Nothing Then
+        M09_LastUsedCol = 0
+    Else
+        M09_LastUsedCol = c.Column
+    End If
+End Function
+
+
+Private Function M09_NormalizeReference(ByVal cel As Range) As String
+    Dim s As String
+
+    s = Trim$(CStr(cel.Text))
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+
+    If s <> "" Then
+        M09_NormalizeReference = s
+        Exit Function
+    End If
+
+    If IsNumeric(cel.Value2) Then
+        M09_NormalizeReference = Format$(cel.Value2, "0")
+    Else
+        M09_NormalizeReference = Trim$(CStr(cel.Value))
+    End If
+End Function
+
+
+Private Function M09_ParseNumber(ByVal cel As Range) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    s = Trim$(CStr(cel.Text))
+    If s = "" Then
+        M09_ParseNumber = 0
+        Exit Function
+    End If
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        M09_ParseNumber = CDbl(s)
+        If neg Then M09_ParseNumber = -M09_ParseNumber
+    Else
+        M09_ParseNumber = 0
+    End If
+    Exit Function
+
+ErrHandler:
+    M09_ParseNumber = 0
+End Function
+
+
+Private Function M09_TryParseDateCell(ByVal cel As Range, ByRef outDate As Date) As Boolean
+    Dim s As String
+    Dim p() As String
+    Dim dd As Long, mm As Long, yy As Long
+    Dim dt As Date
+
+    On Error GoTo ErrHandler
+
+    M09_TryParseDateCell = False
+
+    If VarType(cel.Value) = vbDate Then
+        outDate = CDate(cel.Value)
+        M09_TryParseDateCell = True
+        Exit Function
+    End If
+
+    s = Trim$(CStr(cel.Text))
+    s = Replace(s, ".", "/")
+    s = Replace(s, "-", "/")
+    s = Replace(s, Chr(160), "")
+
+    If s = "" Then Exit Function
+
+    p = Split(s, "/")
+    If UBound(p) <> 2 Then Exit Function
+
+    dd = Val(p(0))
+    mm = Val(p(1))
+    yy = Val(p(2))
+
+    If yy < 100 Then yy = 2000 + yy
+
+    dt = DateSerial(yy, mm, dd)
+
+    If Year(dt) <> yy Or Month(dt) <> mm Or Day(dt) <> dd Then Exit Function
+
+    outDate = dt
+    M09_TryParseDateCell = True
+    Exit Function
+
+ErrHandler:
+    M09_TryParseDateCell = False
+End Function
+
+Public Sub P03_HOMOLOGAR_Y_SEPARAR_CFDI()
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    ' CFDI E: usa nombre del EMISOR como contraparte
+    C01X_ProcesarCFDI _
+        sourceSheetName:="CFDI E", _
+        prefixName:="CFDI_E", _
+        nombreHeaders:=Array("Nombre, denominación o razón social del Emisor", "Nombre, denominacion o razon social del Emisor"), _
+        usoHeaders:=Array("Uso CFDI Receptor"), _
+        tipoHeaders:=Array("Tipo Comp.", "Tipo.Com"), _
+        formaHeaders:=Array("Forma de Pago", "Forma Pago"), _
+        metodoHeaders:=Array("Método de Pago", "Metodo de Pago", "METODO DE PAGO")
+
+    ' CFDI I: usa nombre del RECEPTOR
+    C01X_ProcesarCFDI _
+        sourceSheetName:="CFDI I", _
+        prefixName:="CFDI_I", _
+        nombreHeaders:=Array("Nombre, denominación o razón social del Receptor", "Nombre, denominacion o razon social del Receptor"), _
+        usoHeaders:=Array("Uso CFDI Receptor"), _
+        tipoHeaders:=Array("Tipo.Com", "Tipo Comp."), _
+        formaHeaders:=Array("Forma de Pago", "Forma Pago"), _
+        metodoHeaders:=Array("Método de Pago", "Metodo de Pago", "METODO DE PAGO")
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    If Not P00_MODO_MAESTRO Then
+        MsgBox "CFDI E / CFDI I preparados con el nuevo formato.", vbInformation
+    End If
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en C01_PREPARAR_CFDI_E_I_FORMATO2: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub C01X_ProcesarCFDI( _
+    ByVal sourceSheetName As String, _
+    ByVal prefixName As String, _
+    ByVal nombreHeaders As Variant, _
+    ByVal usoHeaders As Variant, _
+    ByVal tipoHeaders As Variant, _
+    ByVal formaHeaders As Variant, _
+    ByVal metodoHeaders As Variant)
+
+    Dim wsSrc As Worksheet
+    Dim wsL As Worksheet, wsPUE As Worksheet, wsPPD As Worksheet
+
+    Dim hdrRow As Long, lastRow As Long, lastCol As Long
+    Dim colUUID As Long, colFechaEmi As Long, colPDF As Long, colRFC As Long
+    Dim colNombre As Long, colUso As Long, colTipo As Long
+    Dim colForma As Long, colMetodo As Long, colSubTotal As Long
+    Dim colISR As Long, colIVA As Long, colIVA16 As Long
+    Dim colTotal As Long, colConceptos As Long, colEstatus As Long
+
+    Dim mapL As Object, mapPUE As Object, mapPPD As Object
+    Dim r As Long
+    Dim outL As Long, outP As Long, outD As Long
+
+    Dim uuid As String, rfc As String, nombre As String, usoCFDI As String
+    Dim tipoComp As String, formaPago As String, metodoPago As String
+    Dim pdfTxt As String, estatus As String, conceptos As String
+    Dim subTotal As Double, isrVal As Double, ivaVal As Double, iva16Val As Double, totalVal As Double
+    Dim dt As Date
+
+    Set wsSrc = C01X_GetSheet(sourceSheetName)
+    If wsSrc Is Nothing Then
+        MsgBox "No existe la hoja '" & sourceSheetName & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrRow = C01X_FindHeaderRowCFDI(wsSrc)
+    If hdrRow = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en '" & sourceSheetName & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    colUUID = C01X_FindHeaderCol(wsSrc, hdrRow, Array("UUID"))
+    colFechaEmi = C01X_FindHeaderCol(wsSrc, hdrRow, Array("Fecha Emisión", "Fecha Emision"))
+    colPDF = C01X_FindHeaderCol(wsSrc, hdrRow, Array("Fecha Timbrado"))
+    colRFC = C01X_FindHeaderCol(wsSrc, hdrRow, Array("RFC"))
+    colNombre = C01X_FindHeaderCol(wsSrc, hdrRow, nombreHeaders)
+    colUso = C01X_FindHeaderCol(wsSrc, hdrRow, usoHeaders)
+    colTipo = C01X_FindHeaderCol(wsSrc, hdrRow, tipoHeaders)
+    colForma = C01X_FindHeaderCol(wsSrc, hdrRow, formaHeaders)
+    colMetodo = C01X_FindHeaderCol(wsSrc, hdrRow, metodoHeaders)
+    colSubTotal = C01X_FindHeaderCol(wsSrc, hdrRow, Array("SubTotal XML", "Subtotal XML"))
+    colISR = C01X_FindHeaderCol(wsSrc, hdrRow, Array("ISR", "ISR "))
+    colIVA = C01X_FindHeaderCol(wsSrc, hdrRow, Array("IVA"))
+    colIVA16 = C01X_FindHeaderCol(wsSrc, hdrRow, Array("IVA 16"))
+    colTotal = C01X_FindHeaderCol(wsSrc, hdrRow, Array("Total"))
+    colConceptos = C01X_FindHeaderCol(wsSrc, hdrRow, Array("Conceptos"))
+    colEstatus = C01X_FindHeaderCol(wsSrc, hdrRow, Array("Estatus"))
+
+    If colUUID = 0 Or colFechaEmi = 0 Or colRFC = 0 Or colNombre = 0 Or colMetodo = 0 Then
+        MsgBox "Faltan encabezados requeridos en '" & sourceSheetName & "'." & vbCrLf & _
+               "Se requiere al menos: UUID, Fecha Emisión, RFC, Nombre y Método de Pago.", vbExclamation
+        Exit Sub
+    End If
+
+    lastRow = C01X_LastUsedRow(wsSrc)
+    lastCol = C01X_LastUsedCol(wsSrc, hdrRow)
+
+    If lastRow <= hdrRow Then Exit Sub
+
+    ' Cargar cuenta bancaria previa
+    Set mapL = CreateObject("Scripting.Dictionary")
+    Set mapPUE = C01X_LoadCuentaMap(prefixName & "_PUE")
+    Set mapPPD = C01X_LoadCuentaMap(prefixName & "_PPD")
+
+    C01X_MergeMaps mapL, mapPUE
+    C01X_MergeMaps mapL, mapPPD
+    C01X_MergeMaps mapL, C01X_LoadCuentaMap(prefixName & "_LIMPIO")
+
+    ' Recrear hojas
+    C01X_DeleteSheetIfExists prefixName & "_LIMPIO"
+    C01X_DeleteSheetIfExists prefixName & "_PUE"
+    C01X_DeleteSheetIfExists prefixName & "_PPD"
+
+    Set wsL = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+    wsL.Name = prefixName & "_LIMPIO"
+
+    Set wsPUE = ThisWorkbook.Worksheets.Add(After:=wsL)
+    wsPUE.Name = prefixName & "_PUE"
+
+    Set wsPPD = ThisWorkbook.Worksheets.Add(After:=wsPUE)
+    wsPPD.Name = prefixName & "_PPD"
+
+    C01X_WriteHeaders wsL
+    C01X_WriteHeaders wsPUE
+    C01X_WriteHeaders wsPPD
+
+    outL = 2
+    outP = 2
+    outD = 2
+
+    For r = hdrRow + 1 To lastRow
+
+        If C01X_RowIsEmpty(wsSrc, r, lastCol) Then GoTo NextR
+
+        uuid = Trim$(CStr(wsSrc.Cells(r, colUUID).Text))
+        If uuid = "" Then GoTo NextR
+
+        If colRFC > 0 Then rfc = Trim$(CStr(wsSrc.Cells(r, colRFC).Text)) Else rfc = ""
+        If colNombre > 0 Then nombre = Trim$(CStr(wsSrc.Cells(r, colNombre).Text)) Else nombre = ""
+        If colUso > 0 Then usoCFDI = Trim$(CStr(wsSrc.Cells(r, colUso).Text)) Else usoCFDI = ""
+        If colTipo > 0 Then tipoComp = Trim$(CStr(wsSrc.Cells(r, colTipo).Text)) Else tipoComp = ""
+        If colForma > 0 Then formaPago = Trim$(CStr(wsSrc.Cells(r, colForma).Text)) Else formaPago = ""
+        If colMetodo > 0 Then metodoPago = UCase$(Trim$(CStr(wsSrc.Cells(r, colMetodo).Text))) Else metodoPago = ""
+        If colPDF > 0 Then pdfTxt = Trim$(CStr(wsSrc.Cells(r, colPDF).Text)) Else pdfTxt = ""
+        If colConceptos > 0 Then conceptos = Trim$(CStr(wsSrc.Cells(r, colConceptos).Text)) Else conceptos = ""
+        If colEstatus > 0 Then estatus = Trim$(CStr(wsSrc.Cells(r, colEstatus).Text)) Else estatus = ""
+
+        If colSubTotal > 0 Then subTotal = C01X_ParseNumber(wsSrc.Cells(r, colSubTotal).Value) Else subTotal = 0
+        If colISR > 0 Then isrVal = C01X_ParseNumber(wsSrc.Cells(r, colISR).Value) Else isrVal = 0
+        If colIVA > 0 Then ivaVal = C01X_ParseNumber(wsSrc.Cells(r, colIVA).Value) Else ivaVal = 0
+        If colIVA16 > 0 Then iva16Val = C01X_ParseNumber(wsSrc.Cells(r, colIVA16).Value) Else iva16Val = 0
+        If colTotal > 0 Then totalVal = C01X_ParseNumber(wsSrc.Cells(r, colTotal).Value) Else totalVal = 0
+
+        ' Siempre a LIMPIO
+        C01X_WriteRow wsL, outL, wsSrc.Cells(r, colFechaEmi), uuid, pdfTxt, rfc, nombre, usoCFDI, tipoComp, formaPago, metodoPago, subTotal, isrVal, ivaVal, iva16Val, totalVal, conceptos
+        outL = outL + 1
+
+        ' Solo vigentes a PUE/PPD
+        If C01X_EsCancelado(estatus) Then GoTo NextR
+
+        If metodoPago = "PUE" Then
+            C01X_WriteRow wsPUE, outP, wsSrc.Cells(r, colFechaEmi), uuid, pdfTxt, rfc, nombre, usoCFDI, tipoComp, formaPago, metodoPago, subTotal, isrVal, ivaVal, iva16Val, totalVal, conceptos
+            outP = outP + 1
+        ElseIf metodoPago = "PPD" Then
+            C01X_WriteRow wsPPD, outD, wsSrc.Cells(r, colFechaEmi), uuid, pdfTxt, rfc, nombre, usoCFDI, tipoComp, formaPago, metodoPago, subTotal, isrVal, ivaVal, iva16Val, totalVal, conceptos
+            outD = outD + 1
+        End If
+
+NextR:
+    Next r
+
+    C01X_ApplyCuentaMap wsL, mapL
+    C01X_ApplyCuentaMap wsPUE, mapPUE
+    C01X_ApplyCuentaMap wsPPD, mapPPD
+
+    C01X_FormatOutput wsL
+    C01X_FormatOutput wsPUE
+    C01X_FormatOutput wsPPD
+
+    C01X_SortByFecha wsL
+    C01X_SortByFecha wsPUE
+    C01X_SortByFecha wsPPD
+
+End Sub
+
+
+Private Sub C01X_WriteHeaders(ByVal ws As Worksheet)
+    ws.Cells(1, 1).Value = "UUID"
+    ws.Cells(1, 2).Value = "Fecha Emisión"
+    ws.Cells(1, 3).Value = "PDF"
+    ws.Cells(1, 4).Value = "RFC"
+    ws.Cells(1, 5).Value = "Nombre, denominación o razón social del Receptor"
+    ws.Cells(1, 6).Value = "Uso CFDI Receptor"
+    ws.Cells(1, 7).Value = "Tipo.Com"
+    ws.Cells(1, 8).Value = "Forma de Pago"
+    ws.Cells(1, 9).Value = "Método de Pago"
+    ws.Cells(1, 10).Value = "SubTotal XML"
+    ws.Cells(1, 11).Value = "ISR"
+    ws.Cells(1, 12).Value = "IVA"
+    ws.Cells(1, 13).Value = "IVA 16"
+    ws.Cells(1, 14).Value = "Total"
+    ws.Cells(1, 15).Value = "Conceptos"
+    ws.Cells(1, 16).Value = "Cuenta bancaria"
+End Sub
+
+
+Private Sub C01X_WriteRow( _
+    ByVal ws As Worksheet, _
+    ByVal targetRow As Long, _
+    ByVal fechaCell As Range, _
+    ByVal uuid As String, _
+    ByVal pdfTxt As String, _
+    ByVal rfc As String, _
+    ByVal nombre As String, _
+    ByVal usoCFDI As String, _
+    ByVal tipoComp As String, _
+    ByVal formaPago As String, _
+    ByVal metodoPago As String, _
+    ByVal subTotal As Double, _
+    ByVal isrVal As Double, _
+    ByVal ivaVal As Double, _
+    ByVal iva16Val As Double, _
+    ByVal totalVal As Double, _
+    ByVal conceptos As String)
+
+    Dim dt As Date
+
+    ws.Cells(targetRow, 1).Value = uuid
+
+    If C01X_TryParseCFDIFecha(fechaCell, dt) Then
+        ws.Cells(targetRow, 2).Value = dt
+    Else
+        ws.Cells(targetRow, 2).Value = fechaCell.Text
+    End If
+
+    ws.Cells(targetRow, 3).Value = pdfTxt
+    ws.Cells(targetRow, 4).Value = rfc
+    ws.Cells(targetRow, 5).Value = nombre
+    ws.Cells(targetRow, 6).Value = usoCFDI
+    ws.Cells(targetRow, 7).Value = tipoComp
+    ws.Cells(targetRow, 8).Value = formaPago
+    ws.Cells(targetRow, 9).Value = metodoPago
+    ws.Cells(targetRow, 10).Value = subTotal
+    ws.Cells(targetRow, 11).Value = isrVal
+    ws.Cells(targetRow, 12).Value = ivaVal
+    ws.Cells(targetRow, 13).Value = iva16Val
+    ws.Cells(targetRow, 14).Value = totalVal
+    ws.Cells(targetRow, 15).Value = conceptos
+End Sub
+
+
+Private Sub C01X_FormatOutput(ByVal ws As Worksheet)
+
+    Dim lastRow As Long
+    lastRow = C01X_LastUsedRow(ws)
+
+    ws.Columns(1).NumberFormat = "@"
+    ws.Columns(3).NumberFormat = "@"
+    ws.Columns(4).NumberFormat = "@"
+    ws.Columns(16).NumberFormat = "@"
+
+    If lastRow >= 2 Then
+        ws.Range(ws.Cells(2, 2), ws.Cells(lastRow, 2)).NumberFormat = "dd/mm/yyyy"
+        ws.Range(ws.Cells(2, 10), ws.Cells(lastRow, 14)).NumberFormat = "#,##0.00"
+    End If
+
+    ws.Rows(1).Font.Bold = True
+
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(1, 1), ws.Cells(Application.Max(lastRow, 2), 16)).AutoFilter
+
+    ws.Columns("A:P").EntireColumn.AutoFit
+End Sub
+
+
+Private Sub C01X_SortByFecha(ByVal ws As Worksheet)
+
+    Dim lastRow As Long
+    lastRow = C01X_LastUsedRow(ws)
+
+    If lastRow < 3 Then Exit Sub
+
+    ws.Range("A1:P" & lastRow).Sort _
+        Key1:=ws.Range("B2:B" & lastRow), _
+        Order1:=xlAscending, _
+        Header:=xlYes
+End Sub
+
+
+Private Function C01X_EsCancelado(ByVal estatus As String) As Boolean
+    Dim s As String
+    s = UCase$(Trim$(estatus))
+
+    If InStr(1, s, "CANCEL", vbTextCompare) > 0 Then
+        C01X_EsCancelado = True
+    Else
+        C01X_EsCancelado = False
+    End If
+End Function
+
+
+Private Function C01X_TryParseCFDIFecha(ByVal cel As Range, ByRef outDate As Date) As Boolean
+
+    Dim s As String
+    Dim soloFecha As String
+    Dim p() As String
+    Dim yy As Long, mm As Long, dd As Long
+    Dim dt As Date
+
+    On Error GoTo ErrHandler
+    C01X_TryParseCFDIFecha = False
+
+    If VarType(cel.Value) = vbDate Then
+        outDate = CDate(cel.Value)
+        C01X_TryParseCFDIFecha = True
+        Exit Function
+    End If
+
+    s = Trim$(CStr(cel.Text))
+    If s = "" Then Exit Function
+
+    s = Replace(s, "T", " ")
+    soloFecha = Split(s, " ")(0)
+    soloFecha = Replace(soloFecha, ".", "-")
+    soloFecha = Replace(soloFecha, "/", "-")
+
+    p = Split(soloFecha, "-")
+    If UBound(p) <> 2 Then Exit Function
+
+    If Len(p(0)) = 4 Then
+        yy = Val(p(0))
+        mm = Val(p(1))
+        dd = Val(p(2))
+    Else
+        dd = Val(p(0))
+        mm = Val(p(1))
+        yy = Val(p(2))
+        If yy < 100 Then yy = 2000 + yy
+    End If
+
+    dt = DateSerial(yy, mm, dd)
+
+    If Year(dt) <> yy Or Month(dt) <> mm Or Day(dt) <> dd Then Exit Function
+
+    outDate = dt
+    C01X_TryParseCFDIFecha = True
+    Exit Function
+
+ErrHandler:
+    C01X_TryParseCFDIFecha = False
+End Function
+
+
+Private Function C01X_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        C01X_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        C01X_ParseNumber = CDbl(s)
+        If neg Then C01X_ParseNumber = -C01X_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    C01X_ParseNumber = 0
+End Function
+
+
+Private Function C01X_FindHeaderRowCFDI(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If C01X_FindHeaderCol(ws, r, Array("UUID")) > 0 And _
+           C01X_FindHeaderCol(ws, r, Array("Fecha Emisión", "Fecha Emision")) > 0 Then
+            C01X_FindHeaderRowCFDI = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function C01X_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = C01X_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = C01X_NormHeader(CStr(headerNames(i))) Then
+                C01X_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function C01X_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    C01X_NormHeader = s
+End Function
+
+
+Private Function C01X_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        C01X_LastUsedRow = 0
+    Else
+        C01X_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function C01X_LastUsedCol(ByVal ws As Worksheet, ByVal hdrRow As Long) As Long
+    Dim c As Range
+
+    Set c = ws.Rows(hdrRow).Find(What:="*", _
+                                 After:=ws.Cells(hdrRow, 1), _
+                                 LookIn:=xlFormulas, _
+                                 LookAt:=xlPart, _
+                                 SearchOrder:=xlByColumns, _
+                                 SearchDirection:=xlPrevious, _
+                                 MatchCase:=False)
+
+    If c Is Nothing Then
+        C01X_LastUsedCol = 0
+    Else
+        C01X_LastUsedCol = c.Column
+    End If
+End Function
+
+
+Private Function C01X_RowIsEmpty(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal lastCol As Long) As Boolean
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim$(CStr(ws.Cells(rowNum, c).Text)) <> "" Then Exit Function
+    Next c
+    C01X_RowIsEmpty = True
+End Function
+
+
+Private Function C01X_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set C01X_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Sub C01X_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+
+
+Private Function C01X_LoadCuentaMap(ByVal sheetName As String) As Object
+
+    Dim dict As Object
+    Dim ws As Worksheet
+    Dim colUUID As Long, colCuenta As Long, lastRow As Long
+    Dim r As Long
+    Dim uuid As String, cuenta As String
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    Set ws = C01X_GetSheet(sheetName)
+    If ws Is Nothing Then
+        Set C01X_LoadCuentaMap = dict
+        Exit Function
+    End If
+
+    colUUID = C01X_FindHeaderCol(ws, 1, Array("UUID"))
+    colCuenta = C01X_FindHeaderCol(ws, 1, Array("Cuenta bancaria"))
+
+    If colUUID = 0 Or colCuenta = 0 Then
+        Set C01X_LoadCuentaMap = dict
+        Exit Function
+    End If
+
+    lastRow = C01X_LastUsedRow(ws)
+    If lastRow < 2 Then
+        Set C01X_LoadCuentaMap = dict
+        Exit Function
+    End If
+
+    For r = 2 To lastRow
+        uuid = Trim$(CStr(ws.Cells(r, colUUID).Text))
+        cuenta = Trim$(CStr(ws.Cells(r, colCuenta).Text))
+
+        If uuid <> "" And cuenta <> "" Then
+            If Not dict.Exists(uuid) Then dict.Add uuid, cuenta
+        End If
+    Next r
+
+    Set C01X_LoadCuentaMap = dict
+End Function
+
+
+Private Sub C01X_ApplyCuentaMap(ByVal ws As Worksheet, ByVal dict As Object)
+
+    Dim colUUID As Long, colCuenta As Long, lastRow As Long
+    Dim r As Long
+    Dim uuid As String
+
+    If ws Is Nothing Then Exit Sub
+    If dict Is Nothing Then Exit Sub
+
+    colUUID = C01X_FindHeaderCol(ws, 1, Array("UUID"))
+    colCuenta = C01X_FindHeaderCol(ws, 1, Array("Cuenta bancaria"))
+
+    If colUUID = 0 Or colCuenta = 0 Then Exit Sub
+
+    lastRow = C01X_LastUsedRow(ws)
+    If lastRow < 2 Then Exit Sub
+
+    For r = 2 To lastRow
+        uuid = Trim$(CStr(ws.Cells(r, colUUID).Text))
+        If uuid <> "" Then
+            If dict.Exists(uuid) Then
+                If Trim$(CStr(ws.Cells(r, colCuenta).Text)) = "" Then
+                    ws.Cells(r, colCuenta).Value = dict(uuid)
+                End If
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub C01X_MergeMaps(ByVal targetDict As Object, ByVal sourceDict As Object)
+    Dim k As Variant
+
+    If targetDict Is Nothing Then Exit Sub
+    If sourceDict Is Nothing Then Exit Sub
+
+    For Each k In sourceDict.Keys
+        If Not targetDict.Exists(CStr(k)) Then
+            targetDict.Add CStr(k), sourceDict(k)
+        End If
+    Next k
+End Sub
+
+Public Sub P04_DEPURAR_MP_Y_ACTUALIZAR_BASE()
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    MP_CrearLimpio
+    MP_ActualizarBaseSinDuplicados
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    If Not P00_MODO_MAESTRO Then
+        MsgBox "Proceso terminado: MP_LIMPIO y MP_BASE listos.", vbInformation
+    End If
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en MP_PREPARAR_LIMPIO_Y_BASE: " & Err.Description, vbExclamation
+End Sub
+
+
+' =========================================================
+' PROCESO 1: CREAR MP_LIMPIO
+' =========================================================
+Private Sub MP_CrearLimpio()
+
+    Dim wsSrc As Worksheet
+    Dim wsOut As Worksheet
+    Dim hdrRow As Long
+    Dim lastRow As Long
+
+    Dim colFecha As Long
+    Dim colDetalle As Long
+    Dim colCargo As Long
+    Dim colOperacion As Long
+    Dim colSucursal As Long
+    Dim colValorOp As Long
+
+    Dim r As Long
+    Dim outRow As Long
+    Dim dt As Date
+
+    Set wsSrc = MP_GetSheet("MP")
+    If wsSrc Is Nothing Then
+        Err.Raise vbObjectError + 1001, , "No existe la hoja 'MP'."
+    End If
+
+    hdrRow = MP_FindHeaderRow(wsSrc)
+    If hdrRow = 0 Then
+        Err.Raise vbObjectError + 1002, , "No pude identificar la fila de encabezados en la hoja MP."
+    End If
+
+    colFecha = MP_FindHeaderCol(wsSrc, hdrRow, Array("Fecha del cargo"))
+    colDetalle = MP_FindHeaderCol(wsSrc, hdrRow, Array("Detalle"))
+    colCargo = MP_FindHeaderCol(wsSrc, hdrRow, Array("Valor del cargo"))
+    colOperacion = MP_FindHeaderCol(wsSrc, hdrRow, Array("Operación relacionada", "Operacion relacionada"))
+    colSucursal = MP_FindHeaderCol(wsSrc, hdrRow, Array("Nombre de sucursal"))
+    colValorOp = MP_FindHeaderCol(wsSrc, hdrRow, Array("Valor de la operación", "Valor de la operacion"))
+
+    If colFecha = 0 Or colDetalle = 0 Or colCargo = 0 Or colOperacion = 0 Or colSucursal = 0 Or colValorOp = 0 Then
+        Err.Raise vbObjectError + 1003, , _
+            "Faltan columnas requeridas en MP." & vbCrLf & _
+            "Se necesitan: Fecha del cargo, Detalle, Valor del cargo, Operación relacionada, Nombre de sucursal y Valor de la operación."
+    End If
+
+    lastRow = MP_LastUsedRow(wsSrc)
+    If lastRow <= hdrRow Then
+        Err.Raise vbObjectError + 1004, , "No hay datos debajo del encabezado en MP."
+    End If
+
+    MP_DeleteSheetIfExists "MP_LIMPIO"
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+    wsOut.Name = "MP_LIMPIO"
+
+    ' Encabezados finales
+    wsOut.Cells(1, 1).Value = "Día"
+    wsOut.Cells(1, 2).Value = "Detalle"
+    wsOut.Cells(1, 3).Value = "Valor del cargo"
+    wsOut.Cells(1, 4).Value = "Operación relacionada"
+    wsOut.Cells(1, 5).Value = "Nombre de sucursal"
+    wsOut.Cells(1, 6).Value = "Valor de la operación"
+
+    ' Formato texto para evitar notación científica
+    wsOut.Columns(4).NumberFormat = "@"
+
+    outRow = 2
+
+    For r = hdrRow + 1 To lastRow
+
+        If MP_RowTieneDatos(wsSrc, r, Array(colFecha, colDetalle, colCargo, colOperacion, colSucursal, colValorOp)) Then
+
+            ' Día
+            If MP_TryParseDateCell(wsSrc.Cells(r, colFecha), dt) Then
+                wsOut.Cells(outRow, 1).Value = dt
+            Else
+                wsOut.Cells(outRow, 1).Value = wsSrc.Cells(r, colFecha).Text
+            End If
+
+            ' Detalle
+            wsOut.Cells(outRow, 2).Value = Trim$(CStr(wsSrc.Cells(r, colDetalle).Value))
+
+            ' Valor del cargo
+            wsOut.Cells(outRow, 3).Value = MP_ParseNumber(wsSrc.Cells(r, colCargo))
+
+            ' Operación relacionada
+            wsOut.Cells(outRow, 4).Value = MP_NormalizeTextKey(wsSrc.Cells(r, colOperacion))
+
+            ' Nombre de sucursal
+            wsOut.Cells(outRow, 5).Value = Trim$(CStr(wsSrc.Cells(r, colSucursal).Value))
+
+            ' Valor de la operación
+            wsOut.Cells(outRow, 6).Value = MP_ParseNumber(wsSrc.Cells(r, colValorOp))
+
+            outRow = outRow + 1
+        End If
+    Next r
+
+    ' Formatos
+    wsOut.Rows(1).Font.Bold = True
+
+    If outRow > 2 Then
+        wsOut.Range("A2:A" & (outRow - 1)).NumberFormat = "dd/mm/yyyy"
+        wsOut.Range("C2:C" & (outRow - 1)).NumberFormat = "#,##0.00"
+        wsOut.Range("F2:F" & (outRow - 1)).NumberFormat = "#,##0.00"
+    End If
+
+    ' Ordenar por Día
+    If outRow > 2 Then
+        wsOut.Range("A1:F" & (outRow - 1)).Sort _
+            Key1:=wsOut.Range("A2:A" & (outRow - 1)), _
+            Order1:=xlAscending, _
+            Header:=xlYes
+    End If
+
+    If wsOut.AutoFilterMode Then wsOut.AutoFilterMode = False
+    wsOut.Range("A1:F" & Application.Max(outRow - 1, 2)).AutoFilter
+    wsOut.Columns("A:F").EntireColumn.AutoFit
+
+End Sub
+
+
+' =========================================================
+' PROCESO 2: CREAR / ACTUALIZAR MP_BASE SIN DUPLICADOS
+' =========================================================
+Private Sub MP_ActualizarBaseSinDuplicados()
+
+    Dim wsSrc As Worksheet
+    Dim wsBase As Worksheet
+
+    Dim lastRowSrc As Long
+    Dim lastRowBase As Long
+    Dim r As Long
+    Dim outRow As Long
+
+    Dim dict As Object
+    Dim key As String
+
+    Set wsSrc = MP_GetSheet("MP_LIMPIO")
+    If wsSrc Is Nothing Then
+        Err.Raise vbObjectError + 1101, , "No existe la hoja 'MP_LIMPIO'."
+    End If
+
+    Set wsBase = MP_GetSheet("MP_BASE")
+
+    If wsBase Is Nothing Then
+        Set wsBase = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+        wsBase.Name = "MP_BASE"
+
+        wsBase.Range("A1:F1").Value = wsSrc.Range("A1:F1").Value
+        wsBase.Rows(1).Font.Bold = True
+        wsBase.Columns(4).NumberFormat = "@"
+    End If
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    ' Cargar llaves existentes de MP_BASE
+    lastRowBase = MP_LastUsedRow(wsBase)
+    If lastRowBase >= 2 Then
+        For r = 2 To lastRowBase
+            key = MP_BuildBaseKey( _
+                    wsBase.Cells(r, 1).Value, _
+                    wsBase.Cells(r, 2).Value, _
+                    wsBase.Cells(r, 3).Value, _
+                    wsBase.Cells(r, 4).Value, _
+                    wsBase.Cells(r, 5).Value, _
+                    wsBase.Cells(r, 6).Value)
+
+            If key <> "" Then
+                If Not dict.Exists(key) Then dict.Add key, True
+            End If
+        Next r
+    End If
+
+    ' Agregar nuevos desde MP_LIMPIO
+    lastRowSrc = MP_LastUsedRow(wsSrc)
+    outRow = Application.Max(2, lastRowBase + 1)
+
+    If lastRowSrc >= 2 Then
+        For r = 2 To lastRowSrc
+
+            key = MP_BuildBaseKey( _
+                    wsSrc.Cells(r, 1).Value, _
+                    wsSrc.Cells(r, 2).Value, _
+                    wsSrc.Cells(r, 3).Value, _
+                    wsSrc.Cells(r, 4).Value, _
+                    wsSrc.Cells(r, 5).Value, _
+                    wsSrc.Cells(r, 6).Value)
+
+            If key <> "" Then
+                If Not dict.Exists(key) Then
+                    wsBase.Cells(outRow, 1).Resize(1, 6).Value = wsSrc.Cells(r, 1).Resize(1, 6).Value
+                    wsBase.Cells(outRow, 4).NumberFormat = "@"
+                    dict.Add key, True
+                    outRow = outRow + 1
+                End If
+            End If
+        Next r
+    End If
+
+    lastRowBase = MP_LastUsedRow(wsBase)
+
+    ' Formatos
+    If lastRowBase >= 2 Then
+        wsBase.Range("A2:A" & lastRowBase).NumberFormat = "dd/mm/yyyy"
+        wsBase.Range("C2:C" & lastRowBase).NumberFormat = "#,##0.00"
+        wsBase.Range("F2:F" & lastRowBase).NumberFormat = "#,##0.00"
+    End If
+
+    ' Ordenar
+    If lastRowBase >= 3 Then
+        wsBase.Range("A1:F" & lastRowBase).Sort _
+            Key1:=wsBase.Range("A2:A" & lastRowBase), _
+            Order1:=xlAscending, _
+            Header:=xlYes
+    End If
+
+    If wsBase.AutoFilterMode Then wsBase.AutoFilterMode = False
+    wsBase.Range("A1:F" & Application.Max(lastRowBase, 2)).AutoFilter
+    wsBase.Columns("A:F").EntireColumn.AutoFit
+
+End Sub
+
+
+' =========================================================
+' FUNCIONES DE APOYO
+' =========================================================
+Private Function MP_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set MP_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Sub MP_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+
+
+Private Function MP_FindHeaderRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 15
+        If MP_FindHeaderCol(ws, r, Array("Fecha del cargo")) > 0 And _
+           MP_FindHeaderCol(ws, r, Array("Detalle")) > 0 Then
+            MP_FindHeaderRow = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function MP_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = MP_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = MP_NormHeader(CStr(headerNames(i))) Then
+                MP_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function MP_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    MP_NormHeader = s
+End Function
+
+
+Private Function MP_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        MP_LastUsedRow = 0
+    Else
+        MP_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function MP_RowTieneDatos(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal cols As Variant) As Boolean
+    Dim i As Long
+    For i = LBound(cols) To UBound(cols)
+        If Trim$(CStr(ws.Cells(rowNum, CLng(cols(i))).Text)) <> "" Then
+            MP_RowTieneDatos = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+
+Private Function MP_NormalizeTextKey(ByVal cel As Range) As String
+    Dim s As String
+
+    On Error GoTo Fallback
+
+    If IsEmpty(cel.Value2) Then Exit Function
+    If IsError(cel.Value2) Then Exit Function
+
+    If IsNumeric(cel.Value2) Then
+        MP_NormalizeTextKey = Format$(cel.Value2, "0")
+        Exit Function
+    End If
+
+Fallback:
+    s = Trim$(CStr(cel.Value2))
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    MP_NormalizeTextKey = s
+End Function
+
+
+Private Function MP_ParseNumber(ByVal cel As Range) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(cel.Value) Then
+        MP_ParseNumber = CDbl(cel.Value)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(cel.Text))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        MP_ParseNumber = CDbl(s)
+        If neg Then MP_ParseNumber = -MP_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    MP_ParseNumber = 0
+End Function
+
+
+Private Function MP_TryParseDateCell(ByVal cel As Range, ByRef outDate As Date) As Boolean
+    Dim s As String
+    Dim p() As String
+    Dim yy As Long, mm As Long, dd As Long
+    Dim dt As Date
+
+    On Error GoTo ErrHandler
+    MP_TryParseDateCell = False
+
+    If VarType(cel.Value) = vbDate Then
+        outDate = CDate(cel.Value)
+        MP_TryParseDateCell = True
+        Exit Function
+    End If
+
+    s = Trim$(CStr(cel.Text))
+    s = Replace(s, "T", " ")
+    s = Split(s, " ")(0)
+    s = Replace(s, ".", "-")
+    s = Replace(s, "/", "-")
+
+    If s = "" Then Exit Function
+
+    p = Split(s, "-")
+    If UBound(p) <> 2 Then Exit Function
+
+    If Len(p(0)) = 4 Then
+        yy = Val(p(0))
+        mm = Val(p(1))
+        dd = Val(p(2))
+    Else
+        dd = Val(p(0))
+        mm = Val(p(1))
+        yy = Val(p(2))
+        If yy < 100 Then yy = 2000 + yy
+    End If
+
+    dt = DateSerial(yy, mm, dd)
+
+    If Year(dt) <> yy Or Month(dt) <> mm Or Day(dt) <> dd Then Exit Function
+
+    outDate = dt
+    MP_TryParseDateCell = True
+    Exit Function
+
+ErrHandler:
+    MP_TryParseDateCell = False
+End Function
+
+
+Private Function MP_BuildBaseKey( _
+    ByVal vDia As Variant, _
+    ByVal vDetalle As Variant, _
+    ByVal vCargo As Variant, _
+    ByVal vOperacion As Variant, _
+    ByVal vSucursal As Variant, _
+    ByVal vValorOperacion As Variant) As String
+
+    Dim sDia As String
+    Dim sDetalle As String
+    Dim sCargo As String
+    Dim sOperacion As String
+    Dim sSucursal As String
+    Dim sValorOperacion As String
+
+    If IsDate(vDia) Then
+        sDia = Format$(CDate(vDia), "yyyymmdd")
+    Else
+        sDia = Trim$(CStr(vDia))
+    End If
+
+    sDetalle = UCase$(Trim$(CStr(vDetalle)))
+    sDetalle = Replace(sDetalle, Chr(160), "")
+    sDetalle = Replace(sDetalle, " ", "")
+
+    sCargo = Format$(Val(vCargo), "0.00")
+
+    sOperacion = Trim$(CStr(vOperacion))
+    sOperacion = Replace(sOperacion, Chr(160), "")
+    sOperacion = Replace(sOperacion, " ", "")
+
+    sSucursal = UCase$(Trim$(CStr(vSucursal)))
+    sSucursal = Replace(sSucursal, Chr(160), "")
+    sSucursal = Replace(sSucursal, " ", "")
+
+    sValorOperacion = Format$(Val(vValorOperacion), "0.00")
+
+    MP_BuildBaseKey = sDia & "|" & sDetalle & "|" & sCargo & "|" & sOperacion & "|" & sSucursal & "|" & sValorOperacion
+End Function
+
+Public Sub P05_CLASIFICAR_VENTAS_POR_COBRO()
+
+    Dim wsSrc As Worksheet
+    Dim wsMP As Worksheet, wsBBVA As Worksheet
+    Dim wsScooter As Worksheet, wsFisicoOtros As Worksheet, wsVacio As Worksheet
+
+    Dim hdrRow As Long, lastRow As Long, lastCol As Long
+    Dim colBanco As Long, colFecha As Long, colTrans As Long, colUUID As Long
+
+    Dim r As Long
+    Dim destino As Worksheet
+    Dim textoBanco As String
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsSrc = Nothing
+    On Error Resume Next
+    Set wsSrc = ThisWorkbook.Worksheets("NOTA DE VENTA")
+    On Error GoTo ErrHandler
+
+    If wsSrc Is Nothing Then
+        MsgBox "No existe la hoja 'NOTA DE VENTA'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrRow = VBC_FindHeaderRow(wsSrc)
+    If hdrRow = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en la hoja 'NOTA DE VENTA'.", vbExclamation
+        Exit Sub
+    End If
+
+    colBanco = VBC_FindHeaderCol(wsSrc, hdrRow, Array("bancos_cobro"))
+    If colBanco = 0 Then
+        MsgBox "No encontré la columna 'bancos_cobro' en la hoja 'NOTA DE VENTA'.", vbExclamation
+        Exit Sub
+    End If
+
+    colFecha = VBC_FindHeaderCol(wsSrc, hdrRow, Array("fecha"))
+    colTrans = VBC_FindHeaderCol(wsSrc, hdrRow, Array("numero_transaccion"))
+    colUUID = VBC_FindHeaderCol(wsSrc, hdrRow, Array("UUID"))
+
+    lastRow = VBC_LastUsedRow(wsSrc)
+    lastCol = VBC_LastUsedCol(wsSrc, hdrRow)
+
+    If lastRow <= hdrRow Then
+        MsgBox "No hay datos para separar en la hoja 'NOTA DE VENTA'.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    VBC_DeleteSheetIfExists "VENTAS_MP"
+    VBC_DeleteSheetIfExists "VENTAS_BBVA"
+    VBC_DeleteSheetIfExists "VENTAS_SCOOTERZONE"
+    VBC_DeleteSheetIfExists "VENTAS_FISICO_OTROS"
+    VBC_DeleteSheetIfExists "VENTAS_SIN_BANCO"
+
+    Set wsMP = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+    wsMP.Name = "VENTAS_MP"
+
+    Set wsBBVA = ThisWorkbook.Worksheets.Add(After:=wsMP)
+    wsBBVA.Name = "VENTAS_BBVA"
+
+    Set wsScooter = ThisWorkbook.Worksheets.Add(After:=wsBBVA)
+    wsScooter.Name = "VENTAS_SCOOTERZONE"
+
+    Set wsFisicoOtros = ThisWorkbook.Worksheets.Add(After:=wsScooter)
+    wsFisicoOtros.Name = "VENTAS_FISICO_OTROS"
+
+    Set wsVacio = ThisWorkbook.Worksheets.Add(After:=wsFisicoOtros)
+    wsVacio.Name = "VENTAS_SIN_BANCO"
+
+    wsMP.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+    wsBBVA.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+    wsScooter.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+    wsFisicoOtros.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+    wsVacio.Cells(1, 1).Resize(1, lastCol).Value = wsSrc.Cells(hdrRow, 1).Resize(1, lastCol).Value
+
+    For r = hdrRow + 1 To lastRow
+
+        If Not VBC_RowIsEmpty(wsSrc, r, lastCol) Then
+
+            textoBanco = VBC_NormalizeBankText(wsSrc.Cells(r, colBanco).Text)
+
+            If textoBanco = "" Then
+                Set destino = wsVacio
+
+            ElseIf InStr(1, textoBanco, "MERCADO PAGO", vbTextCompare) > 0 Or _
+                   InStr(1, textoBanco, "MERCADOPAGO", vbTextCompare) > 0 Then
+                Set destino = wsMP
+
+            ElseIf InStr(1, textoBanco, "BBVA", vbTextCompare) > 0 Then
+                Set destino = wsBBVA
+
+            ElseIf InStr(1, textoBanco, "SCOOTERZONE", vbTextCompare) > 0 Or _
+                   InStr(1, textoBanco, "SCOOTER ZONE", vbTextCompare) > 0 Then
+                Set destino = wsScooter
+
+            Else
+                Set destino = wsFisicoOtros
+            End If
+
+            VBC_CopyRow wsSrc, destino, r, lastCol
+        End If
+    Next r
+
+    VBC_FormatOutput wsMP, lastCol, colFecha, colTrans, colUUID
+    VBC_FormatOutput wsBBVA, lastCol, colFecha, colTrans, colUUID
+    VBC_FormatOutput wsScooter, lastCol, colFecha, colTrans, colUUID
+    VBC_FormatOutput wsFisicoOtros, lastCol, colFecha, colTrans, colUUID
+    VBC_FormatOutput wsVacio, lastCol, colFecha, colTrans, colUUID
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    If Not P00_MODO_MAESTRO Then
+        MsgBox "Separación terminada desde la hoja 'NOTA DE VENTA'." & vbCrLf & vbCrLf & _
+               "Se generaron:" & vbCrLf & _
+               "- VENTAS_MP" & vbCrLf & _
+               "- VENTAS_BBVA" & vbCrLf & _
+               "- VENTAS_SCOOTERZONE" & vbCrLf & _
+               "- VENTAS_FISICO_OTROS" & vbCrLf & _
+               "- VENTAS_SIN_BANCO", vbInformation
+    End If
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en P05_CLASIFICAR_VENTAS_POR_COBRO: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub VBC_CopyRow(ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal lastCol As Long)
+    Dim nextRow As Long
+    nextRow = VBC_LastUsedRow(wsDst) + 1
+    If nextRow < 2 Then nextRow = 2
+    wsDst.Cells(nextRow, 1).Resize(1, lastCol).Value = wsSrc.Cells(srcRow, 1).Resize(1, lastCol).Value
+End Sub
+
+
+Private Sub VBC_FormatOutput(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal colFecha As Long, ByVal colTrans As Long, ByVal colUUID As Long)
+
+    Dim lastRow As Long
+
+    lastRow = VBC_LastUsedRow(ws)
+
+    ws.Rows(1).Font.Bold = True
+
+    If colTrans > 0 Then ws.Columns(colTrans).NumberFormat = "@"
+    If colUUID > 0 Then ws.Columns(colUUID).NumberFormat = "@"
+
+    If colFecha > 0 And lastRow >= 2 Then
+        ws.Range(ws.Cells(2, colFecha), ws.Cells(lastRow, colFecha)).NumberFormat = "dd/mm/yyyy hh:mm"
+    End If
+
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(1, 1), ws.Cells(Application.Max(lastRow, 2), lastCol)).AutoFilter
+
+    If colFecha > 0 And lastRow >= 3 Then
+        ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Sort _
+            Key1:=ws.Range(ws.Cells(2, colFecha), ws.Cells(lastRow, colFecha)), _
+            Order1:=xlAscending, _
+            Header:=xlYes
+    End If
+
+    ws.Cells.EntireColumn.AutoFit
+End Sub
+
+
+Private Function VBC_FindHeaderRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If VBC_FindHeaderCol(ws, r, Array("id_venta")) > 0 And _
+           VBC_FindHeaderCol(ws, r, Array("bancos_cobro")) > 0 Then
+            VBC_FindHeaderRow = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function VBC_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = VBC_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = VBC_NormHeader(CStr(headerNames(i))) Then
+                VBC_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function VBC_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    VBC_NormHeader = s
+End Function
+
+
+Private Function VBC_NormalizeBankText(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, Chr(160), " ")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    VBC_NormalizeBankText = Trim$(s)
+End Function
+
+
+Private Function VBC_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        VBC_LastUsedRow = 0
+    Else
+        VBC_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function VBC_LastUsedCol(ByVal ws As Worksheet, ByVal hdrRow As Long) As Long
+    Dim c As Range
+
+    Set c = ws.Rows(hdrRow).Find(What:="*", _
+                                 After:=ws.Cells(hdrRow, 1), _
+                                 LookIn:=xlFormulas, _
+                                 LookAt:=xlPart, _
+                                 SearchOrder:=xlByColumns, _
+                                 SearchDirection:=xlPrevious, _
+                                 MatchCase:=False)
+
+    If c Is Nothing Then
+        VBC_LastUsedCol = 0
+    Else
+        VBC_LastUsedCol = c.Column
+    End If
+End Function
+
+
+Private Function VBC_RowIsEmpty(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal lastCol As Long) As Boolean
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim$(CStr(ws.Cells(rowNum, c).Text)) <> "" Then Exit Function
+    Next c
+    VBC_RowIsEmpty = True
+End Function
+
+
+Private Sub VBC_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+
+Public Sub P00_EJECUTAR_TODO_P01_A_P05()
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+    Dim prevAlerts As Boolean
+    Dim paso As String
+
+    On Error GoTo ErrHandler
+
+    If Not P00_ValidarHojasMinimas() Then Exit Sub
+
+    P00_MODO_MAESTRO = True
+    P00_CANCELADO = False
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+    prevAlerts = Application.DisplayAlerts
+
+    Application.StatusBar = "Iniciando proceso completo..."
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+
+    paso = "P01_PREPARAR_BANCOS_POR_FECHA"
+    Application.StatusBar = "Paso 1/5 - Preparando bancos por fecha..."
+    Call P01_PREPARAR_BANCOS_POR_FECHA
+    If P00_CANCELADO Then GoTo SalidaCancelada
+
+    paso = "P02_HOMOLOGAR_ESTADO_MP"
+    Application.StatusBar = "Paso 2/5 - Homologando EST MP..."
+    Call P02_HOMOLOGAR_ESTADO_MP
+    If Not P00_HojaContieneTexto("EST MP", "REFERENCE_ID") Then
+        Err.Raise vbObjectError + 2001, , "P02 no dejó listo el formato esperado en 'EST MP'."
+    End If
+
+    paso = "P03_HOMOLOGAR_Y_SEPARAR_CFDI"
+    Application.StatusBar = "Paso 3/5 - Procesando CFDI E / CFDI I..."
+    Call P03_HOMOLOGAR_Y_SEPARAR_CFDI
+    If Not P00_HojaExiste("CFDI_E_LIMPIO") Or _
+       Not P00_HojaExiste("CFDI_E_PUE") Or _
+       Not P00_HojaExiste("CFDI_E_PPD") Or _
+       Not P00_HojaExiste("CFDI_I_LIMPIO") Or _
+       Not P00_HojaExiste("CFDI_I_PUE") Or _
+       Not P00_HojaExiste("CFDI_I_PPD") Then
+        Err.Raise vbObjectError + 2002, , "P03 no generó todas las hojas esperadas de CFDI."
+    End If
+
+    paso = "P04_DEPURAR_MP_Y_ACTUALIZAR_BASE"
+    Application.StatusBar = "Paso 4/5 - Depurando MP y actualizando base..."
+    Call P04_DEPURAR_MP_Y_ACTUALIZAR_BASE
+    If Not P00_HojaExiste("MP_LIMPIO") Or Not P00_HojaExiste("MP_BASE") Then
+        Err.Raise vbObjectError + 2003, , "P04 no generó 'MP_LIMPIO' y/o 'MP_BASE'."
+    End If
+
+    paso = "P05_CLASIFICAR_VENTAS_POR_COBRO"
+    Application.StatusBar = "Paso 5/5 - Clasificando ventas..."
+    Call P05_CLASIFICAR_VENTAS_POR_COBRO
+    If Not P00_HojaExiste("VENTAS_MP") Or _
+       Not P00_HojaExiste("VENTAS_BBVA") Or _
+       Not P00_HojaExiste("VENTAS_SCOOTERZONE") Or _
+       Not P00_HojaExiste("VENTAS_FISICO_OTROS") Or _
+       Not P00_HojaExiste("VENTAS_SIN_BANCO") Then
+        Err.Raise vbObjectError + 2004, , "P05 no generó todas las hojas de ventas esperadas."
+    End If
+
+SalidaOk:
+    P00_MODO_MAESTRO = False
+    P00_CANCELADO = False
+    Application.StatusBar = False
+    Application.Calculation = prevCalc
+    Application.ScreenUpdating = prevScreen
+    Application.EnableEvents = prevEvents
+    Application.DisplayAlerts = prevAlerts
+
+    MsgBox "Proceso completo terminado correctamente." & vbCrLf & vbCrLf & _
+           "Se ejecutaron:" & vbCrLf & _
+           "1. P01_PREPARAR_BANCOS_POR_FECHA" & vbCrLf & _
+           "2. P02_HOMOLOGAR_ESTADO_MP" & vbCrLf & _
+           "3. P03_HOMOLOGAR_Y_SEPARAR_CFDI" & vbCrLf & _
+           "4. P04_DEPURAR_MP_Y_ACTUALIZAR_BASE" & vbCrLf & _
+           "5. P05_CLASIFICAR_VENTAS_POR_COBRO", vbInformation
+    Exit Sub
+
+SalidaCancelada:
+    P00_MODO_MAESTRO = False
+    P00_CANCELADO = False
+    Application.StatusBar = False
+    Application.Calculation = prevCalc
+    Application.ScreenUpdating = prevScreen
+    Application.EnableEvents = prevEvents
+    Application.DisplayAlerts = prevAlerts
+
+    MsgBox "Proceso cancelado por el usuario en: " & paso, vbExclamation
+    Exit Sub
+
+ErrHandler:
+    P00_MODO_MAESTRO = False
+    P00_CANCELADO = False
+    Application.StatusBar = False
+    Application.Calculation = prevCalc
+    Application.ScreenUpdating = prevScreen
+    Application.EnableEvents = prevEvents
+    Application.DisplayAlerts = prevAlerts
+
+    MsgBox "Se detuvo el proceso en: " & paso & vbCrLf & _
+           "Detalle: " & Err.Description, vbCritical
+End Sub
+
+Private Function P00_ValidarHojasMinimas() As Boolean
+    Dim faltantes As String
+
+    If Not P00_HojaExiste("EST MP") Then faltantes = faltantes & "- EST MP" & vbCrLf
+    If Not P00_HojaExiste("CFDI E") Then faltantes = faltantes & "- CFDI E" & vbCrLf
+    If Not P00_HojaExiste("CFDI I") Then faltantes = faltantes & "- CFDI I" & vbCrLf
+    If Not P00_HojaExiste("MP") Then faltantes = faltantes & "- MP" & vbCrLf
+    If Not P00_HojaExiste("NOTA DE VENTA") Then faltantes = faltantes & "- NOTA DE VENTA" & vbCrLf
+
+    If faltantes <> "" Then
+        MsgBox "No se puede ejecutar el proceso completo. Faltan estas hojas:" & vbCrLf & vbCrLf & faltantes, vbExclamation
+        Exit Function
+    End If
+
+    P00_ValidarHojasMinimas = True
+End Function
+
+Private Function P00_HojaExiste(ByVal sheetName As String) As Boolean
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    P00_HojaExiste = Not ws Is Nothing
+    Set ws = Nothing
+    On Error GoTo 0
+End Function
+
+Private Function P00_HojaContieneTexto(ByVal sheetName As String, ByVal texto As String) As Boolean
+    Dim ws As Worksheet
+    Dim f As Range
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If ws Is Nothing Then Exit Function
+
+    Set f = ws.Cells.Find(What:=texto, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    P00_HojaContieneTexto = Not f Is Nothing
+End Function
