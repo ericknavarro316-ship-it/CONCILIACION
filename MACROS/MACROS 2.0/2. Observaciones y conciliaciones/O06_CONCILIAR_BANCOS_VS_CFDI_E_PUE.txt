@@ -1,0 +1,480 @@
+Option Explicit
+
+Public Sub O06_CONCILIAR_BANCOS_VS_CFDI_E_PUE()
+
+    Const SH_CFDI As String = "CFDI_E_PUE"
+    Const SH_EST As String = "EST MP"
+
+    Dim wsCFDI As Worksheet, ws As Worksheet, wsEST As Worksheet
+    Dim colCFDI_UUID As Long, colCFDI_Total As Long, colCFDI_Cta As Long
+    Dim lastCFDI As Long, r As Long
+
+    Dim dictCFDI As Object
+    Dim matchedBancos As Long, matchedEST As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsCFDI = O06_GetSheet(SH_CFDI)
+    If wsCFDI Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_CFDI & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    colCFDI_UUID = O06_FindHeaderCol(wsCFDI, 1, Array("UUID"))
+    colCFDI_Total = O06_FindHeaderCol(wsCFDI, 1, Array("Total"))
+    colCFDI_Cta = O06_FindHeaderCol(wsCFDI, 1, Array("Cuenta bancaria"))
+
+    If colCFDI_UUID = 0 Or colCFDI_Total = 0 Or colCFDI_Cta = 0 Then
+        MsgBox "Faltan columnas requeridas en CFDI_E_PUE." & vbCrLf & _
+               "Se requiere: UUID, Total, Cuenta bancaria.", vbExclamation
+        Exit Sub
+    End If
+
+    lastCFDI = O06_LastUsedRow(wsCFDI)
+    If lastCFDI < 2 Then
+        MsgBox "CFDI_E_PUE no tiene datos para conciliar.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    ' =====================================================
+    ' Cargar CFDI_E_PUE pendientes en diccionario por centavos
+    ' dictCFDI(keyCentavos) = Collection(rows del CFDI)
+    ' =====================================================
+    Set dictCFDI = CreateObject("Scripting.Dictionary")
+
+    For r = 2 To lastCFDI
+        If Trim$(CStr(wsCFDI.Cells(r, colCFDI_UUID).Value)) <> "" Then
+            If Trim$(CStr(wsCFDI.Cells(r, colCFDI_Cta).Value)) = "" Then
+                O06_AddCfdiRow dictCFDI, O06_ToCents(wsCFDI.Cells(r, colCFDI_Total).Value), r
+            End If
+        End If
+    Next r
+
+    ' =====================================================
+    ' Recorrer hojas bancarias numéricas
+    ' =====================================================
+    For Each ws In ThisWorkbook.Worksheets
+        If O06_EsHojaNumerica(ws.Name) Then
+            If Not O06_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                matchedBancos = matchedBancos + O06_ProcesarHojaBanco(ws, wsCFDI, dictCFDI, colCFDI_UUID, colCFDI_Cta)
+            End If
+        End If
+    Next ws
+
+    ' =====================================================
+    ' Recorrer EST MP
+    ' =====================================================
+    Set wsEST = O06_GetSheet(SH_EST)
+    If Not wsEST Is Nothing Then
+        matchedEST = O06_ProcesarESTMP(wsEST, wsCFDI, dictCFDI, colCFDI_UUID, colCFDI_Cta)
+    End If
+
+    wsCFDI.Columns(colCFDI_UUID).NumberFormat = "@"
+    wsCFDI.Columns(colCFDI_Cta).NumberFormat = "@"
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Conciliación PUE terminada." & vbCrLf & vbCrLf & _
+           "Matches en bancos: " & matchedBancos & vbCrLf & _
+           "Matches en EST MP: " & matchedEST, vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en O06_CONCILIAR_BANCOS_VS_CFDI_E_PUE: " & Err.Description, vbExclamation
+End Sub
+
+
+' =====================================================
+' PROCESAR HOJA BANCARIA
+' =====================================================
+Private Function O06_ProcesarHojaBanco( _
+    ByVal ws As Worksheet, _
+    ByVal wsCFDI As Worksheet, _
+    ByVal dictCFDI As Object, _
+    ByVal colCFDI_UUID As Long, _
+    ByVal colCFDI_Cta As Long) As Long
+
+    Dim hdrDia As Range, hdrConcepto As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colCargo As Long, colAbono As Long, colObs As Long, colCompl As Long
+    Dim lastRow As Long, r As Long
+
+    Dim cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim cfdiRow As Long
+    Dim obsTxt As String, complTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Function
+
+    hdrRow = hdrDia.Row
+
+    Set hdrConcepto = O06_FindHeader(ws, hdrRow, Array("Concepto / Referencia", "Concepto", "Referencia", "Concepto/Referencia"))
+    Set hdrCargo = O06_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = O06_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrConcepto Is Nothing Or hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Function
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colObs = O06_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colCompl = O06_EnsureHeaderCol(ws, hdrRow, "COMPL. CTA")
+
+    lastRow = O06_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        cargoVal = O06_ParseNumber(ws.Cells(r, colCargo).Value)
+        If cargoVal = 0 Then GoTo SiguienteR
+
+        If O06_ParseNumber(ws.Cells(r, colAbono).Value) <> 0 Then GoTo SiguienteR
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        complTxt = UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value)))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If complTxt <> "" And complTxt <> "PUE" Then GoTo SiguienteR
+
+        cents = O06_ToCents(cargoVal)
+        tol = O06_ToleranceCents(cents)
+
+        If O06_TryPopMatch(dictCFDI, cents, tol, cfdiRow) Then
+            ws.Cells(r, colObs).Value = Trim$(CStr(wsCFDI.Cells(cfdiRow, colCFDI_UUID).Value))
+            ws.Cells(r, colCompl).Value = "PUE"
+
+            If Trim$(CStr(wsCFDI.Cells(cfdiRow, colCFDI_Cta).Value)) = "" Then
+                wsCFDI.Cells(cfdiRow, colCFDI_Cta).Value = ws.Name
+            End If
+
+            O06_ProcesarHojaBanco = O06_ProcesarHojaBanco + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colObs).NumberFormat = "@"
+    ws.Columns(colCompl).NumberFormat = "@"
+End Function
+
+
+' =====================================================
+' PROCESAR EST MP
+' =====================================================
+Private Function O06_ProcesarESTMP( _
+    ByVal ws As Worksheet, _
+    ByVal wsCFDI As Worksheet, _
+    ByVal dictCFDI As Object, _
+    ByVal colCFDI_UUID As Long, _
+    ByVal colCFDI_Cta As Long) As Long
+
+    Dim hdrRow As Long
+    Dim colRef As Long, colCargo As Long, colAbono As Long
+    Dim colObs As Long, colCompl As Long
+    Dim lastRow As Long, r As Long
+
+    Dim cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim cfdiRow As Long
+    Dim obsTxt As String, complTxt As String
+
+    hdrRow = O06_FindHeaderRowEST(ws)
+    If hdrRow = 0 Then Exit Function
+
+    colRef = O06_FindHeaderCol(ws, hdrRow, Array("REFERENCE_ID"))
+    colCargo = O06_FindHeaderCol(ws, hdrRow, Array("cargo"))
+    colAbono = O06_FindHeaderCol(ws, hdrRow, Array("abono"))
+
+    If colRef = 0 Or colCargo = 0 Then Exit Function
+
+    colObs = O06_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colCompl = O06_EnsureHeaderCol(ws, hdrRow, "COMPL. CTA")
+
+    lastRow = O06_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        cargoVal = O06_ParseNumber(ws.Cells(r, colCargo).Value)
+        If cargoVal = 0 Then GoTo SiguienteR
+
+        If colAbono > 0 Then
+            If O06_ParseNumber(ws.Cells(r, colAbono).Value) <> 0 Then GoTo SiguienteR
+        End If
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        complTxt = UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value)))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If complTxt <> "" And complTxt <> "PUE" Then GoTo SiguienteR
+
+        cents = O06_ToCents(cargoVal)
+        tol = O06_ToleranceCents(cents)
+
+        If O06_TryPopMatch(dictCFDI, cents, tol, cfdiRow) Then
+            ws.Cells(r, colObs).Value = Trim$(CStr(wsCFDI.Cells(cfdiRow, colCFDI_UUID).Value))
+            ws.Cells(r, colCompl).Value = "PUE"
+
+            If Trim$(CStr(wsCFDI.Cells(cfdiRow, colCFDI_Cta).Value)) = "" Then
+                wsCFDI.Cells(cfdiRow, colCFDI_Cta).Value = "EST MP"
+            End If
+
+            O06_ProcesarESTMP = O06_ProcesarESTMP + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colObs).NumberFormat = "@"
+    ws.Columns(colCompl).NumberFormat = "@"
+End Function
+
+
+' =====================================================
+' DICCIONARIO CFDI POR CENTAVOS
+' =====================================================
+Private Sub O06_AddCfdiRow(ByVal dictCFDI As Object, ByVal cents As Long, ByVal rowCFDI As Long)
+    Dim k As String
+    Dim coll As Collection
+
+    k = CStr(cents)
+
+    If Not dictCFDI.Exists(k) Then
+        Set coll = New Collection
+        dictCFDI.Add k, coll
+    End If
+
+    Set coll = dictCFDI(k)
+    coll.Add rowCFDI
+End Sub
+
+
+Private Function O06_TryPopMatch(ByVal dictCFDI As Object, ByVal centsBase As Long, ByVal tolCents As Long, ByRef rowCFDI As Long) As Boolean
+    Dim d As Long
+    Dim k As String
+    Dim coll As Collection
+
+    For d = 0 To tolCents
+
+        k = CStr(centsBase + d)
+        If dictCFDI.Exists(k) Then
+            Set coll = dictCFDI(k)
+            If coll.Count > 0 Then
+                rowCFDI = CLng(coll(1))
+                coll.Remove 1
+                If coll.Count = 0 Then dictCFDI.Remove k
+                O06_TryPopMatch = True
+                Exit Function
+            End If
+        End If
+
+        If d > 0 Then
+            k = CStr(centsBase - d)
+            If dictCFDI.Exists(k) Then
+                Set coll = dictCFDI(k)
+                If coll.Count > 0 Then
+                    rowCFDI = CLng(coll(1))
+                    coll.Remove 1
+                    If coll.Count = 0 Then dictCFDI.Remove k
+                    O06_TryPopMatch = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next d
+End Function
+
+
+' =====================================================
+' HELPERS
+' =====================================================
+Private Function O06_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set O06_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function O06_FindHeaderRowEST(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 20
+        If O06_FindHeaderCol(ws, r, Array("REFERENCE_ID")) > 0 And _
+           O06_FindHeaderCol(ws, r, Array("cargo")) > 0 Then
+            O06_FindHeaderRowEST = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function O06_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = O06_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = O06_NormHeader(CStr(headers(i))) Then
+                Set O06_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O06_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = O06_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = O06_NormHeader(CStr(headerNames(i))) Then
+                O06_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O06_EnsureHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim col As Long
+
+    col = O06_FindHeaderCol(ws, hdrRow, Array(headerText))
+
+    If col > 0 Then
+        O06_EnsureHeaderCol = col
+    Else
+        O06_EnsureHeaderCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, O06_EnsureHeaderCol).Value = headerText
+        ws.Cells(hdrRow, O06_EnsureHeaderCol).Font.Bold = True
+    End If
+End Function
+
+
+Private Function O06_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    O06_NormHeader = s
+End Function
+
+
+Private Function O06_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        O06_LastUsedRow = 0
+    Else
+        O06_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function O06_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        O06_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        O06_ParseNumber = CDbl(s)
+        If neg Then O06_ParseNumber = -O06_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    O06_ParseNumber = 0
+End Function
+
+
+Private Function O06_ToCents(ByVal v As Variant) As Long
+    O06_ToCents = CLng(Round(O06_ParseNumber(v) * 100, 0))
+End Function
+
+
+Private Function O06_ToleranceCents(ByVal centsAmount As Long) As Long
+    If Abs(centsAmount) < 5000000 Then
+        O06_ToleranceCents = 10    ' $0.10
+    Else
+        O06_ToleranceCents = 50    ' $0.50
+    End If
+End Function
+
+
+Private Function O06_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    O06_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function O06_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    O06_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function

@@ -1,0 +1,985 @@
+Option Explicit
+
+'=========================================================
+'   INGRESOS - BBVA vs CFDI / COMPL I  +  EST MP
+'   Macros ejecutables:
+'     C01_ING, D01_ING, D02_ING, E03_ING
+'     PROCESO_COMPLETO_ING, CREAR_BOTON_PROCESO_ING
+'
+'   EST MP:
+'     - usa "Valor de la operación" como monto comparable
+'=========================================================
+
+Private Const SH_CFDI_I As String = "CFDI I"
+Private Const SH_COMPL_I_1 As String = "COMPL I"
+Private Const SH_COMPL_I_2 As String = "COMPL. I"
+Private Const SH_EST_MP As String = "EST MP"
+
+'=========================================================
+' C01_ING: separar CFDI I en PUE / PPD
+'=========================================================
+Public Sub C01_ING()
+
+    Dim wsSrc As Worksheet
+    Set wsSrc = ING_GetSheet(SH_CFDI_I)
+
+    If wsSrc Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_CFDI_I & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo Fin
+
+    Dim headerRow As Long, colMetodo As Long
+    headerRow = ING_FindHeaderRow(wsSrc, Array("Método de Pago", "Metodo de Pago", "METODO DE PAGO"), 80)
+    If headerRow = 0 Then
+        MsgBox "No encontré el encabezado 'Método de Pago' en '" & SH_CFDI_I & "'.", vbExclamation
+        GoTo Fin
+    End If
+
+    colMetodo = ING_FindHeaderCol(wsSrc, headerRow, Array("Método de Pago", "Metodo de Pago", "METODO DE PAGO"))
+    If colMetodo = 0 Then
+        MsgBox "No pude ubicar la columna 'Método de Pago' en la fila " & headerRow & ".", vbExclamation
+        GoTo Fin
+    End If
+
+    'Mapear Cuenta bancaria existente (si ya corriste antes)
+    Dim mapPUE As Object, mapPPD As Object
+    Set mapPUE = ING_LoadCuentaMap("CFDI_I_PUE")
+    Set mapPPD = ING_LoadCuentaMap("CFDI_I_PPD")
+
+    'Recrear hojas
+    ING_DeleteSheetIfExists "CFDI_I_LIMPIO"
+    ING_DeleteSheetIfExists "CFDI_I_PUE"
+    ING_DeleteSheetIfExists "CFDI_I_PPD"
+
+    Dim wsL As Worksheet, wsPUE As Worksheet, wsPPD As Worksheet
+    Set wsL = ThisWorkbook.Worksheets.Add(After:=wsSrc): wsL.Name = "CFDI_I_LIMPIO"
+    Set wsPUE = ThisWorkbook.Worksheets.Add(After:=wsL): wsPUE.Name = "CFDI_I_PUE"
+    Set wsPPD = ThisWorkbook.Worksheets.Add(After:=wsPUE): wsPPD.Name = "CFDI_I_PPD"
+
+    Dim lastRow As Long, lastCol As Long
+    lastRow = ING_LastRow(wsSrc)
+    lastCol = ING_LastCol(wsSrc)
+    If lastRow <= headerRow Or lastCol = 0 Then GoTo Fin
+
+    'Copiar encabezados a fila 1 en salidas
+    wsSrc.Range(wsSrc.Cells(headerRow, 1), wsSrc.Cells(headerRow, lastCol)).Copy
+    wsL.Cells(1, 1).PasteSpecial xlPasteValuesAndNumberFormats
+    wsPUE.Cells(1, 1).PasteSpecial xlPasteValuesAndNumberFormats
+    wsPPD.Cells(1, 1).PasteSpecial xlPasteValuesAndNumberFormats
+    Application.CutCopyMode = False
+
+    'Asegurar "Cuenta bancaria" en salidas
+    Call ING_EnsureColumn(wsL, 1, "Cuenta bancaria")
+    Call ING_EnsureColumn(wsPUE, 1, "Cuenta bancaria")
+    Call ING_EnsureColumn(wsPPD, 1, "Cuenta bancaria")
+
+    Dim r As Long, outL As Long, outP As Long, outD As Long
+    outL = 2: outP = 2: outD = 2
+
+    For r = headerRow + 1 To lastRow
+        If ING_RowIsEmpty(wsSrc, r, lastCol) Then GoTo NextR
+
+        'LIMPIO (todo)
+        wsL.Range(wsL.Cells(outL, 1), wsL.Cells(outL, lastCol)).Value = _
+            wsSrc.Range(wsSrc.Cells(r, 1), wsSrc.Cells(r, lastCol)).Value
+        outL = outL + 1
+
+        Dim metodo As String
+        metodo = UCase$(Trim$(CStr(wsSrc.Cells(r, colMetodo).Value)))
+
+        If metodo = "PUE" Then
+            wsPUE.Range(wsPUE.Cells(outP, 1), wsPUE.Cells(outP, lastCol)).Value = _
+                wsSrc.Range(wsSrc.Cells(r, 1), wsSrc.Cells(r, lastCol)).Value
+            outP = outP + 1
+
+        ElseIf metodo = "PPD" Then
+            wsPPD.Range(wsPPD.Cells(outD, 1), wsPPD.Cells(outD, lastCol)).Value = _
+                wsSrc.Range(wsSrc.Cells(r, 1), wsSrc.Cells(r, lastCol)).Value
+            outD = outD + 1
+        End If
+
+NextR:
+    Next r
+
+    'Restaurar Cuenta bancaria por UUID (si existía)
+    ING_ApplyCuentaMap wsPUE, mapPUE
+    ING_ApplyCuentaMap wsPPD, mapPPD
+
+    MsgBox "C01_ING listo: CFDI_I_LIMPIO / CFDI_I_PUE / CFDI_I_PPD creadas.", vbInformation
+
+Fin:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+
+'=========================================================
+' D01_ING: PUE (INGRESOS)
+' - Hojas numéricas (banco): usa ABONO
+' - EST MP: usa "Valor de la operación"
+' - Escribe UUID en OBS
+'=========================================================
+Public Sub D01_ING()
+
+    Dim wsCFDI As Worksheet
+    Set wsCFDI = ING_GetSheet("CFDI_I_PUE")
+    If wsCFDI Is Nothing Then
+        MsgBox "No existe 'CFDI_I_PUE'. Corre primero C01_ING.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo Fin
+
+    Dim colUUID As Long, colTotal As Long, colCuenta As Long
+    colUUID = ING_FindHeaderCol(wsCFDI, 1, Array("UUID"))
+    colTotal = ING_FindHeaderCol(wsCFDI, 1, Array("TOTAL", "Total", "Importe", "Monto", "Total CFDI"))
+    If colUUID = 0 Or colTotal = 0 Then
+        MsgBox "En CFDI_I_PUE necesito columnas 'UUID' y 'Total/TOTAL'.", vbExclamation
+        GoTo Fin
+    End If
+    colCuenta = ING_EnsureColumn(wsCFDI, 1, "Cuenta bancaria")
+
+    '----- Diccionario CFDI (solo no asignados) -----
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim lastCFDI As Long: lastCFDI = ING_LastRow(wsCFDI)
+    Dim i As Long
+
+    For i = 2 To lastCFDI
+        If Trim$(CStr(wsCFDI.Cells(i, colCuenta).Value)) <> "" Then GoTo NextI
+
+        Dim uuid As String: uuid = Trim$(CStr(wsCFDI.Cells(i, colUUID).Value))
+        If uuid = "" Then GoTo NextI
+
+        Dim amt As Double: amt = ING_GetNum(wsCFDI.Cells(i, colTotal).Value)
+        If Abs(amt) <= 0.00001 Then GoTo NextI
+
+        ING_AddToDict dict, ING_Cents(Abs(amt)), Array(i, uuid)
+NextI:
+    Next i
+
+    Dim matchesBank As Long, matchesEst As Long
+    matchesBank = 0: matchesEst = 0
+
+    '----- A) Hojas numéricas (banco) usando ABONO -----
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+
+        If Not ING_IsNumericSheet(ws.Name) Then GoTo NextWs
+        If ING_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        Dim hdr As Long: hdr = ING_FindHeaderRow(ws, Array("Día", "Dia"), 60)
+        If hdr = 0 Then GoTo NextWs
+
+        Dim cDia As Long, cCargo As Long, cAbono As Long, cObs As Long, cCompl As Long
+        cDia = ING_FindHeaderCol(ws, hdr, Array("Día", "Dia"))
+        cCargo = ING_FindHeaderCol(ws, hdr, Array("Cargo"))
+        cAbono = ING_FindHeaderCol(ws, hdr, Array("Abono"))
+        If cDia = 0 Or cCargo = 0 Or cAbono = 0 Then GoTo NextWs
+
+        cObs = ING_EnsureColumn(ws, hdr, "OBS")
+        cCompl = ING_EnsureColumn(ws, hdr, "COMPL. CTA")
+
+        Dim lastB As Long: lastB = ING_LastRowInCol(ws, cDia)
+        Dim r As Long
+
+        For r = hdr + 1 To lastB
+
+            If Trim$(CStr(ws.Cells(r, cDia).Value)) = "" Then GoTo NextR
+            If Trim$(CStr(ws.Cells(r, cObs).Value)) <> "" Then GoTo NextR
+
+            Dim cargoV As Double, abonoV As Double
+            cargoV = ING_GetNum(ws.Cells(r, cCargo).Value)
+            abonoV = ING_GetNum(ws.Cells(r, cAbono).Value)
+
+            'INGRESOS: solo ABONOS y sin cargo
+            If abonoV <= 0.00001 Then GoTo NextR
+            If Abs(cargoV) > 0.00001 Then GoTo NextR
+
+            If Trim$(CStr(ws.Cells(r, cCompl).Value)) <> "" Then
+                If UCase$(Trim$(CStr(ws.Cells(r, cCompl).Value))) <> "PUE" Then GoTo NextR
+            End If
+
+            Dim centsBank As Long: centsBank = ING_Cents(abonoV)
+            Dim tol As Long: tol = ING_ToleranceCents(abonoV)
+
+            Dim arr As Variant
+            If ING_TryPopMatch(dict, centsBank, tol, arr) Then
+
+                ws.Cells(r, cObs).Value = CStr(arr(1))
+                ws.Cells(r, cCompl).Value = "PUE"
+
+                If Trim$(CStr(wsCFDI.Cells(CLng(arr(0)), colCuenta).Value)) = "" Then
+                    wsCFDI.Cells(CLng(arr(0)), colCuenta).Value = ws.Name
+                End If
+
+                matchesBank = matchesBank + 1
+            End If
+
+NextR:
+        Next r
+
+NextWs:
+    Next ws
+
+    '----- B) EST MP usando "Valor de la operación" -----
+    matchesEst = ING_D01_Process_EST_MP_PUE(dict, wsCFDI, colCuenta)
+
+    MsgBox "D01_ING listo." & vbCrLf & _
+           "Matches BANCO (ABONO): " & matchesBank & vbCrLf & _
+           "Matches EST MP (Valor de la operación): " & matchesEst, vbInformation
+
+Fin:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+
+'=========================================================
+' D02_ING: PPD (INGRESOS)
+' - Hojas numéricas (banco): usa ABONO y escribe UUID en columna UUID
+' - EST MP: usa "Valor de la operación" y escribe UUID en columna UUID
+'=========================================================
+Public Sub D02_ING()
+
+    Dim wsCFDI As Worksheet
+    Set wsCFDI = ING_GetSheet("CFDI_I_PPD")
+    If wsCFDI Is Nothing Then
+        MsgBox "No existe 'CFDI_I_PPD'. Corre primero C01_ING.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo Fin
+
+    Dim colUUID As Long, colTotal As Long, colCuenta As Long
+    colUUID = ING_FindHeaderCol(wsCFDI, 1, Array("UUID"))
+    colTotal = ING_FindHeaderCol(wsCFDI, 1, Array("TOTAL", "Total", "Importe", "Monto", "Total CFDI"))
+    If colUUID = 0 Or colTotal = 0 Then
+        MsgBox "En CFDI_I_PPD necesito columnas 'UUID' y 'Total/TOTAL'.", vbExclamation
+        GoTo Fin
+    End If
+    colCuenta = ING_EnsureColumn(wsCFDI, 1, "Cuenta bancaria")
+
+    '----- Diccionario CFDI (solo no asignados) -----
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim lastCFDI As Long: lastCFDI = ING_LastRow(wsCFDI)
+    Dim i As Long
+
+    For i = 2 To lastCFDI
+        If Trim$(CStr(wsCFDI.Cells(i, colCuenta).Value)) <> "" Then GoTo NextI
+
+        Dim uuid As String: uuid = Trim$(CStr(wsCFDI.Cells(i, colUUID).Value))
+        If uuid = "" Then GoTo NextI
+
+        Dim amt As Double: amt = ING_GetNum(wsCFDI.Cells(i, colTotal).Value)
+        If Abs(amt) <= 0.00001 Then GoTo NextI
+
+        ING_AddToDict dict, ING_Cents(Abs(amt)), Array(i, uuid)
+NextI:
+    Next i
+
+    Dim matchesBank As Long, matchesEst As Long
+    matchesBank = 0: matchesEst = 0
+
+    '----- A) Hojas numéricas (banco) usando ABONO -----
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+
+        If Not ING_IsNumericSheet(ws.Name) Then GoTo NextWs
+        If ING_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        Dim hdr As Long: hdr = ING_FindHeaderRow(ws, Array("Día", "Dia"), 60)
+        If hdr = 0 Then GoTo NextWs
+
+        Dim cDia As Long, cCargo As Long, cAbono As Long
+        Dim cObs As Long, cCompl As Long, cUUIDB As Long
+
+        cDia = ING_FindHeaderCol(ws, hdr, Array("Día", "Dia"))
+        cCargo = ING_FindHeaderCol(ws, hdr, Array("Cargo"))
+        cAbono = ING_FindHeaderCol(ws, hdr, Array("Abono"))
+        If cDia = 0 Or cCargo = 0 Or cAbono = 0 Then GoTo NextWs
+
+        cObs = ING_EnsureColumn(ws, hdr, "OBS")
+        cCompl = ING_EnsureColumn(ws, hdr, "COMPL. CTA")
+        cUUIDB = ING_EnsureColumn(ws, hdr, "UUID")
+
+        Dim lastB As Long: lastB = ING_LastRowInCol(ws, cDia)
+        Dim r As Long
+
+        For r = hdr + 1 To lastB
+
+            If Trim$(CStr(ws.Cells(r, cDia).Value)) = "" Then GoTo NextR
+            If Trim$(CStr(ws.Cells(r, cObs).Value)) <> "" Then GoTo NextR
+            If Trim$(CStr(ws.Cells(r, cUUIDB).Value)) <> "" Then GoTo NextR
+
+            Dim cargoV As Double, abonoV As Double
+            cargoV = ING_GetNum(ws.Cells(r, cCargo).Value)
+            abonoV = ING_GetNum(ws.Cells(r, cAbono).Value)
+
+            'INGRESOS: solo ABONOS y sin cargo
+            If abonoV <= 0.00001 Then GoTo NextR
+            If Abs(cargoV) > 0.00001 Then GoTo NextR
+
+            If Trim$(CStr(ws.Cells(r, cCompl).Value)) <> "" Then
+                If UCase$(Trim$(CStr(ws.Cells(r, cCompl).Value))) <> "PPD" Then GoTo NextR
+            End If
+
+            Dim centsBank As Long: centsBank = ING_Cents(abonoV)
+            Dim tol As Long: tol = ING_ToleranceCents(abonoV)
+
+            Dim arr As Variant
+            If ING_TryPopMatch(dict, centsBank, tol, arr) Then
+
+                ws.Cells(r, cUUIDB).Value = CStr(arr(1))
+                ws.Cells(r, cCompl).Value = "PPD"
+
+                If Trim$(CStr(wsCFDI.Cells(CLng(arr(0)), colCuenta).Value)) = "" Then
+                    wsCFDI.Cells(CLng(arr(0)), colCuenta).Value = ws.Name
+                End If
+
+                matchesBank = matchesBank + 1
+            End If
+
+NextR:
+        Next r
+
+NextWs:
+    Next ws
+
+    '----- B) EST MP usando "Valor de la operación" -----
+    matchesEst = ING_D02_Process_EST_MP_PPD(dict, wsCFDI, colCuenta)
+
+    MsgBox "D02_ING listo." & vbCrLf & _
+           "Matches BANCO (ABONO): " & matchesBank & vbCrLf & _
+           "Matches EST MP (Valor de la operación): " & matchesEst, vbInformation
+
+Fin:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+
+'=========================================================
+' E03_ING: COMPL I (PPD) (INGRESOS)
+' - Hojas numéricas (banco): usa ABONO solo si COMPL. CTA = PPD y escribe UUID (COMPL) en OBS
+' - EST MP: usa "Valor de la operación" solo si COMPL. CTA = PPD y escribe UUID (COMPL) en OBS
+'=========================================================
+Public Sub E03_ING()
+
+    Dim wsCI As Worksheet
+    Set wsCI = ING_GetSheet(SH_COMPL_I_1)
+    If wsCI Is Nothing Then Set wsCI = ING_GetSheet(SH_COMPL_I_2)
+
+    If wsCI Is Nothing Then
+        MsgBox "No existe hoja 'COMPL I' (ni 'COMPL. I').", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo Fin
+
+    Dim hdr As Long, colTot As Long, colUUID As Long, colCuenta As Long
+    hdr = ING_FindHeaderRow(wsCI, Array("Total Pagado", "TOTAL PAGADO"), 80)
+    If hdr = 0 Then
+        MsgBox "No encontré encabezado 'Total Pagado' en COMPL I.", vbExclamation
+        GoTo Fin
+    End If
+
+    colTot = ING_FindHeaderCol(wsCI, hdr, Array("Total Pagado", "TOTAL PAGADO"))
+    colUUID = ING_FindHeaderCol(wsCI, hdr, Array("UUID"))
+    If colTot = 0 Or colUUID = 0 Then
+        MsgBox "En COMPL I necesito 'Total Pagado' y 'UUID' en la misma fila de encabezados.", vbExclamation
+        GoTo Fin
+    End If
+
+    colCuenta = ING_EnsureColumn(wsCI, hdr, "Cuenta bancaria")
+
+    '----- Diccionario COMPL (solo no asignados) -----
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim lastCI As Long: lastCI = ING_LastRow(wsCI)
+    Dim i As Long
+
+    For i = hdr + 1 To lastCI
+        If Trim$(CStr(wsCI.Cells(i, colCuenta).Value)) <> "" Then GoTo NextI
+
+        Dim uuid As String: uuid = Trim$(CStr(wsCI.Cells(i, colUUID).Value))
+        If uuid = "" Then GoTo NextI
+
+        Dim amt As Double: amt = ING_GetNum(wsCI.Cells(i, colTot).Value)
+        If Abs(amt) <= 0.00001 Then GoTo NextI
+
+        ING_AddToDict dict, ING_Cents(Abs(amt)), Array(i, uuid)
+NextI:
+    Next i
+
+    Dim matchesBank As Long, matchesEst As Long
+    matchesBank = 0: matchesEst = 0
+
+    '----- A) Hojas numéricas (banco) usando ABONO (solo COMPL. CTA = PPD) -----
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+
+        If Not ING_IsNumericSheet(ws.Name) Then GoTo NextWs
+        If ING_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo NextWs
+
+        Dim hb As Long: hb = ING_FindHeaderRow(ws, Array("Día", "Dia"), 60)
+        If hb = 0 Then GoTo NextWs
+
+        Dim cDia As Long, cCargo As Long, cAbono As Long, cObs As Long, cCompl As Long
+        cDia = ING_FindHeaderCol(ws, hb, Array("Día", "Dia"))
+        cCargo = ING_FindHeaderCol(ws, hb, Array("Cargo"))
+        cAbono = ING_FindHeaderCol(ws, hb, Array("Abono"))
+        If cDia = 0 Or cCargo = 0 Or cAbono = 0 Then GoTo NextWs
+
+        cObs = ING_EnsureColumn(ws, hb, "OBS")
+        cCompl = ING_EnsureColumn(ws, hb, "COMPL. CTA")
+
+        Dim lastB As Long: lastB = ING_LastRowInCol(ws, cDia)
+        Dim r As Long
+
+        For r = hb + 1 To lastB
+
+            If Trim$(CStr(ws.Cells(r, cDia).Value)) = "" Then GoTo NextR
+            If UCase$(Trim$(CStr(ws.Cells(r, cCompl).Value))) <> "PPD" Then GoTo NextR
+            If Trim$(CStr(ws.Cells(r, cObs).Value)) <> "" Then GoTo NextR
+
+            Dim cargoV As Double, abonoV As Double
+            cargoV = ING_GetNum(ws.Cells(r, cCargo).Value)
+            abonoV = ING_GetNum(ws.Cells(r, cAbono).Value)
+
+            'INGRESOS: solo ABONOS y sin cargo
+            If abonoV <= 0.00001 Then GoTo NextR
+            If Abs(cargoV) > 0.00001 Then GoTo NextR
+
+            Dim centsBank As Long: centsBank = ING_Cents(abonoV)
+            Dim tol As Long: tol = ING_ToleranceCents(abonoV)
+
+            Dim arr As Variant
+            If ING_TryPopMatch(dict, centsBank, tol, arr) Then
+                ws.Cells(r, cObs).Value = CStr(arr(1)) 'UUID COMPL -> OBS
+                wsCI.Cells(CLng(arr(0)), colCuenta).Value = ws.Name
+                matchesBank = matchesBank + 1
+            End If
+
+NextR:
+        Next r
+
+NextWs:
+    Next ws
+
+    '----- B) EST MP usando "Valor de la operación" (solo COMPL. CTA = PPD) -----
+    matchesEst = ING_E03_Process_EST_MP_COMPL(dict, wsCI, colCuenta)
+
+    MsgBox "E03_ING listo." & vbCrLf & _
+           "Matches BANCO (ABONO): " & matchesBank & vbCrLf & _
+           "Matches EST MP (Valor de la operación): " & matchesEst, vbInformation
+
+Fin:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+
+'=========================================================
+' ORQUESTADOR: corre TODO INGRESOS en un solo click
+'=========================================================
+Public Sub PROCESO_COMPLETO_ING()
+
+    On Error GoTo ErrH
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+
+    C01_ING
+    D01_ING
+    D02_ING
+    E03_ING
+
+Fin:
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "Proceso completo ING terminado.", vbInformation
+    Exit Sub
+
+ErrH:
+    MsgBox "Error en PROCESO_COMPLETO_ING:" & vbCrLf & _
+           Err.Number & " - " & Err.Description, vbExclamation
+    Resume Fin
+End Sub
+
+
+'=========================================================
+' Creador de botón (Form Control) para ejecutar el proceso
+' - Lo crea en la hoja activa (ActiveSheet)
+' - Si ya existe, lo reemplaza
+'=========================================================
+Public Sub CREAR_BOTON_PROCESO_ING()
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim btnName As String
+    btnName = "BTN_PROCESO_ING"
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo Fin
+
+    On Error Resume Next
+    ws.Shapes(btnName).Delete
+    On Error GoTo 0
+
+    Dim leftPos As Double, topPos As Double, w As Double, h As Double
+    leftPos = ws.Range("B2").Left
+    topPos = ws.Range("B2").Top
+    w = 240
+    h = 35
+
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddFormControl(Type:=xlButtonControl, _
+                                       Left:=leftPos, Top:=topPos, _
+                                       Width:=w, Height:=h)
+
+    shp.Name = btnName
+    shp.TextFrame.Characters.Text = "PROCESO COMPLETO ING"
+    shp.OnAction = "PROCESO_COMPLETO_ING"
+
+    MsgBox "Botón creado en '" & ws.Name & "' (celda B2).", vbInformation
+
+Fin:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+
+'=========================================================
+'      EST MP - Procesos internos (NO aparecen en lista)
+'=========================================================
+Private Function ING_D01_Process_EST_MP_PUE(ByVal dict As Object, ByVal wsCFDI As Worksheet, ByVal colCuentaCFDI As Long) As Long
+
+    Dim wsEst As Worksheet
+    Set wsEst = ING_GetSheet(SH_EST_MP)
+    If wsEst Is Nothing Then Exit Function
+
+    Dim hdr As Long
+    hdr = ING_FindHeaderRow(wsEst, Array("Valor de la operación", "Valor de la operacion", "VALOR DE LA OPERACION", "VALOR DE LA OPERACIÓN"), 80)
+    If hdr = 0 Then Exit Function
+
+    Dim cVal As Long
+    cVal = ING_FindHeaderCol(wsEst, hdr, Array("Valor de la operación", "Valor de la operacion", "VALOR DE LA OPERACION", "VALOR DE LA OPERACIÓN"))
+    If cVal = 0 Then Exit Function
+
+    Dim cObs As Long, cCompl As Long
+    cObs = ING_EnsureColumn(wsEst, hdr, "OBS")
+    cCompl = ING_EnsureColumn(wsEst, hdr, "COMPL. CTA")
+
+    Dim lastR As Long
+    lastR = ING_LastRowInCol(wsEst, cVal)
+    If lastR <= hdr Then Exit Function
+
+    Dim r As Long, matches As Long
+    matches = 0
+
+    For r = hdr + 1 To lastR
+
+        If Trim$(CStr(wsEst.Cells(r, cVal).Value)) = "" Then GoTo NextR
+        If Trim$(CStr(wsEst.Cells(r, cObs).Value)) <> "" Then GoTo NextR
+
+        If Trim$(CStr(wsEst.Cells(r, cCompl).Value)) <> "" Then
+            If UCase$(Trim$(CStr(wsEst.Cells(r, cCompl).Value))) <> "PUE" Then GoTo NextR
+        End If
+
+        Dim v As Double
+        v = ING_GetNum(wsEst.Cells(r, cVal).Value)
+
+        'INGRESOS: Valor de la operación debe ser positivo
+        If v <= 0.00001 Then GoTo NextR
+
+        Dim cents As Long, tol As Long, arr As Variant
+        cents = ING_Cents(v)
+        tol = ING_ToleranceCents(v)
+
+        If ING_TryPopMatch(dict, cents, tol, arr) Then
+            wsEst.Cells(r, cObs).Value = CStr(arr(1))
+            wsEst.Cells(r, cCompl).Value = "PUE"
+
+            If Trim$(CStr(wsCFDI.Cells(CLng(arr(0)), colCuentaCFDI).Value)) = "" Then
+                wsCFDI.Cells(CLng(arr(0)), colCuentaCFDI).Value = SH_EST_MP
+            End If
+
+            matches = matches + 1
+        End If
+
+NextR:
+    Next r
+
+    ING_D01_Process_EST_MP_PUE = matches
+End Function
+
+
+Private Function ING_D02_Process_EST_MP_PPD(ByVal dict As Object, ByVal wsCFDI As Worksheet, ByVal colCuentaCFDI As Long) As Long
+
+    Dim wsEst As Worksheet
+    Set wsEst = ING_GetSheet(SH_EST_MP)
+    If wsEst Is Nothing Then Exit Function
+
+    Dim hdr As Long
+    hdr = ING_FindHeaderRow(wsEst, Array("Valor de la operación", "Valor de la operacion", "VALOR DE LA OPERACION", "VALOR DE LA OPERACIÓN"), 80)
+    If hdr = 0 Then Exit Function
+
+    Dim cVal As Long
+    cVal = ING_FindHeaderCol(wsEst, hdr, Array("Valor de la operación", "Valor de la operacion", "VALOR DE LA OPERACION", "VALOR DE LA OPERACIÓN"))
+    If cVal = 0 Then Exit Function
+
+    Dim cObs As Long, cCompl As Long, cUUID As Long
+    cObs = ING_EnsureColumn(wsEst, hdr, "OBS")
+    cCompl = ING_EnsureColumn(wsEst, hdr, "COMPL. CTA")
+    cUUID = ING_EnsureColumn(wsEst, hdr, "UUID")
+
+    Dim lastR As Long
+    lastR = ING_LastRowInCol(wsEst, cVal)
+    If lastR <= hdr Then Exit Function
+
+    Dim r As Long, matches As Long
+    matches = 0
+
+    For r = hdr + 1 To lastR
+
+        If Trim$(CStr(wsEst.Cells(r, cVal).Value)) = "" Then GoTo NextR
+        If Trim$(CStr(wsEst.Cells(r, cObs).Value)) <> "" Then GoTo NextR
+        If Trim$(CStr(wsEst.Cells(r, cUUID).Value)) <> "" Then GoTo NextR
+
+        If Trim$(CStr(wsEst.Cells(r, cCompl).Value)) <> "" Then
+            If UCase$(Trim$(CStr(wsEst.Cells(r, cCompl).Value))) <> "PPD" Then GoTo NextR
+        End If
+
+        Dim v As Double
+        v = ING_GetNum(wsEst.Cells(r, cVal).Value)
+
+        'INGRESOS: Valor de la operación debe ser positivo
+        If v <= 0.00001 Then GoTo NextR
+
+        Dim cents As Long, tol As Long, arr As Variant
+        cents = ING_Cents(v)
+        tol = ING_ToleranceCents(v)
+
+        If ING_TryPopMatch(dict, cents, tol, arr) Then
+            wsEst.Cells(r, cUUID).Value = CStr(arr(1))
+            wsEst.Cells(r, cCompl).Value = "PPD"
+
+            If Trim$(CStr(wsCFDI.Cells(CLng(arr(0)), colCuentaCFDI).Value)) = "" Then
+                wsCFDI.Cells(CLng(arr(0)), colCuentaCFDI).Value = SH_EST_MP
+            End If
+
+            matches = matches + 1
+        End If
+
+NextR:
+    Next r
+
+    ING_D02_Process_EST_MP_PPD = matches
+End Function
+
+
+Private Function ING_E03_Process_EST_MP_COMPL(ByVal dict As Object, ByVal wsCI As Worksheet, ByVal colCuentaCI As Long) As Long
+
+    Dim wsEst As Worksheet
+    Set wsEst = ING_GetSheet(SH_EST_MP)
+    If wsEst Is Nothing Then Exit Function
+
+    Dim hdr As Long
+    hdr = ING_FindHeaderRow(wsEst, Array("Valor de la operación", "Valor de la operacion", "VALOR DE LA OPERACION", "VALOR DE LA OPERACIÓN"), 80)
+    If hdr = 0 Then Exit Function
+
+    Dim cVal As Long
+    cVal = ING_FindHeaderCol(wsEst, hdr, Array("Valor de la operación", "Valor de la operacion", "VALOR DE LA OPERACION", "VALOR DE LA OPERACIÓN"))
+    If cVal = 0 Then Exit Function
+
+    Dim cObs As Long, cCompl As Long
+    cObs = ING_EnsureColumn(wsEst, hdr, "OBS")
+    cCompl = ING_EnsureColumn(wsEst, hdr, "COMPL. CTA")
+
+    Dim lastR As Long
+    lastR = ING_LastRowInCol(wsEst, cVal)
+    If lastR <= hdr Then Exit Function
+
+    Dim r As Long, matches As Long
+    matches = 0
+
+    For r = hdr + 1 To lastR
+
+        If UCase$(Trim$(CStr(wsEst.Cells(r, cCompl).Value))) <> "PPD" Then GoTo NextR
+        If Trim$(CStr(wsEst.Cells(r, cObs).Value)) <> "" Then GoTo NextR
+        If Trim$(CStr(wsEst.Cells(r, cVal).Value)) = "" Then GoTo NextR
+
+        Dim v As Double
+        v = ING_GetNum(wsEst.Cells(r, cVal).Value)
+
+        'INGRESOS: Valor de la operación debe ser positivo
+        If v <= 0.00001 Then GoTo NextR
+
+        Dim cents As Long, tol As Long, arr As Variant
+        cents = ING_Cents(v)
+        tol = ING_ToleranceCents(v)
+
+        If ING_TryPopMatch(dict, cents, tol, arr) Then
+            wsEst.Cells(r, cObs).Value = CStr(arr(1)) 'UUID COMPL -> OBS
+            wsCI.Cells(CLng(arr(0)), colCuentaCI).Value = SH_EST_MP
+            matches = matches + 1
+        End If
+
+NextR:
+    Next r
+
+    ING_E03_Process_EST_MP_COMPL = matches
+End Function
+
+
+'=========================================================
+'                 HELPERS (prefijo ING_)
+'=========================================================
+Private Function ING_GetSheet(ByVal shName As String) As Worksheet
+    On Error Resume Next
+    Set ING_GetSheet = ThisWorkbook.Worksheets(shName)
+    On Error GoTo 0
+End Function
+
+Private Sub ING_DeleteSheetIfExists(ByVal shName As String)
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(shName)
+    On Error GoTo 0
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+
+Private Function ING_IsNumericSheet(ByVal s As String) As Boolean
+    Dim i As Long
+    If Len(s) = 0 Then Exit Function
+    For i = 1 To Len(s)
+        If Mid$(s, i, 1) < "0" Or Mid$(s, i, 1) > "9" Then Exit Function
+    Next i
+    ING_IsNumericSheet = True
+End Function
+
+Private Function ING_FindHeaderRow(ByVal ws As Worksheet, ByVal headers As Variant, ByVal maxRows As Long) As Long
+    Dim r As Long, c As Long, lastC As Long, h As Variant, v As String
+    lastC = Application.Min(ING_LastCol(ws), 200)
+    If lastC = 0 Then Exit Function
+
+    For r = 1 To maxRows
+        For c = 1 To lastC
+            v = UCase$(Trim$(CStr(ws.Cells(r, c).Value)))
+            If v <> "" Then
+                For Each h In headers
+                    If v = UCase$(Trim$(CStr(h))) Then
+                        ING_FindHeaderRow = r
+                        Exit Function
+                    End If
+                Next h
+            End If
+        Next c
+    Next r
+End Function
+
+Private Function ING_FindHeaderCol(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headers As Variant) As Long
+    Dim c As Long, lastC As Long, h As Variant, v As String
+    lastC = ING_LastCol(ws)
+    If lastC = 0 Then Exit Function
+
+    For c = 1 To lastC
+        v = UCase$(Trim$(CStr(ws.Cells(headerRow, c).Value)))
+        If v <> "" Then
+            For Each h In headers
+                If v = UCase$(Trim$(CStr(h))) Then
+                    ING_FindHeaderCol = c
+                    Exit Function
+                End If
+            Next h
+        End If
+    Next c
+End Function
+
+Private Function ING_EnsureColumn(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+    Dim c As Long
+    c = ING_FindHeaderCol(ws, headerRow, Array(headerName, UCase$(headerName)))
+    If c <> 0 Then
+        ING_EnsureColumn = c
+        Exit Function
+    End If
+
+    'Si es tabla, agregar ListColumn
+    Dim lo As ListObject
+    For Each lo In ws.ListObjects
+        If lo.HeaderRowRange.Row = headerRow Then
+            Dim lc As ListColumn
+            Set lc = lo.ListColumns.Add
+            lc.Name = headerName
+            ING_EnsureColumn = lc.Range.Column
+            Exit Function
+        End If
+    Next lo
+
+    'Si no es tabla, agregar al final del header
+    Dim lastC As Long
+    lastC = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    If Trim$(CStr(ws.Cells(headerRow, lastC).Value)) <> "" Then lastC = lastC + 1
+    ws.Cells(headerRow, lastC).Value = headerName
+    ING_EnsureColumn = lastC
+End Function
+
+Private Function ING_LastRow(ByVal ws As Worksheet) As Long
+    Dim f As Range
+    On Error Resume Next
+    Set f = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    On Error GoTo 0
+    If f Is Nothing Then
+        ING_LastRow = 0
+    Else
+        ING_LastRow = f.Row
+    End If
+End Function
+
+Private Function ING_LastCol(ByVal ws As Worksheet) As Long
+    Dim f As Range
+    On Error Resume Next
+    Set f = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious)
+    On Error GoTo 0
+    If f Is Nothing Then
+        ING_LastCol = 0
+    Else
+        ING_LastCol = f.Column
+    End If
+End Function
+
+Private Function ING_LastRowInCol(ByVal ws As Worksheet, ByVal col As Long) As Long
+    ING_LastRowInCol = ws.Cells(ws.Rows.Count, col).End(xlUp).Row
+End Function
+
+Private Function ING_RowIsEmpty(ByVal ws As Worksheet, ByVal r As Long, ByVal lastCol As Long) As Boolean
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim$(CStr(ws.Cells(r, c).Value)) <> "" Then Exit Function
+    Next c
+    ING_RowIsEmpty = True
+End Function
+
+Private Function ING_SheetHasText(ByVal ws As Worksheet, ByVal needle As String) As Boolean
+    Dim f As Range
+    On Error Resume Next
+    Set f = ws.Cells.Find(What:=needle, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    On Error GoTo 0
+    ING_SheetHasText = Not (f Is Nothing)
+End Function
+
+Private Function ING_GetNum(ByVal v As Variant) As Double
+    Dim s As String
+    If IsNumeric(v) Then
+        ING_GetNum = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If IsNumeric(s) Then ING_GetNum = CDbl(s)
+End Function
+
+Private Function ING_Cents(ByVal amt As Double) As Long
+    ING_Cents = CLng(Round(amt * 100, 0))
+End Function
+
+Private Function ING_ToleranceCents(ByVal amt As Double) As Long
+    Dim t As Double
+    t = Application.Max(1#, Application.Min(5#, amt * 0.001))
+    ING_ToleranceCents = CLng(Round(t * 100, 0))
+End Function
+
+Private Sub ING_AddToDict(ByVal dict As Object, ByVal key As Long, ByVal payload As Variant)
+    Dim col As Collection
+    If Not dict.Exists(key) Then
+        Set col = New Collection
+        dict.Add key, col
+    Else
+        Set col = dict(key)
+    End If
+    col.Add payload
+End Sub
+
+Private Function ING_TryPopMatch(ByVal dict As Object, ByVal cents As Long, ByVal tol As Long, ByRef outArr As Variant) As Boolean
+    Dim k As Long, col As Collection
+    For k = cents - tol To cents + tol
+        If dict.Exists(k) Then
+            Set col = dict(k)
+            If col.Count > 0 Then
+                outArr = col(1)
+                col.Remove 1
+                If col.Count = 0 Then dict.Remove k
+                ING_TryPopMatch = True
+                Exit Function
+            Else
+                dict.Remove k
+            End If
+        End If
+    Next k
+End Function
+
+Private Function ING_LoadCuentaMap(ByVal sheetName As String) As Object
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    Set ING_LoadCuentaMap = d
+
+    Dim ws As Worksheet: Set ws = ING_GetSheet(sheetName)
+    If ws Is Nothing Then Exit Function
+
+    Dim colUUID As Long, colCuenta As Long
+    colUUID = ING_FindHeaderCol(ws, 1, Array("UUID"))
+    colCuenta = ING_FindHeaderCol(ws, 1, Array("Cuenta bancaria", "CUENTA BANCARIA"))
+    If colUUID = 0 Or colCuenta = 0 Then Exit Function
+
+    Dim lastR As Long: lastR = ING_LastRow(ws)
+    Dim i As Long
+    For i = 2 To lastR
+        Dim uuid As String: uuid = Trim$(CStr(ws.Cells(i, colUUID).Value))
+        Dim cta As String: cta = Trim$(CStr(ws.Cells(i, colCuenta).Value))
+        If uuid <> "" And cta <> "" Then
+            If Not d.Exists(uuid) Then d.Add uuid, cta
+        End If
+    Next i
+End Function
+
+Private Sub ING_ApplyCuentaMap(ByVal ws As Worksheet, ByVal map As Object)
+    If map Is Nothing Then Exit Sub
+    If map.Count = 0 Then Exit Sub
+
+    Dim colUUID As Long, colCuenta As Long
+    colUUID = ING_FindHeaderCol(ws, 1, Array("UUID"))
+    colCuenta = ING_FindHeaderCol(ws, 1, Array("Cuenta bancaria", "CUENTA BANCARIA"))
+    If colUUID = 0 Or colCuenta = 0 Then Exit Sub
+
+    Dim lastR As Long: lastR = ING_LastRow(ws)
+    Dim i As Long
+    For i = 2 To lastR
+        If Trim$(CStr(ws.Cells(i, colCuenta).Value)) = "" Then
+            Dim uuid As String: uuid = Trim$(CStr(ws.Cells(i, colUUID).Value))
+            If uuid <> "" Then
+                If map.Exists(uuid) Then ws.Cells(i, colCuenta).Value = map(uuid)
+            End If
+        End If
+    Next i
+End Sub

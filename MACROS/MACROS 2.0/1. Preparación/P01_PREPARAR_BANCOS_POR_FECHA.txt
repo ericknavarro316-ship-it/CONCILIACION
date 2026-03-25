@@ -1,0 +1,445 @@
+Option Explicit
+
+Private Const B01_TOP_HEADER_ROWS As Long = 20
+Private Const B01_MARCAR_ADVERTENCIAS As Boolean = True
+
+Public Sub P01_PREPARAR_BANCOS_POR_FECHA
+
+    Dim ws As Worksheet
+    Dim hdr As Range
+    Dim sortRange As Range
+    Dim keyRange As Range
+    Dim c As Range
+
+    Dim diaCol As Long, hdrRow As Long
+    Dim lastRow As Long, lastCol As Long
+
+    Dim mesConc As Long, anioConc As Long
+    Dim resp As Variant
+
+    Dim dt As Date
+    Dim ok As Boolean, changed As Boolean, needsReview As Boolean
+
+    Dim hojasProcesadas As Long
+    Dim filasProcesadas As Long
+    Dim fechasConvertidas As Long
+    Dim advertencias As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo SalidaConError
+
+    resp = Application.InputBox( _
+        Prompt:="Ingresa el MES de conciliación (1 a 12)." & vbCrLf & _
+                "Ejemplo: 2 para febrero, 3 para marzo.", _
+        Title:="Mes de conciliación", Type:=1)
+
+    If VarType(resp) = vbBoolean Then Exit Sub
+    mesConc = CLng(resp)
+
+    If mesConc < 1 Or mesConc > 12 Then
+        MsgBox "Mes inválido. Debe estar entre 1 y 12.", vbExclamation
+        Exit Sub
+    End If
+
+    resp = Application.InputBox( _
+        Prompt:="Ingresa el AÑO de conciliación." & vbCrLf & _
+                "Ejemplo: 2026", _
+        Title:="Año de conciliación", Type:=1)
+
+    If VarType(resp) = vbBoolean Then Exit Sub
+    anioConc = CLng(resp)
+
+    If anioConc < 2000 Or anioConc > 2100 Then
+        MsgBox "Año inválido.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    For Each ws In ThisWorkbook.Worksheets
+
+        If Not B01_EsHojaNumerica(ws.Name) Then GoTo SiguienteWs
+        If B01_SheetHasText(ws, "SIN MOVIMIENTOS") Then GoTo SiguienteWs
+
+        Set hdr = B01_FindHeader(ws, Array("Día", "Dia"))
+        If hdr Is Nothing Then GoTo SiguienteWs
+
+        hdrRow = hdr.Row
+        diaCol = hdr.Column
+
+        lastRow = B01_LastUsedRow(ws)
+        lastCol = B01_LastUsedCol(ws, hdrRow)
+
+        If lastRow <= hdrRow Then GoTo SiguienteWs
+        If lastCol <= 0 Then GoTo SiguienteWs
+
+        hojasProcesadas = hojasProcesadas + 1
+
+        For Each c In ws.Range(ws.Cells(hdrRow + 1, diaCol), ws.Cells(lastRow, diaCol)).Cells
+
+            ok = False
+            changed = False
+            needsReview = False
+
+            If Len(Trim$(CStr(c.Text))) > 0 Or Len(Trim$(CStr(c.Value2))) > 0 Then
+                filasProcesadas = filasProcesadas + 1
+            End If
+
+            ok = B01_NormalizarFechaCelda(c, mesConc, anioConc, dt, changed, needsReview)
+
+            If ok Then
+                c.Value = dt
+                c.NumberFormat = "dd/mm/yyyy"
+
+                If changed Then fechasConvertidas = fechasConvertidas + 1
+
+                If needsReview Then
+                    advertencias = advertencias + 1
+                    If B01_MARCAR_ADVERTENCIAS Then B01_MarcarAdvertencia c
+                End If
+            Else
+                If Len(Trim$(CStr(c.Text))) > 0 Or Len(Trim$(CStr(c.Value2))) > 0 Then
+                    advertencias = advertencias + 1
+                    If B01_MARCAR_ADVERTENCIAS Then B01_MarcarAdvertencia c
+                End If
+            End If
+        Next c
+
+        Set sortRange = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(lastRow, lastCol))
+        Set keyRange = ws.Range(ws.Cells(hdrRow + 1, diaCol), ws.Cells(lastRow, diaCol))
+
+        sortRange.Sort Key1:=keyRange, _
+                       Order1:=xlAscending, _
+                       Header:=xlYes, _
+                       Orientation:=xlTopToBottom, _
+                       DataOption1:=xlSortNormal
+
+SiguienteWs:
+        Set hdr = Nothing
+        Set sortRange = Nothing
+        Set keyRange = Nothing
+    Next ws
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Proceso terminado." & vbCrLf & vbCrLf & _
+           "Hojas procesadas: " & hojasProcesadas & vbCrLf & _
+           "Filas revisadas: " & filasProcesadas & vbCrLf & _
+           "Fechas convertidas/corregidas: " & fechasConvertidas & vbCrLf & _
+           "Advertencias marcadas: " & advertencias, vbInformation
+    Exit Sub
+
+SalidaConError:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en B01_ORDENAR_BANCOS_POR_DIA: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function B01_NormalizarFechaCelda( _
+    ByVal cel As Range, _
+    ByVal mesConc As Long, _
+    ByVal anioConc As Long, _
+    ByRef outDate As Date, _
+    ByRef wasChanged As Boolean, _
+    ByRef needsReview As Boolean) As Boolean
+
+    Dim txtVisible As String
+    Dim dtActual As Date
+    Dim tieneFechaInterna As Boolean
+    Dim dtSwap As Date
+
+    On Error GoTo ErrHandler
+
+    B01_NormalizarFechaCelda = False
+    wasChanged = False
+    needsReview = False
+
+    txtVisible = B01_CleanDateText(cel.Text)
+
+    ' 1) Si lo visible parece fecha, usar eso primero.
+    '    Esto permite corregir fechas que Excel ya interpretó "mal".
+    If B01_TryParseDisplayedDate(txtVisible, mesConc, anioConc, outDate, needsReview) Then
+        tieneFechaInterna = B01_TryGetUnderlyingDate(cel.Value2, dtActual)
+
+        If tieneFechaInterna Then
+            wasChanged = (CLng(CDbl(dtActual)) <> CLng(CDbl(outDate)))
+        Else
+            wasChanged = True
+        End If
+
+        B01_NormalizarFechaCelda = True
+        Exit Function
+    End If
+
+    ' 2) Si no se pudo con lo visible, intentar con el valor interno
+    If B01_TryGetUnderlyingDate(cel.Value2, dtActual) Then
+
+        outDate = dtActual
+
+        ' Si el día coincide con el mes de conciliación pero el mes no,
+        ' intentamos corregir inversión clásica mm/dd vs dd/mm
+        If Month(outDate) <> mesConc And Day(outDate) = mesConc Then
+            If B01_TryBuildDate(Year(outDate), mesConc, Month(outDate), dtSwap) Then
+                outDate = dtSwap
+            End If
+        End If
+
+        wasChanged = (CLng(CDbl(dtActual)) <> CLng(CDbl(outDate)))
+        needsReview = (Month(outDate) <> mesConc Or Year(outDate) <> anioConc)
+
+        B01_NormalizarFechaCelda = True
+        Exit Function
+    End If
+
+    Exit Function
+
+ErrHandler:
+    B01_NormalizarFechaCelda = False
+End Function
+
+
+Private Function B01_TryParseDisplayedDate( _
+    ByVal displayText As String, _
+    ByVal mesConc As Long, _
+    ByVal anioConc As Long, _
+    ByRef outDate As Date, _
+    ByRef needsReview As Boolean) As Boolean
+
+    Dim s As String
+    Dim p() As String
+    Dim a As Long, b As Long, y As Long
+
+    Dim candDMY As Date, candMDY As Date
+    Dim okDMY As Boolean, okMDY As Boolean
+    Dim matchDMY As Boolean, matchMDY As Boolean
+
+    On Error GoTo ErrHandler
+
+    B01_TryParseDisplayedDate = False
+    needsReview = False
+
+    s = B01_CleanDateText(displayText)
+    If s = "" Then Exit Function
+    If InStr(1, s, "/") = 0 Then Exit Function
+
+    p = Split(s, "/")
+    If UBound(p) <> 2 Then Exit Function
+
+    ' Caso yyyy/mm/dd
+    If Len(p(0)) = 4 Then
+        y = Val(p(0))
+        a = Val(p(1))
+        b = Val(p(2))
+
+        If B01_TryBuildDate(y, a, b, outDate) Then
+            needsReview = (Month(outDate) <> mesConc Or Year(outDate) <> anioConc)
+            B01_TryParseDisplayedDate = True
+        End If
+        Exit Function
+    End If
+
+    a = Val(p(0))
+    b = Val(p(1))
+    y = Val(p(2))
+
+    If y < 100 Then y = 2000 + y
+
+    ' Candidato 1: dd/mm/yyyy
+    okDMY = B01_TryBuildDate(y, b, a, candDMY)
+
+    ' Candidato 2: mm/dd/yyyy
+    okMDY = B01_TryBuildDate(y, a, b, candMDY)
+
+    If Not okDMY And Not okMDY Then Exit Function
+
+    If okDMY And Not okMDY Then
+        outDate = candDMY
+
+    ElseIf okMDY And Not okDMY Then
+        outDate = candMDY
+
+    Else
+        matchDMY = (Month(candDMY) = mesConc)
+        matchMDY = (Month(candMDY) = mesConc)
+
+        If matchDMY And Not matchMDY Then
+            outDate = candDMY
+        ElseIf matchMDY And Not matchDMY Then
+            outDate = candMDY
+        Else
+            ' Si ambas o ninguna coinciden, se toma dd/mm por defecto
+            outDate = candDMY
+        End If
+    End If
+
+    needsReview = (Month(outDate) <> mesConc Or Year(outDate) <> anioConc)
+    B01_TryParseDisplayedDate = True
+    Exit Function
+
+ErrHandler:
+    B01_TryParseDisplayedDate = False
+End Function
+
+
+Private Function B01_TryGetUnderlyingDate(ByVal rawValue As Variant, ByRef outDate As Date) As Boolean
+    On Error GoTo ErrHandler
+
+    B01_TryGetUnderlyingDate = False
+
+    If IsEmpty(rawValue) Then Exit Function
+    If IsError(rawValue) Then Exit Function
+
+    If VarType(rawValue) = vbDate Then
+        outDate = CDate(rawValue)
+        B01_TryGetUnderlyingDate = True
+        Exit Function
+    End If
+
+    If IsNumeric(rawValue) Then
+        ' Evita interpretar números pequeños como fechas 1900 irreales
+        If CDbl(rawValue) > 1000 Then
+            outDate = CDate(CDbl(rawValue))
+            B01_TryGetUnderlyingDate = True
+        End If
+    End If
+
+    Exit Function
+
+ErrHandler:
+    B01_TryGetUnderlyingDate = False
+End Function
+
+
+Private Function B01_TryBuildDate(ByVal yy As Long, ByVal mm As Long, ByVal dd As Long, ByRef outDate As Date) As Boolean
+    Dim dt As Date
+
+    On Error GoTo ErrHandler
+
+    B01_TryBuildDate = False
+
+    If yy <= 0 Or mm <= 0 Or dd <= 0 Then Exit Function
+    If mm > 12 Then Exit Function
+    If dd > 31 Then Exit Function
+
+    dt = DateSerial(yy, mm, dd)
+
+    If Year(dt) <> yy Then Exit Function
+    If Month(dt) <> mm Then Exit Function
+    If Day(dt) <> dd Then Exit Function
+
+    outDate = dt
+    B01_TryBuildDate = True
+    Exit Function
+
+ErrHandler:
+    B01_TryBuildDate = False
+End Function
+
+
+Private Function B01_CleanDateText(ByVal s As String) As String
+    s = Trim$(s)
+    s = Replace(s, Chr(160), " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ".", "/")
+    s = Replace(s, "-", "/")
+
+    If Left$(s, 1) = "'" Then s = Mid$(s, 2)
+
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+
+    ' Si viene con hora, tomar solo la parte de fecha
+    If InStr(s, " ") > 0 Then
+        s = Split(s, " ")(0)
+    End If
+
+    B01_CleanDateText = Trim$(s)
+End Function
+
+
+Private Function B01_FindHeader(ByVal ws As Worksheet, ByVal headerNames As Variant) As Range
+    Dim i As Long
+    Dim f As Range
+
+    For i = LBound(headerNames) To UBound(headerNames)
+        Set f = ws.Rows("1:" & B01_TOP_HEADER_ROWS).Find( _
+                    What:=CStr(headerNames(i)), _
+                    LookIn:=xlValues, _
+                    LookAt:=xlWhole, _
+                    MatchCase:=False)
+        If Not f Is Nothing Then
+            Set B01_FindHeader = f
+            Exit Function
+        End If
+    Next i
+End Function
+
+
+Private Function B01_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        B01_LastUsedRow = 0
+    Else
+        B01_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function B01_LastUsedCol(ByVal ws As Worksheet, ByVal headerRow As Long) As Long
+    Dim c As Range
+
+    Set c = ws.Rows(headerRow).Find(What:="*", _
+                                    After:=ws.Cells(headerRow, 1), _
+                                    LookIn:=xlFormulas, _
+                                    LookAt:=xlPart, _
+                                    SearchOrder:=xlByColumns, _
+                                    SearchDirection:=xlPrevious, _
+                                    MatchCase:=False)
+
+    If c Is Nothing Then
+        B01_LastUsedCol = 0
+    Else
+        B01_LastUsedCol = c.Column
+    End If
+End Function
+
+
+Private Function B01_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    B01_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function B01_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    B01_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Sub B01_MarcarAdvertencia(ByVal cel As Range)
+    cel.Interior.Color = RGB(255, 235, 156)
+End Sub

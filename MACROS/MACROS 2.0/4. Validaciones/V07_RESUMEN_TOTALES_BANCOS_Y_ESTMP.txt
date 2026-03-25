@@ -1,0 +1,498 @@
+Option Explicit
+
+Public Sub V07_RESUMEN_TOTALES_BANCOS_Y_ESTMP()
+
+    Const SH_OUT As String = "V07_RESUMEN_TOTALES"
+    Const SH_ESTMP As String = "EST MP"
+
+    Dim wsOut As Worksheet
+    Dim ws As Worksheet
+    Dim wsEstMP As Worksheet
+
+    Dim outRow As Long
+    Dim totalCargoGeneral As Double
+    Dim totalAbonoGeneral As Double
+
+    Dim totalEstMPCargo As Double
+    Dim totalEstMPAbono As Double
+    Dim totalEstMPValor As Double
+
+    Dim cargoBanco As Double
+    Dim abonoBanco As Double
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    V07_DeleteSheetIfExists SH_OUT
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsOut.Name = SH_OUT
+
+    ' =====================================================
+    ' TÍTULO
+    ' =====================================================
+    wsOut.Range("A1").Value = "RESUMEN DE TOTALES POR BANCO Y EST MP"
+    wsOut.Range("A1").Font.Bold = True
+
+    ' =====================================================
+    ' TABLA 1 - BANCOS POR CUENTA INDIVIDUAL
+    ' =====================================================
+    wsOut.Range("A3:E3").Value = Array("Banco / Hoja", "Total Cargo", "Total Abono", "Neto", "Observación")
+    wsOut.Rows(3).Font.Bold = True
+
+    outRow = 4
+
+    For Each ws In ThisWorkbook.Worksheets
+        If V07_EsHojaNumerica(ws.Name) Then
+
+            cargoBanco = 0
+            abonoBanco = 0
+
+            If V07_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                wsOut.Cells(outRow, 1).Value = ws.Name
+                wsOut.Cells(outRow, 2).Value = 0
+                wsOut.Cells(outRow, 3).Value = 0
+                wsOut.Cells(outRow, 4).Value = 0
+                wsOut.Cells(outRow, 5).Value = "SIN MOVIMIENTOS"
+                outRow = outRow + 1
+            Else
+                If V07_SumarBanco(ws, cargoBanco, abonoBanco) Then
+                    wsOut.Cells(outRow, 1).Value = ws.Name
+                    wsOut.Cells(outRow, 2).Value = cargoBanco
+                    wsOut.Cells(outRow, 3).Value = abonoBanco
+                    wsOut.Cells(outRow, 4).Value = abonoBanco - cargoBanco
+                    wsOut.Cells(outRow, 5).Value = "OK"
+
+                    totalCargoGeneral = totalCargoGeneral + cargoBanco
+                    totalAbonoGeneral = totalAbonoGeneral + abonoBanco
+                Else
+                    wsOut.Cells(outRow, 1).Value = ws.Name
+                    wsOut.Cells(outRow, 2).Value = 0
+                    wsOut.Cells(outRow, 3).Value = 0
+                    wsOut.Cells(outRow, 4).Value = 0
+                    wsOut.Cells(outRow, 5).Value = "NO SE ENCONTRÓ ENCABEZADO DE BANCO"
+                End If
+
+                outRow = outRow + 1
+            End If
+        End If
+    Next ws
+
+    ' Total bancos
+    wsOut.Cells(outRow, 1).Value = "TOTAL BANCOS"
+    wsOut.Cells(outRow, 2).Value = totalCargoGeneral
+    wsOut.Cells(outRow, 3).Value = totalAbonoGeneral
+    wsOut.Cells(outRow, 4).Value = totalAbonoGeneral - totalCargoGeneral
+    wsOut.Rows(outRow).Font.Bold = True
+
+    outRow = outRow + 3
+
+    ' =====================================================
+    ' TABLA 2 - EST MP
+    ' =====================================================
+    wsOut.Cells(outRow, 1).Value = "TOTAL EST MP"
+    wsOut.Cells(outRow, 1).Font.Bold = True
+
+    wsOut.Range("A" & outRow + 2 & ":E" & outRow + 2).Value = Array("Hoja", "Total Cargo", "Total Abono", "Total Valor de la operación", "Observación")
+    wsOut.Rows(outRow + 2).Font.Bold = True
+
+    Set wsEstMP = V07_GetSheet(SH_ESTMP)
+
+    If wsEstMP Is Nothing Then
+        wsOut.Cells(outRow + 3, 1).Value = SH_ESTMP
+        wsOut.Cells(outRow + 3, 2).Value = 0
+        wsOut.Cells(outRow + 3, 3).Value = 0
+        wsOut.Cells(outRow + 3, 4).Value = 0
+        wsOut.Cells(outRow + 3, 5).Value = "NO EXISTE LA HOJA EST MP"
+    Else
+        If V07_SumarEstMP(wsEstMP, totalEstMPCargo, totalEstMPAbono, totalEstMPValor) Then
+            wsOut.Cells(outRow + 3, 1).Value = SH_ESTMP
+            wsOut.Cells(outRow + 3, 2).Value = totalEstMPCargo
+            wsOut.Cells(outRow + 3, 3).Value = totalEstMPAbono
+            wsOut.Cells(outRow + 3, 4).Value = totalEstMPValor
+            wsOut.Cells(outRow + 3, 5).Value = "OK"
+        Else
+            wsOut.Cells(outRow + 3, 1).Value = SH_ESTMP
+            wsOut.Cells(outRow + 3, 2).Value = 0
+            wsOut.Cells(outRow + 3, 3).Value = 0
+            wsOut.Cells(outRow + 3, 4).Value = 0
+            wsOut.Cells(outRow + 3, 5).Value = "NO SE ENCONTRÓ ENCABEZADO EN EST MP"
+        End If
+    End If
+
+    outRow = outRow + 6
+
+    ' =====================================================
+    ' TABLA 3 - COMPARATIVO
+    ' =====================================================
+    wsOut.Cells(outRow, 1).Value = "COMPARATIVO GENERAL"
+    wsOut.Cells(outRow, 1).Font.Bold = True
+
+    wsOut.Range("A" & outRow + 2 & ":B" & outRow + 2).Value = Array("Concepto", "Total")
+    wsOut.Rows(outRow + 2).Font.Bold = True
+
+    wsOut.Cells(outRow + 3, 1).Value = "Total Cargo bancos"
+    wsOut.Cells(outRow + 3, 2).Value = totalCargoGeneral
+
+    wsOut.Cells(outRow + 4, 1).Value = "Total Abono bancos"
+    wsOut.Cells(outRow + 4, 2).Value = totalAbonoGeneral
+
+    wsOut.Cells(outRow + 5, 1).Value = "Total Cargo EST MP"
+    wsOut.Cells(outRow + 5, 2).Value = totalEstMPCargo
+
+    wsOut.Cells(outRow + 6, 1).Value = "Total Abono EST MP"
+    wsOut.Cells(outRow + 6, 2).Value = totalEstMPAbono
+
+    wsOut.Cells(outRow + 7, 1).Value = "Total Valor de la operación EST MP"
+    wsOut.Cells(outRow + 7, 2).Value = totalEstMPValor
+
+    wsOut.Cells(outRow + 8, 1).Value = "Diferencia Cargos bancos - Cargos EST MP"
+    wsOut.Cells(outRow + 8, 2).Value = totalCargoGeneral - totalEstMPCargo
+
+    wsOut.Cells(outRow + 9, 1).Value = "Diferencia Abonos bancos - Abonos EST MP"
+    wsOut.Cells(outRow + 9, 2).Value = totalAbonoGeneral - totalEstMPAbono
+
+    wsOut.Cells(outRow + 10, 1).Value = "Diferencia Abonos bancos - Valor de la operación EST MP"
+    wsOut.Cells(outRow + 10, 2).Value = totalAbonoGeneral - totalEstMPValor
+
+    outRow = outRow + 13
+
+    ' =====================================================
+    ' TABLA 4 - GRAN TOTAL FINAL
+    ' =====================================================
+    wsOut.Cells(outRow, 1).Value = "GRAN TOTAL FINAL"
+    wsOut.Cells(outRow, 1).Font.Bold = True
+
+    wsOut.Range("A" & outRow + 2 & ":I" & outRow + 2).Value = Array( _
+        "Total Cargo Bancos", _
+        "Total Abono Bancos", _
+        "Neto Bancos", _
+        "Total Cargo EST MP", _
+        "Total Abono EST MP", _
+        "Neto EST MP", _
+        "Total Valor Operación EST MP", _
+        "Dif. Abonos Bancos - EST MP", _
+        "Dif. Cargos Bancos - EST MP")
+    wsOut.Rows(outRow + 2).Font.Bold = True
+
+    wsOut.Cells(outRow + 3, 1).Value = totalCargoGeneral
+    wsOut.Cells(outRow + 3, 2).Value = totalAbonoGeneral
+    wsOut.Cells(outRow + 3, 3).Value = totalAbonoGeneral - totalCargoGeneral
+    wsOut.Cells(outRow + 3, 4).Value = totalEstMPCargo
+    wsOut.Cells(outRow + 3, 5).Value = totalEstMPAbono
+    wsOut.Cells(outRow + 3, 6).Value = totalEstMPAbono - totalEstMPCargo
+    wsOut.Cells(outRow + 3, 7).Value = totalEstMPValor
+    wsOut.Cells(outRow + 3, 8).Value = totalAbonoGeneral - totalEstMPAbono
+    wsOut.Cells(outRow + 3, 9).Value = totalCargoGeneral - totalEstMPCargo
+
+    ' Formato
+    wsOut.Columns("B:I").NumberFormat = "#,##0.00"
+    wsOut.Columns("A:I").EntireColumn.AutoFit
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Resumen V07 generado correctamente.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en V07_RESUMEN_TOTALES_BANCOS_Y_ESTMP: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function V07_SumarBanco(ByVal ws As Worksheet, ByRef totalCargo As Double, ByRef totalAbono As Double) As Boolean
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colCargo As Long, colAbono As Long
+    Dim lastRow As Long, r As Long
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Function
+
+    hdrRow = hdrDia.Row
+
+    Set hdrCargo = V07_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = V07_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Function
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+
+    lastRow = V07_LastUsedRow(ws)
+    If lastRow <= hdrRow Then
+        V07_SumarBanco = True
+        Exit Function
+    End If
+
+    For r = hdrRow + 1 To lastRow
+        totalCargo = totalCargo + V07_ParseNumber(ws.Cells(r, colCargo).Value)
+        totalAbono = totalAbono + V07_ParseNumber(ws.Cells(r, colAbono).Value)
+    Next r
+
+    V07_SumarBanco = True
+End Function
+
+
+Private Function V07_SumarEstMP( _
+    ByVal ws As Worksheet, _
+    ByRef totalCargo As Double, _
+    ByRef totalAbono As Double, _
+    ByRef totalValor As Double) As Boolean
+
+    Dim hdrRow As Long
+    Dim colValor As Long, colCargo As Long, colAbono As Long, colTipo As Long
+    Dim lastRow As Long, r As Long
+    Dim valOperacion As Double
+    Dim txtTipo As String
+
+    hdrRow = V07_FindHeaderRowEstMP(ws)
+    If hdrRow = 0 Then Exit Function
+
+    colValor = V07_FindHeaderCol(ws, hdrRow, Array("Valor de la operación", "Valor de la operacion", "Valor operación", "Valor operacion"))
+    colCargo = V07_FindHeaderCol(ws, hdrRow, Array("Cargo"))
+    colAbono = V07_FindHeaderCol(ws, hdrRow, Array("Abono"))
+    colTipo = V07_FindHeaderCol(ws, hdrRow, Array("Tipo de operación", "Tipo de operacion", "Tipo operación", "Tipo operacion", "Tipo"))
+
+    If colValor = 0 And colCargo = 0 And colAbono = 0 Then Exit Function
+
+    lastRow = V07_LastUsedRow(ws)
+    If lastRow <= hdrRow Then
+        V07_SumarEstMP = True
+        Exit Function
+    End If
+
+    For r = hdrRow + 1 To lastRow
+
+        If colCargo > 0 Then
+            totalCargo = totalCargo + V07_ParseNumber(ws.Cells(r, colCargo).Value)
+        End If
+
+        If colAbono > 0 Then
+            totalAbono = totalAbono + V07_ParseNumber(ws.Cells(r, colAbono).Value)
+        End If
+
+        If colValor > 0 Then
+            valOperacion = V07_ParseNumber(ws.Cells(r, colValor).Value)
+            totalValor = totalValor + valOperacion
+
+            If colCargo = 0 And colAbono = 0 Then
+
+                txtTipo = ""
+                If colTipo > 0 Then txtTipo = V07_NormHeader(CStr(ws.Cells(r, colTipo).Value))
+
+                If txtTipo <> "" Then
+                    If InStr(1, txtTipo, "CARGO", vbTextCompare) > 0 _
+                       Or InStr(1, txtTipo, "DEBIT", vbTextCompare) > 0 _
+                       Or InStr(1, txtTipo, "RETIRO", vbTextCompare) > 0 _
+                       Or InStr(1, txtTipo, "PAGO", vbTextCompare) > 0 Then
+
+                        If valOperacion <> 0 Then totalCargo = totalCargo + Abs(valOperacion)
+
+                    ElseIf InStr(1, txtTipo, "ABONO", vbTextCompare) > 0 _
+                       Or InStr(1, txtTipo, "CREDIT", vbTextCompare) > 0 _
+                       Or InStr(1, txtTipo, "INGRESO", vbTextCompare) > 0 _
+                       Or InStr(1, txtTipo, "COBRO", vbTextCompare) > 0 _
+                       Or InStr(1, txtTipo, "LIQUID", vbTextCompare) > 0 Then
+
+                        If valOperacion <> 0 Then totalAbono = totalAbono + Abs(valOperacion)
+
+                    Else
+                        If valOperacion < 0 Then
+                            totalCargo = totalCargo + Abs(valOperacion)
+                        ElseIf valOperacion > 0 Then
+                            totalAbono = totalAbono + valOperacion
+                        End If
+                    End If
+                Else
+                    If valOperacion < 0 Then
+                        totalCargo = totalCargo + Abs(valOperacion)
+                    ElseIf valOperacion > 0 Then
+                        totalAbono = totalAbono + valOperacion
+                    End If
+                End If
+            End If
+        End If
+    Next r
+
+    V07_SumarEstMP = True
+End Function
+
+
+Private Function V07_FindHeaderRowEstMP(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 15
+        If V07_FindHeaderCol(ws, r, Array("Valor de la operación", "Valor de la operacion", "Valor operación", "Valor operacion")) > 0 _
+           Or V07_FindHeaderCol(ws, r, Array("Cargo")) > 0 _
+           Or V07_FindHeaderCol(ws, r, Array("Abono")) > 0 Then
+            V07_FindHeaderRowEstMP = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function V07_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set V07_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function V07_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = V07_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = V07_NormHeader(CStr(headers(i))) Then
+                Set V07_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function V07_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = V07_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = V07_NormHeader(CStr(headerNames(i))) Then
+                V07_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function V07_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    V07_NormHeader = s
+End Function
+
+
+Private Function V07_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        V07_LastUsedRow = 0
+    Else
+        V07_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function V07_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        V07_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        V07_ParseNumber = CDbl(s)
+        If neg Then V07_ParseNumber = -V07_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    V07_ParseNumber = 0
+End Function
+
+
+Private Function V07_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    V07_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function V07_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    V07_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Sub V07_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+

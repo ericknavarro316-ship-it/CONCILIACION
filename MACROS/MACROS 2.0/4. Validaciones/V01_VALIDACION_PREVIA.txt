@@ -1,0 +1,425 @@
+Option Explicit
+
+Public Sub V01_VALIDACION_PREVIA()
+
+    Dim wsOut As Worksheet
+    Dim wsSal As Worksheet
+    Dim outRow As Long
+    Dim totalErrores As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    V01_DeleteSheetIfExists "V01_VALIDACION_PREVIA"
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsOut.Name = "V01_VALIDACION_PREVIA"
+
+    Set wsSal = V01_GetOrCreateSalvedades()
+
+    ' Encabezados del reporte puntual
+    wsOut.Range("A1:H1").Value = Array("Hoja", "Fila", "UUID", "Campo", "Valor detectado", "Código detectado", "Regla esperada", "Observación")
+    wsOut.Rows(1).Font.Bold = True
+
+    outRow = 2
+
+    ' CFDI E
+    totalErrores = totalErrores + V01_ValidarHoja(wsOut, wsSal, outRow, "CFDI_E_PUE", False, True, True)
+    totalErrores = totalErrores + V01_ValidarHoja(wsOut, wsSal, outRow, "CFDI_E_PPD", True, True, False)
+
+    ' CFDI I
+    totalErrores = totalErrores + V01_ValidarHoja(wsOut, wsSal, outRow, "CFDI_I_PUE", False, False, False)
+    totalErrores = totalErrores + V01_ValidarHoja(wsOut, wsSal, outRow, "CFDI_I_PPD", True, False, False)
+
+    ' Resumen
+    wsOut.Range("J1").Value = "Resumen"
+    wsOut.Range("J1").Font.Bold = True
+    wsOut.Range("J2").Value = "Total inconsistencias"
+    wsOut.Range("K2").Value = totalErrores
+
+    If outRow = 2 Then
+        wsOut.Range("A2").Value = "SIN OBSERVACIONES"
+    End If
+
+    wsOut.Columns("A:K").EntireColumn.AutoFit
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Validación previa terminada. Inconsistencias detectadas: " & totalErrores, vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en V01_VALIDACION_PREVIA: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Function V01_ValidarHoja( _
+    ByVal wsOut As Worksheet, _
+    ByVal wsSal As Worksheet, _
+    ByRef outRow As Long, _
+    ByVal sheetName As String, _
+    ByVal debeSer99 As Boolean, _
+    ByVal validarS01 As Boolean, _
+    ByVal validarTotal01 As Boolean) As Long
+
+    Dim ws As Worksheet
+    Dim hdrRow As Long
+    Dim colUUID As Long, colForma As Long, colUso As Long, colTotal As Long
+    Dim lastRow As Long
+    Dim r As Long
+
+    Dim uuidTxt As String
+    Dim formaTxt As String
+    Dim formaCod As String
+    Dim usoTxt As String
+    Dim usoCod As String
+    Dim totalVal As Double
+    Dim regla As String
+
+    Set ws = V01_GetSheet(sheetName)
+
+    If ws Is Nothing Then
+        V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, "", "", "ESTRUCTURA", "", "", "", "HOJA NO EXISTE"
+        V01_ValidarHoja = 1
+        Exit Function
+    End If
+
+    hdrRow = V01_FindHeaderRow(ws)
+    If hdrRow = 0 Then
+        V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, "", "", "ESTRUCTURA", "", "", "", "NO SE IDENTIFICÓ FILA DE ENCABEZADOS"
+        V01_ValidarHoja = 1
+        Exit Function
+    End If
+
+    colUUID = V01_FindHeaderCol(ws, hdrRow, Array("UUID"))
+    colForma = V01_FindHeaderCol(ws, hdrRow, Array("Forma de Pago", "Forma Pago"))
+
+    If colUUID = 0 Or colForma = 0 Then
+        V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, "", "", "ESTRUCTURA", "", "", "", "FALTAN COLUMNAS REQUERIDAS (UUID / Forma de Pago)"
+        V01_ValidarHoja = 1
+        Exit Function
+    End If
+
+    If validarS01 Then
+        colUso = V01_FindHeaderCol(ws, hdrRow, Array("Uso CFDI Receptor", "Uso CFDI", "UsoCFDI", "Uso CFDI del Receptor"))
+        If colUso = 0 Then
+            V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, "", "", "ESTRUCTURA", "", "", "", "FALTA COLUMNA DE USO CFDI"
+            V01_ValidarHoja = V01_ValidarHoja + 1
+        End If
+    End If
+
+    If validarTotal01 Then
+        colTotal = V01_FindHeaderCol(ws, hdrRow, Array("Total"))
+        If colTotal = 0 Then
+            V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, "", "", "ESTRUCTURA", "", "", "", "FALTA COLUMNA TOTAL"
+            V01_ValidarHoja = V01_ValidarHoja + 1
+        End If
+    End If
+
+    lastRow = V01_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        uuidTxt = Trim$(CStr(ws.Cells(r, colUUID).Value))
+        formaTxt = Trim$(CStr(ws.Cells(r, colForma).Value))
+
+        If uuidTxt = "" And formaTxt = "" Then GoTo SiguienteR
+
+        formaCod = V01_ExtraerCodigoFormaPago(formaTxt)
+
+        ' Regla Forma de Pago 99 / no 99
+        If debeSer99 Then
+            If formaCod <> "99" Then
+                regla = "Forma de Pago debe ser 99"
+                V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, r, uuidTxt, "Forma de Pago", formaTxt, formaCod, regla, "EN PPD SOLO SE ACEPTA 99"
+                V01_ValidarHoja = V01_ValidarHoja + 1
+            End If
+        Else
+            If formaCod = "99" Then
+                regla = "Forma de Pago no debe ser 99"
+                V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, r, uuidTxt, "Forma de Pago", formaTxt, formaCod, regla, "EN PUE NO DEBE EXISTIR 99"
+                V01_ValidarHoja = V01_ValidarHoja + 1
+            End If
+        End If
+
+        ' Regla CFDI_E_PUE: Forma de Pago 01 -> Total < 2000
+        If validarTotal01 And colTotal > 0 Then
+            If formaCod = "01" Then
+                totalVal = V01_ParseNumber(ws.Cells(r, colTotal).Value)
+                If totalVal >= 2000 Then
+                    regla = "Si Forma de Pago = 01, Total debe ser menor a 2000"
+                    V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, r, uuidTxt, "Total", CStr(ws.Cells(r, colTotal).Text), CStr(totalVal), regla, "FORMA DE PAGO 01 CON TOTAL IGUAL O MAYOR A 2000"
+                    V01_ValidarHoja = V01_ValidarHoja + 1
+                End If
+            End If
+        End If
+
+        ' Regla Uso CFDI: no S01 (solo CFDI_E_PUE y CFDI_E_PPD)
+        If validarS01 And colUso > 0 Then
+            usoTxt = Trim$(CStr(ws.Cells(r, colUso).Value))
+            usoCod = V01_ExtraerUsoCFDI(usoTxt)
+
+            If usoCod = "S01" Then
+                regla = "Uso CFDI no debe ser S01"
+                V01_AgregarHallazgo wsOut, wsSal, outRow, "V01_VALIDACION_PREVIA", sheetName, r, uuidTxt, "Uso CFDI", usoTxt, usoCod, regla, "NO DEBE EXISTIR S01 EN ESTE RUBRO"
+                V01_ValidarHoja = V01_ValidarHoja + 1
+            End If
+        End If
+
+SiguienteR:
+    Next r
+End Function
+
+
+Private Sub V01_AgregarHallazgo( _
+    ByVal wsOut As Worksheet, _
+    ByVal wsSal As Worksheet, _
+    ByRef outRow As Long, _
+    ByVal macroName As String, _
+    ByVal sheetName As String, _
+    ByVal fila As Variant, _
+    ByVal uuidTxt As String, _
+    ByVal campo As String, _
+    ByVal valorDetectado As String, _
+    ByVal codigoDetectado As String, _
+    ByVal regla As String, _
+    ByVal observacion As String)
+
+    Dim nextSalRow As Long
+
+    ' Reporte puntual V01
+    wsOut.Cells(outRow, 1).Value = sheetName
+    wsOut.Cells(outRow, 2).Value = fila
+    wsOut.Cells(outRow, 3).Value = uuidTxt
+    wsOut.Cells(outRow, 4).Value = campo
+    wsOut.Cells(outRow, 5).Value = valorDetectado
+    wsOut.Cells(outRow, 6).Value = codigoDetectado
+    wsOut.Cells(outRow, 7).Value = regla
+    wsOut.Cells(outRow, 8).Value = observacion
+    outRow = outRow + 1
+
+    ' Bitácora acumulada SALVEDADES
+    nextSalRow = V01_LastUsedRow(wsSal) + 1
+    If nextSalRow < 2 Then nextSalRow = 2
+
+    wsSal.Cells(nextSalRow, 1).Value = Now
+    wsSal.Cells(nextSalRow, 2).Value = macroName
+    wsSal.Cells(nextSalRow, 3).Value = sheetName
+    wsSal.Cells(nextSalRow, 4).Value = fila
+    wsSal.Cells(nextSalRow, 5).Value = uuidTxt
+    wsSal.Cells(nextSalRow, 6).Value = campo
+    wsSal.Cells(nextSalRow, 7).Value = valorDetectado
+    wsSal.Cells(nextSalRow, 8).Value = codigoDetectado
+    wsSal.Cells(nextSalRow, 9).Value = regla
+    wsSal.Cells(nextSalRow, 10).Value = observacion
+End Sub
+
+
+Private Function V01_GetOrCreateSalvedades() As Worksheet
+    Set V01_GetOrCreateSalvedades = V01_GetSheet("SALVEDADES")
+
+    If V01_GetOrCreateSalvedades Is Nothing Then
+        Set V01_GetOrCreateSalvedades = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        V01_GetOrCreateSalvedades.Name = "SALVEDADES"
+    End If
+
+    If Trim$(CStr(V01_GetOrCreateSalvedades.Cells(1, 1).Value)) = "" Then
+        V01_GetOrCreateSalvedades.Range("A1:J1").Value = Array( _
+            "Fecha y hora", _
+            "Macro", _
+            "Hoja", _
+            "Fila", _
+            "UUID", _
+            "Campo", _
+            "Valor detectado", _
+            "Código detectado", _
+            "Regla esperada", _
+            "Observación")
+        V01_GetOrCreateSalvedades.Rows(1).Font.Bold = True
+        V01_GetOrCreateSalvedades.Columns("A:J").EntireColumn.AutoFit
+    End If
+End Function
+
+
+Private Function V01_ExtraerCodigoFormaPago(ByVal s As String) As String
+    Dim txt As String
+    Dim i As Long, ch As String
+    Dim digitos As String
+
+    txt = Trim$(s)
+    If txt = "" Then Exit Function
+
+    For i = 1 To Len(txt)
+        ch = Mid$(txt, i, 1)
+        If ch Like "#" Then
+            digitos = digitos & ch
+            If Len(digitos) = 2 Then Exit For
+        ElseIf Len(digitos) > 0 Then
+            Exit For
+        End If
+    Next i
+
+    If Len(digitos) = 1 Then digitos = "0" & digitos
+    If Len(digitos) >= 2 Then V01_ExtraerCodigoFormaPago = Left$(digitos, 2)
+End Function
+
+
+Private Function V01_ExtraerUsoCFDI(ByVal s As String) As String
+    Dim txt As String
+
+    txt = UCase$(Trim$(s))
+    txt = Replace(txt, Chr(160), " ")
+
+    If InStr(1, txt, "S01", vbTextCompare) > 0 Then
+        V01_ExtraerUsoCFDI = "S01"
+        Exit Function
+    End If
+
+    If Len(txt) >= 3 Then
+        V01_ExtraerUsoCFDI = Left$(txt, 3)
+    End If
+End Function
+
+
+Private Function V01_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        V01_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        V01_ParseNumber = CDbl(s)
+        If neg Then V01_ParseNumber = -V01_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    V01_ParseNumber = 0
+End Function
+
+
+Private Function V01_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set V01_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function V01_FindHeaderRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If V01_FindHeaderCol(ws, r, Array("UUID")) > 0 And _
+           V01_FindHeaderCol(ws, r, Array("Forma de Pago", "Forma Pago")) > 0 Then
+            V01_FindHeaderRow = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function V01_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = V01_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = V01_NormHeader(CStr(headerNames(i))) Then
+                V01_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function V01_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    V01_NormHeader = s
+End Function
+
+
+Private Function V01_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        V01_LastUsedRow = 0
+    Else
+        V01_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Sub V01_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+

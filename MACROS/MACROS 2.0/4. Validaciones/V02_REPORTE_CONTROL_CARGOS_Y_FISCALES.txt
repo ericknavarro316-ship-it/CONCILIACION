@@ -1,0 +1,1005 @@
+Option Explicit
+
+Public Sub V02_REPORTE_CONTROL_CARGOS_Y_FISCALES()
+
+    Dim wsOut As Worksheet
+    Dim ws As Worksheet, wsEST As Worksheet, wsPPD As Worksheet, wsPUE As Worksheet, wsPagos As Worksheet
+
+    Dim outRow As Long
+
+    Dim bankTotal As Long, bankObs As Long, bankPUE As Long, bankPPD As Long
+    Dim bankPPDSinUUIDPago As Long, bankPre As Long, bankPend As Long
+
+    Dim estTotal As Long, estObs As Long, estPUE As Long, estPPD As Long
+    Dim estPPDSinUUIDPago As Long, estPre As Long, estPend As Long
+
+    Dim totalCargos As Long, totalObs As Long, totalPUE As Long, totalPPD As Long
+    Dim totalPPDSinUUIDPago As Long, totalPre As Long, totalPend As Long
+
+    Dim ppdTotal As Long, ppdConComp As Long, ppdSinComp As Long
+    Dim pueTotal As Long, pueConCta As Long, pueSinCta As Long
+    Dim pagosTotal As Long, pagosConCta As Long, pagosSinCta As Long
+
+    Dim obsPPD As String, obsPUE As String, obsPagos As String
+
+    Dim detallePendStart As Long
+    Dim detallePPDStart As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    V02_DeleteSheetIfExists "V02_CTRL_CARGOS_FISCALES"
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsOut.Name = "V02_CTRL_CARGOS_FISCALES"
+
+    ' =====================================================
+    ' TABLA 1 - CONTROL DE CARGOS A DETALLE POR CUENTA
+    ' =====================================================
+    wsOut.Range("A1").Value = "TABLA 1 - CONTROL DE CARGOS DE ESTADOS DE CUENTA"
+    wsOut.Range("A1").Font.Bold = True
+
+    wsOut.Range("A3:J3").Value = Array( _
+        "Cuenta / Fuente", _
+        "Total cargos", _
+        "Cargos con OBS", _
+        "Conciliados PUE", _
+        "Conciliados PPD", _
+        "PPD sin UUID de pago", _
+        "Preclasificados no fiscales", _
+        "Pendientes reales", _
+        "% pendiente real", _
+        "% avance operativo")
+    wsOut.Rows(3).Font.Bold = True
+
+    outRow = 4
+
+    For Each ws In ThisWorkbook.Worksheets
+        If V02_EsHojaNumerica(ws.Name) Then
+            If Not V02_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+
+                bankTotal = 0: bankObs = 0: bankPUE = 0: bankPPD = 0
+                bankPPDSinUUIDPago = 0: bankPre = 0: bankPend = 0
+
+                V02_ContarDetalleBanco ws, bankTotal, bankObs, bankPUE, bankPPD, bankPPDSinUUIDPago, bankPre, bankPend
+
+                wsOut.Cells(outRow, 1).Value = ws.Name
+                wsOut.Cells(outRow, 2).Value = bankTotal
+                wsOut.Cells(outRow, 3).Value = bankObs
+                wsOut.Cells(outRow, 4).Value = bankPUE
+                wsOut.Cells(outRow, 5).Value = bankPPD
+                wsOut.Cells(outRow, 6).Value = bankPPDSinUUIDPago
+                wsOut.Cells(outRow, 7).Value = bankPre
+                wsOut.Cells(outRow, 8).Value = bankPend
+                wsOut.Cells(outRow, 9).Value = V02_Pct(bankPend, bankTotal)
+                wsOut.Cells(outRow, 10).Value = V02_Pct(bankTotal - bankPend, bankTotal)
+
+                totalCargos = totalCargos + bankTotal
+                totalObs = totalObs + bankObs
+                totalPUE = totalPUE + bankPUE
+                totalPPD = totalPPD + bankPPD
+                totalPPDSinUUIDPago = totalPPDSinUUIDPago + bankPPDSinUUIDPago
+                totalPre = totalPre + bankPre
+                totalPend = totalPend + bankPend
+
+                outRow = outRow + 1
+            End If
+        End If
+    Next ws
+
+    Set wsEST = V02_GetSheet("EST MP")
+    If Not wsEST Is Nothing Then
+        estTotal = 0: estObs = 0: estPUE = 0: estPPD = 0
+        estPPDSinUUIDPago = 0: estPre = 0: estPend = 0
+
+        V02_ContarDetalleEST wsEST, estTotal, estObs, estPUE, estPPD, estPPDSinUUIDPago, estPre, estPend
+
+        wsOut.Cells(outRow, 1).Value = "EST MP"
+        wsOut.Cells(outRow, 2).Value = estTotal
+        wsOut.Cells(outRow, 3).Value = estObs
+        wsOut.Cells(outRow, 4).Value = estPUE
+        wsOut.Cells(outRow, 5).Value = estPPD
+        wsOut.Cells(outRow, 6).Value = estPPDSinUUIDPago
+        wsOut.Cells(outRow, 7).Value = estPre
+        wsOut.Cells(outRow, 8).Value = estPend
+        wsOut.Cells(outRow, 9).Value = V02_Pct(estPend, estTotal)
+        wsOut.Cells(outRow, 10).Value = V02_Pct(estTotal - estPend, estTotal)
+
+        totalCargos = totalCargos + estTotal
+        totalObs = totalObs + estObs
+        totalPUE = totalPUE + estPUE
+        totalPPD = totalPPD + estPPD
+        totalPPDSinUUIDPago = totalPPDSinUUIDPago + estPPDSinUUIDPago
+        totalPre = totalPre + estPre
+        totalPend = totalPend + estPend
+
+        outRow = outRow + 1
+    End If
+
+    wsOut.Cells(outRow, 1).Value = "TOTAL"
+    wsOut.Cells(outRow, 2).Value = totalCargos
+    wsOut.Cells(outRow, 3).Value = totalObs
+    wsOut.Cells(outRow, 4).Value = totalPUE
+    wsOut.Cells(outRow, 5).Value = totalPPD
+    wsOut.Cells(outRow, 6).Value = totalPPDSinUUIDPago
+    wsOut.Cells(outRow, 7).Value = totalPre
+    wsOut.Cells(outRow, 8).Value = totalPend
+    wsOut.Cells(outRow, 9).Value = V02_Pct(totalPend, totalCargos)
+    wsOut.Cells(outRow, 10).Value = V02_Pct(totalCargos - totalPend, totalCargos)
+    wsOut.Rows(outRow).Font.Bold = True
+
+    wsOut.Range("I4:J" & outRow).NumberFormat = "0.00%"
+
+    outRow = outRow + 3
+
+    ' =====================================================
+    ' TABLA 2 - PPD VS COMPLEMENTO
+    ' =====================================================
+    Set wsPPD = V02_GetSheet("CFDI_E_PPD")
+    Set wsPagos = V02_FindPagosSheet()
+
+    V02_ContarPPDvsComplemento wsPPD, wsPagos, ppdTotal, ppdConComp, ppdSinComp, obsPPD
+
+    wsOut.Cells(outRow, 1).Value = "TABLA 2 - CONTROL DE PPD VS COMPLEMENTO"
+    wsOut.Cells(outRow, 1).Font.Bold = True
+
+    wsOut.Range("A" & outRow + 2 & ":F" & outRow + 2).Value = Array( _
+        "Total CFDI_E_PPD", _
+        "PPD con complemento", _
+        "PPD sin complemento", _
+        "% con complemento", _
+        "% sin complemento", _
+        "Observación")
+    wsOut.Rows(outRow + 2).Font.Bold = True
+
+    wsOut.Range("A" & outRow + 3 & ":F" & outRow + 3).Value = Array( _
+        ppdTotal, _
+        ppdConComp, _
+        ppdSinComp, _
+        V02_Pct(ppdConComp, ppdTotal), _
+        V02_Pct(ppdSinComp, ppdTotal), _
+        obsPPD)
+
+    wsOut.Range("D" & outRow + 3 & ":E" & outRow + 3).NumberFormat = "0.00%"
+
+    outRow = outRow + 6
+
+    ' =====================================================
+    ' TABLA 3 - CUENTA BANCARIA EN PUE Y PAGOS
+    ' =====================================================
+    Set wsPUE = V02_GetSheet("CFDI_E_PUE")
+
+    V02_ContarCuentaBancaria wsPUE, "UUID", "Cuenta bancaria", pueTotal, pueConCta, pueSinCta, obsPUE
+    V02_ContarCuentaBancaria wsPagos, "UUID", "Cuenta bancaria", pagosTotal, pagosConCta, pagosSinCta, obsPagos
+
+    wsOut.Cells(outRow, 1).Value = "TABLA 3 - CONTROL DE CUENTA BANCARIA"
+    wsOut.Cells(outRow, 1).Font.Bold = True
+
+    wsOut.Range("A" & outRow + 2 & ":F" & outRow + 2).Value = Array( _
+        "Fuente", _
+        "Total", _
+        "Con cuenta bancaria", _
+        "Sin cuenta bancaria", _
+        "% con cuenta", _
+        "Observación")
+    wsOut.Rows(outRow + 2).Font.Bold = True
+
+    wsOut.Range("A" & outRow + 3 & ":F" & outRow + 3).Value = Array( _
+        "CFDI_E_PUE", _
+        pueTotal, _
+        pueConCta, _
+        pueSinCta, _
+        V02_Pct(pueConCta, pueTotal), _
+        obsPUE)
+
+    wsOut.Range("A" & outRow + 4 & ":F" & outRow + 4).Value = Array( _
+        IIf(wsPagos Is Nothing, "PAGOS E / COMPL. E", wsPagos.Name), _
+        pagosTotal, _
+        pagosConCta, _
+        pagosSinCta, _
+        V02_Pct(pagosConCta, pagosTotal), _
+        obsPagos)
+
+    wsOut.Range("E" & outRow + 3 & ":E" & outRow + 4).NumberFormat = "0.00%"
+
+    outRow = outRow + 7
+
+    ' =====================================================
+    ' TABLA 4 - DETALLE DE PENDIENTES REALES
+    ' =====================================================
+    detallePendStart = outRow
+
+    wsOut.Cells(detallePendStart, 1).Value = "TABLA 4 - DETALLE DE PENDIENTES REALES"
+    wsOut.Cells(detallePendStart, 1).Font.Bold = True
+
+    wsOut.Range("A" & detallePendStart + 2 & ":I" & detallePendStart + 2).Value = Array( _
+        "Cuenta / Fuente", _
+        "Fila", _
+        "Día", _
+        "Concepto", _
+        "Cargo", _
+        "OBS", _
+        "COMPL. CTA", _
+        "UUID MADRE", _
+        "Motivo")
+    wsOut.Rows(detallePendStart + 2).Font.Bold = True
+
+    outRow = detallePendStart + 3
+
+    For Each ws In ThisWorkbook.Worksheets
+        If V02_EsHojaNumerica(ws.Name) Then
+            If Not V02_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                V02_AgregarPendientesBanco ws, wsOut, outRow
+            End If
+        End If
+    Next ws
+
+    If Not wsEST Is Nothing Then
+        V02_AgregarPendientesEST wsEST, wsOut, outRow
+    End If
+
+    If outRow = detallePendStart + 3 Then
+        wsOut.Cells(outRow, 1).Value = "SIN PENDIENTES REALES"
+        outRow = outRow + 1
+    End If
+
+    outRow = outRow + 2
+
+    ' =====================================================
+    ' TABLA 5 - DETALLE DE PPD SIN UUID DE PAGO
+    ' =====================================================
+    detallePPDStart = outRow
+
+    wsOut.Cells(detallePPDStart, 1).Value = "TABLA 5 - DETALLE DE PPD SIN UUID DE PAGO"
+    wsOut.Cells(detallePPDStart, 1).Font.Bold = True
+
+    wsOut.Range("A" & detallePPDStart + 2 & ":I" & detallePPDStart + 2).Value = Array( _
+        "Cuenta / Fuente", _
+        "Fila", _
+        "Día", _
+        "Concepto", _
+        "Cargo", _
+        "OBS", _
+        "COMPL. CTA", _
+        "UUID MADRE", _
+        "Motivo")
+    wsOut.Rows(detallePPDStart + 2).Font.Bold = True
+
+    outRow = detallePPDStart + 3
+
+    For Each ws In ThisWorkbook.Worksheets
+        If V02_EsHojaNumerica(ws.Name) Then
+            If Not V02_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                V02_AgregarPPDSinUUIDPagoBanco ws, wsOut, outRow
+            End If
+        End If
+    Next ws
+
+    If Not wsEST Is Nothing Then
+        V02_AgregarPPDSinUUIDPagoEST wsEST, wsOut, outRow
+    End If
+
+    If outRow = detallePPDStart + 3 Then
+        wsOut.Cells(outRow, 1).Value = "SIN PPD SIN UUID DE PAGO"
+        outRow = outRow + 1
+    End If
+
+    wsOut.Columns("A:J").EntireColumn.AutoFit
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Reporte V02 generado correctamente.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en V02_REPORTE_CONTROL_CARGOS_Y_FISCALES: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub V02_ContarDetalleBanco( _
+    ByVal ws As Worksheet, _
+    ByRef total As Long, _
+    ByRef conObs As Long, _
+    ByRef pue As Long, _
+    ByRef ppd As Long, _
+    ByRef ppdSinUUIDPago As Long, _
+    ByRef preclasificados As Long, _
+    ByRef pendientes As Long)
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colCargo As Long, colAbono As Long, colCompl As Long, colObs As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim complTxt As String, obsTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Sub
+
+    hdrRow = hdrDia.Row
+
+    Set hdrCargo = V02_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = V02_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Sub
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colCompl = V02_FindHeaderCol(ws, hdrRow, Array("COMPL. CTA"))
+    colObs = V02_FindHeaderCol(ws, hdrRow, Array("OBS"))
+
+    lastRow = V02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        cargoVal = V02_ParseNumber(ws.Cells(r, colCargo).Value)
+        abonoVal = V02_ParseNumber(ws.Cells(r, colAbono).Value)
+
+        If cargoVal > 0 And abonoVal = 0 Then
+            total = total + 1
+
+            obsTxt = IIf(colObs > 0, Trim$(CStr(ws.Cells(r, colObs).Value)), "")
+            complTxt = IIf(colCompl > 0, UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))), "")
+
+            If obsTxt <> "" Then conObs = conObs + 1
+            If complTxt = "PUE" Then pue = pue + 1
+            If complTxt = "PPD" Then
+                ppd = ppd + 1
+                If obsTxt = "" Then ppdSinUUIDPago = ppdSinUUIDPago + 1
+            End If
+
+            If obsTxt <> "" And complTxt <> "PUE" And complTxt <> "PPD" Then
+                preclasificados = preclasificados + 1
+            End If
+
+            If obsTxt = "" And complTxt = "" Then
+                pendientes = pendientes + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V02_ContarDetalleEST( _
+    ByVal ws As Worksheet, _
+    ByRef total As Long, _
+    ByRef conObs As Long, _
+    ByRef pue As Long, _
+    ByRef ppd As Long, _
+    ByRef ppdSinUUIDPago As Long, _
+    ByRef preclasificados As Long, _
+    ByRef pendientes As Long)
+
+    Dim hdrRow As Long
+    Dim colCargo As Long, colAbono As Long, colCompl As Long, colObs As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim complTxt As String, obsTxt As String
+
+    hdrRow = V02_FindHeaderRowEST(ws)
+    If hdrRow = 0 Then Exit Sub
+
+    colCargo = V02_FindHeaderCol(ws, hdrRow, Array("cargo"))
+    colAbono = V02_FindHeaderCol(ws, hdrRow, Array("abono"))
+    colCompl = V02_FindHeaderCol(ws, hdrRow, Array("COMPL. CTA"))
+    colObs = V02_FindHeaderCol(ws, hdrRow, Array("OBS"))
+
+    If colCargo = 0 Then Exit Sub
+
+    lastRow = V02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        cargoVal = V02_ParseNumber(ws.Cells(r, colCargo).Value)
+        abonoVal = IIf(colAbono > 0, V02_ParseNumber(ws.Cells(r, colAbono).Value), 0)
+
+        If cargoVal > 0 And abonoVal = 0 Then
+            total = total + 1
+
+            obsTxt = IIf(colObs > 0, Trim$(CStr(ws.Cells(r, colObs).Value)), "")
+            complTxt = IIf(colCompl > 0, UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))), "")
+
+            If obsTxt <> "" Then conObs = conObs + 1
+            If complTxt = "PUE" Then pue = pue + 1
+            If complTxt = "PPD" Then
+                ppd = ppd + 1
+                If obsTxt = "" Then ppdSinUUIDPago = ppdSinUUIDPago + 1
+            End If
+
+            If obsTxt <> "" And complTxt <> "PUE" And complTxt <> "PPD" Then
+                preclasificados = preclasificados + 1
+            End If
+
+            If obsTxt = "" And complTxt = "" Then
+                pendientes = pendientes + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V02_AgregarPendientesBanco(ByVal ws As Worksheet, ByVal wsOut As Worksheet, ByRef outRow As Long)
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range, hdrConcepto As Range
+    Dim hdrRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long, colConcepto As Long
+    Dim colObs As Long, colCompl As Long, colMother As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim obsTxt As String, complTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Sub
+
+    hdrRow = hdrDia.Row
+    colDia = hdrDia.Column
+
+    Set hdrCargo = V02_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = V02_FindHeader(ws, hdrRow, Array("Abono"))
+    Set hdrConcepto = V02_FindHeader(ws, hdrRow, Array("Concepto / Referencia", "Concepto", "Referencia", "Concepto/Referencia"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Sub
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colConcepto = IIf(hdrConcepto Is Nothing, 0, hdrConcepto.Column)
+    colObs = V02_FindHeaderCol(ws, hdrRow, Array("OBS"))
+    colCompl = V02_FindHeaderCol(ws, hdrRow, Array("COMPL. CTA"))
+    colMother = V02_FindHeaderCol(ws, hdrRow, Array("UUID MADRE"))
+
+    lastRow = V02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        cargoVal = V02_ParseNumber(ws.Cells(r, colCargo).Value)
+        abonoVal = V02_ParseNumber(ws.Cells(r, colAbono).Value)
+
+        If cargoVal > 0 And abonoVal = 0 Then
+            obsTxt = IIf(colObs > 0, Trim$(CStr(ws.Cells(r, colObs).Value)), "")
+            complTxt = IIf(colCompl > 0, UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))), "")
+
+            If obsTxt = "" And complTxt = "" Then
+                wsOut.Cells(outRow, 1).Value = ws.Name
+                wsOut.Cells(outRow, 2).Value = r
+                wsOut.Cells(outRow, 3).Value = ws.Cells(r, colDia).Value
+                wsOut.Cells(outRow, 4).Value = IIf(colConcepto > 0, ws.Cells(r, colConcepto).Value, "")
+                wsOut.Cells(outRow, 5).Value = cargoVal
+                wsOut.Cells(outRow, 6).Value = obsTxt
+                wsOut.Cells(outRow, 7).Value = complTxt
+                wsOut.Cells(outRow, 8).Value = IIf(colMother > 0, ws.Cells(r, colMother).Value, "")
+                wsOut.Cells(outRow, 9).Value = "SIN OBS Y SIN COMPL. CTA"
+                outRow = outRow + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V02_AgregarPendientesEST(ByVal ws As Worksheet, ByVal wsOut As Worksheet, ByRef outRow As Long)
+
+    Dim hdrRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long, colConcepto As Long
+    Dim colObs As Long, colCompl As Long, colMother As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim obsTxt As String, complTxt As String
+
+    hdrRow = V02_FindHeaderRowEST(ws)
+    If hdrRow = 0 Then Exit Sub
+
+    colDia = V02_FindHeaderCol(ws, hdrRow, Array("Día", "Dia"))
+    colCargo = V02_FindHeaderCol(ws, hdrRow, Array("cargo"))
+    colAbono = V02_FindHeaderCol(ws, hdrRow, Array("abono"))
+    colConcepto = V02_FindHeaderCol(ws, hdrRow, Array("Concepto", "Detalle", "REFERENCE_ID"))
+    colObs = V02_FindHeaderCol(ws, hdrRow, Array("OBS"))
+    colCompl = V02_FindHeaderCol(ws, hdrRow, Array("COMPL. CTA"))
+    colMother = V02_FindHeaderCol(ws, hdrRow, Array("UUID MADRE"))
+
+    If colCargo = 0 Then Exit Sub
+
+    lastRow = V02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        cargoVal = V02_ParseNumber(ws.Cells(r, colCargo).Value)
+        abonoVal = IIf(colAbono > 0, V02_ParseNumber(ws.Cells(r, colAbono).Value), 0)
+
+        If cargoVal > 0 And abonoVal = 0 Then
+            obsTxt = IIf(colObs > 0, Trim$(CStr(ws.Cells(r, colObs).Value)), "")
+            complTxt = IIf(colCompl > 0, UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))), "")
+
+            If obsTxt = "" And complTxt = "" Then
+                wsOut.Cells(outRow, 1).Value = "EST MP"
+                wsOut.Cells(outRow, 2).Value = r
+                wsOut.Cells(outRow, 3).Value = IIf(colDia > 0, ws.Cells(r, colDia).Value, "")
+                wsOut.Cells(outRow, 4).Value = IIf(colConcepto > 0, ws.Cells(r, colConcepto).Value, "")
+                wsOut.Cells(outRow, 5).Value = cargoVal
+                wsOut.Cells(outRow, 6).Value = obsTxt
+                wsOut.Cells(outRow, 7).Value = complTxt
+                wsOut.Cells(outRow, 8).Value = IIf(colMother > 0, ws.Cells(r, colMother).Value, "")
+                wsOut.Cells(outRow, 9).Value = "SIN OBS Y SIN COMPL. CTA"
+                outRow = outRow + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V02_AgregarPPDSinUUIDPagoBanco(ByVal ws As Worksheet, ByVal wsOut As Worksheet, ByRef outRow As Long)
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range, hdrConcepto As Range
+    Dim hdrRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long, colConcepto As Long
+    Dim colObs As Long, colCompl As Long, colMother As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim obsTxt As String, complTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Sub
+
+    hdrRow = hdrDia.Row
+    colDia = hdrDia.Column
+
+    Set hdrCargo = V02_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = V02_FindHeader(ws, hdrRow, Array("Abono"))
+    Set hdrConcepto = V02_FindHeader(ws, hdrRow, Array("Concepto / Referencia", "Concepto", "Referencia", "Concepto/Referencia"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Sub
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colConcepto = IIf(hdrConcepto Is Nothing, 0, hdrConcepto.Column)
+    colObs = V02_FindHeaderCol(ws, hdrRow, Array("OBS"))
+    colCompl = V02_FindHeaderCol(ws, hdrRow, Array("COMPL. CTA"))
+    colMother = V02_FindHeaderCol(ws, hdrRow, Array("UUID MADRE"))
+
+    lastRow = V02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        cargoVal = V02_ParseNumber(ws.Cells(r, colCargo).Value)
+        abonoVal = V02_ParseNumber(ws.Cells(r, colAbono).Value)
+
+        If cargoVal > 0 And abonoVal = 0 Then
+            obsTxt = IIf(colObs > 0, Trim$(CStr(ws.Cells(r, colObs).Value)), "")
+            complTxt = IIf(colCompl > 0, UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))), "")
+
+            If complTxt = "PPD" And obsTxt = "" Then
+                wsOut.Cells(outRow, 1).Value = ws.Name
+                wsOut.Cells(outRow, 2).Value = r
+                wsOut.Cells(outRow, 3).Value = ws.Cells(r, colDia).Value
+                wsOut.Cells(outRow, 4).Value = IIf(colConcepto > 0, ws.Cells(r, colConcepto).Value, "")
+                wsOut.Cells(outRow, 5).Value = cargoVal
+                wsOut.Cells(outRow, 6).Value = obsTxt
+                wsOut.Cells(outRow, 7).Value = complTxt
+                wsOut.Cells(outRow, 8).Value = IIf(colMother > 0, ws.Cells(r, colMother).Value, "")
+                wsOut.Cells(outRow, 9).Value = "PPD SIN UUID DE PAGO"
+                outRow = outRow + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V02_AgregarPPDSinUUIDPagoEST(ByVal ws As Worksheet, ByVal wsOut As Worksheet, ByRef outRow As Long)
+
+    Dim hdrRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long, colConcepto As Long
+    Dim colObs As Long, colCompl As Long, colMother As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim obsTxt As String, complTxt As String
+
+    hdrRow = V02_FindHeaderRowEST(ws)
+    If hdrRow = 0 Then Exit Sub
+
+    colDia = V02_FindHeaderCol(ws, hdrRow, Array("Día", "Dia"))
+    colCargo = V02_FindHeaderCol(ws, hdrRow, Array("cargo"))
+    colAbono = V02_FindHeaderCol(ws, hdrRow, Array("abono"))
+    colConcepto = V02_FindHeaderCol(ws, hdrRow, Array("Concepto", "Detalle", "REFERENCE_ID"))
+    colObs = V02_FindHeaderCol(ws, hdrRow, Array("OBS"))
+    colCompl = V02_FindHeaderCol(ws, hdrRow, Array("COMPL. CTA"))
+    colMother = V02_FindHeaderCol(ws, hdrRow, Array("UUID MADRE"))
+
+    If colCargo = 0 Then Exit Sub
+
+    lastRow = V02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        cargoVal = V02_ParseNumber(ws.Cells(r, colCargo).Value)
+        abonoVal = IIf(colAbono > 0, V02_ParseNumber(ws.Cells(r, colAbono).Value), 0)
+
+        If cargoVal > 0 And abonoVal = 0 Then
+            obsTxt = IIf(colObs > 0, Trim$(CStr(ws.Cells(r, colObs).Value)), "")
+            complTxt = IIf(colCompl > 0, UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value))), "")
+
+            If complTxt = "PPD" And obsTxt = "" Then
+                wsOut.Cells(outRow, 1).Value = "EST MP"
+                wsOut.Cells(outRow, 2).Value = r
+                wsOut.Cells(outRow, 3).Value = IIf(colDia > 0, ws.Cells(r, colDia).Value, "")
+                wsOut.Cells(outRow, 4).Value = IIf(colConcepto > 0, ws.Cells(r, colConcepto).Value, "")
+                wsOut.Cells(outRow, 5).Value = cargoVal
+                wsOut.Cells(outRow, 6).Value = obsTxt
+                wsOut.Cells(outRow, 7).Value = complTxt
+                wsOut.Cells(outRow, 8).Value = IIf(colMother > 0, ws.Cells(r, colMother).Value, "")
+                wsOut.Cells(outRow, 9).Value = "PPD SIN UUID DE PAGO"
+                outRow = outRow + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V02_ContarPPDvsComplemento( _
+    ByVal wsPPD As Worksheet, _
+    ByVal wsPagos As Worksheet, _
+    ByRef totalPPD As Long, _
+    ByRef conComp As Long, _
+    ByRef sinComp As Long, _
+    ByRef observacion As String)
+
+    Dim dictPagos As Object
+    Dim hdrPPD As Long, lastPPD As Long
+    Dim hdrPagos As Long, lastPagos As Long
+    Dim colPPDUUID As Long
+    Dim colPagUUID As Long, colPagMother As Long
+    Dim r As Long, k As String
+
+    Set dictPagos = CreateObject("Scripting.Dictionary")
+
+    If wsPPD Is Nothing Then
+        observacion = "No existe CFDI_E_PPD"
+        Exit Sub
+    End If
+
+    hdrPPD = V02_FindHeaderRowSimple(wsPPD, Array("UUID"))
+    If hdrPPD = 0 Then
+        observacion = "No se identificó encabezado en CFDI_E_PPD"
+        Exit Sub
+    End If
+
+    colPPDUUID = V02_FindHeaderCol(wsPPD, hdrPPD, Array("UUID"))
+    If colPPDUUID = 0 Then
+        observacion = "No existe columna UUID en CFDI_E_PPD"
+        Exit Sub
+    End If
+
+    If wsPagos Is Nothing Then
+        lastPPD = V02_LastUsedRow(wsPPD)
+        If lastPPD > hdrPPD Then
+            For r = hdrPPD + 1 To lastPPD
+                If Trim$(CStr(wsPPD.Cells(r, colPPDUUID).Value)) <> "" Then totalPPD = totalPPD + 1
+            Next r
+        End If
+        sinComp = totalPPD
+        observacion = "No existe PAGOS E / COMPL. E"
+        Exit Sub
+    End If
+
+    hdrPagos = V02_FindHeaderRowSimple(wsPagos, Array("UUID", "UUID Madre", "UUID MADRE"))
+    If hdrPagos > 0 Then
+        colPagUUID = V02_FindHeaderCol(wsPagos, hdrPagos, Array("UUID"))
+        colPagMother = V02_FindHeaderCol(wsPagos, hdrPagos, Array("UUID Madre", "UUID MADRE", "UUID_MADRE"))
+
+        lastPagos = V02_LastUsedRow(wsPagos)
+        For r = hdrPagos + 1 To lastPagos
+            If colPagUUID > 0 Then
+                k = V02_NormKey(wsPagos.Cells(r, colPagUUID).Value)
+                If k <> "" Then If Not dictPagos.Exists(k) Then dictPagos.Add k, True
+            End If
+
+            If colPagMother > 0 Then
+                k = V02_NormKey(wsPagos.Cells(r, colPagMother).Value)
+                If k <> "" Then If Not dictPagos.Exists(k) Then dictPagos.Add k, True
+            End If
+        Next r
+    End If
+
+    lastPPD = V02_LastUsedRow(wsPPD)
+    For r = hdrPPD + 1 To lastPPD
+        k = V02_NormKey(wsPPD.Cells(r, colPPDUUID).Value)
+        If k <> "" Then
+            totalPPD = totalPPD + 1
+            If dictPagos.Exists(k) Then
+                conComp = conComp + 1
+            Else
+                sinComp = sinComp + 1
+            End If
+        End If
+    Next r
+
+    If observacion = "" Then observacion = "OK"
+End Sub
+
+
+Private Sub V02_ContarCuentaBancaria( _
+    ByVal ws As Worksheet, _
+    ByVal uuidHeader As String, _
+    ByVal ctaHeader As String, _
+    ByRef total As Long, _
+    ByRef conCta As Long, _
+    ByRef sinCta As Long, _
+    ByRef observacion As String)
+
+    Dim hdrRow As Long, lastRow As Long
+    Dim colUUID As Long, colCta As Long
+    Dim r As Long
+    Dim uuidTxt As String, ctaTxt As String
+
+    If ws Is Nothing Then
+        observacion = "Hoja no existe"
+        Exit Sub
+    End If
+
+    hdrRow = V02_FindHeaderRowSimple(ws, Array(uuidHeader))
+    If hdrRow = 0 Then
+        observacion = "No se identificó encabezado"
+        Exit Sub
+    End If
+
+    colUUID = V02_FindHeaderCol(ws, hdrRow, Array(uuidHeader))
+    colCta = V02_FindHeaderCol(ws, hdrRow, Array(ctaHeader))
+
+    If colUUID = 0 Or colCta = 0 Then
+        observacion = "Faltan columnas UUID / Cuenta bancaria"
+        Exit Sub
+    End If
+
+    lastRow = V02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then
+        observacion = "Sin datos"
+        Exit Sub
+    End If
+
+    For r = hdrRow + 1 To lastRow
+        uuidTxt = Trim$(CStr(ws.Cells(r, colUUID).Value))
+        ctaTxt = Trim$(CStr(ws.Cells(r, colCta).Value))
+
+        If uuidTxt <> "" Then
+            total = total + 1
+            If ctaTxt <> "" Then
+                conCta = conCta + 1
+            Else
+                sinCta = sinCta + 1
+            End If
+        End If
+    Next r
+
+    If observacion = "" Then observacion = "OK"
+End Sub
+
+
+Private Function V02_FindPagosSheet() As Worksheet
+    Dim arr, i As Long
+    arr = Array("PAGOS E", "COMPL. E", "PAGOS_E", "COMPL E")
+
+    For i = LBound(arr) To UBound(arr)
+        Set V02_FindPagosSheet = V02_GetSheet(CStr(arr(i)))
+        If Not V02_FindPagosSheet Is Nothing Then Exit Function
+    Next i
+End Function
+
+
+Private Function V02_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set V02_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function V02_FindHeaderRowEST(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 20
+        If V02_FindHeaderCol(ws, r, Array("Día", "Dia")) > 0 And _
+           V02_FindHeaderCol(ws, r, Array("cargo")) > 0 Then
+            V02_FindHeaderRowEST = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function V02_FindHeaderRowSimple(ByVal ws As Worksheet, ByVal headers As Variant) As Long
+    Dim r As Long, i As Long
+
+    For r = 1 To 15
+        For i = LBound(headers) To UBound(headers)
+            If V02_FindHeaderCol(ws, r, Array(CStr(headers(i)))) > 0 Then
+                V02_FindHeaderRowSimple = r
+                Exit Function
+            End If
+        Next i
+    Next r
+End Function
+
+
+Private Function V02_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = V02_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = V02_NormHeader(CStr(headers(i))) Then
+                Set V02_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function V02_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = V02_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = V02_NormHeader(CStr(headerNames(i))) Then
+                V02_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function V02_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    V02_NormHeader = s
+End Function
+
+
+Private Function V02_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        V02_LastUsedRow = 0
+    Else
+        V02_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function V02_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        V02_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        V02_ParseNumber = CDbl(s)
+        If neg Then V02_ParseNumber = -V02_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    V02_ParseNumber = 0
+End Function
+
+
+Private Function V02_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    V02_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function V02_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    V02_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function V02_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    V02_NormKey = s
+End Function
+
+
+Private Function V02_Pct(ByVal numerador As Double, ByVal denominador As Double) As Double
+    If denominador = 0 Then
+        V02_Pct = 0
+    Else
+        V02_Pct = numerador / denominador
+    End If
+End Function
+
+
+Private Sub V02_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+

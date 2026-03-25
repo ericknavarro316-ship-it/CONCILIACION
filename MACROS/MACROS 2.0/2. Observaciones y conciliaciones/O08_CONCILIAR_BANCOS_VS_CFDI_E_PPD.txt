@@ -1,0 +1,671 @@
+Option Explicit
+
+Public Sub O08_CONCILIAR_BANCOS_VS_CFDI_E_PPD()
+
+    Const SH_CFDI As String = "CFDI_E_PPD"
+    Const SH_EST As String = "EST MP"
+
+    Dim wsCFDI As Worksheet, ws As Worksheet, wsEST As Worksheet, wsPagos As Worksheet
+    Dim colCFDI_UUID As Long, colCFDI_Total As Long, colCFDI_Cta As Long
+    Dim lastCFDI As Long, r As Long
+
+    Dim dictCFDI As Object
+    Dim dictUUIDRows As Object
+    Dim matchedBancos As Long, matchedEST As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsCFDI = O08_GetSheet(SH_CFDI)
+    If wsCFDI Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_CFDI & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    colCFDI_UUID = O08_FindHeaderCol(wsCFDI, 1, Array("UUID"))
+    colCFDI_Total = O08_FindHeaderCol(wsCFDI, 1, Array("TOTAL", "Total", "Total CFDI", "Importe", "Monto", "Total Pagado"))
+    colCFDI_Cta = O08_FindHeaderCol(wsCFDI, 1, Array("Cuenta bancaria"))
+
+    If colCFDI_UUID = 0 Or colCFDI_Total = 0 Then
+        MsgBox "Faltan columnas requeridas en CFDI_E_PPD." & vbCrLf & _
+               "Se requiere: UUID y Total.", vbExclamation
+        Exit Sub
+    End If
+
+    If colCFDI_Cta = 0 Then
+        colCFDI_Cta = O08_EnsureHeaderCol(wsCFDI, 1, "Cuenta bancaria")
+    End If
+
+    lastCFDI = O08_LastUsedRow(wsCFDI)
+    If lastCFDI < 2 Then
+        MsgBox "CFDI_E_PPD no tiene datos para conciliar.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    ' =====================================================
+    ' Índice CFDI por UUID
+    ' =====================================================
+    Set dictUUIDRows = CreateObject("Scripting.Dictionary")
+    O08_BuildUUIDIndex wsCFDI, colCFDI_UUID, lastCFDI, dictUUIDRows
+
+    ' =====================================================
+    ' Sincronizar Cuenta bancaria desde PAGOS E / COMPL. E
+    ' usando UUID Madre ya conciliados en el macro anterior
+    ' =====================================================
+    Set wsPagos = O08_FindPagosSheet()
+    If Not wsPagos Is Nothing Then
+        O08_SyncCFDIPPDFromPagosE wsPagos, wsCFDI, dictUUIDRows, colCFDI_Cta
+    End If
+
+    ' =====================================================
+    ' Diccionario para conciliación por importe
+    ' Solo CFDI_E_PPD sin cuenta bancaria
+    ' =====================================================
+    Set dictCFDI = CreateObject("Scripting.Dictionary")
+
+    For r = 2 To lastCFDI
+        If Trim$(CStr(wsCFDI.Cells(r, colCFDI_Cta).Value)) = "" Then
+            If Trim$(CStr(wsCFDI.Cells(r, colCFDI_UUID).Value)) <> "" Then
+                O08_AddCfdiRow dictCFDI, O08_ToCents(wsCFDI.Cells(r, colCFDI_Total).Value), r
+            End If
+        End If
+    Next r
+
+    ' =====================================================
+    ' Recorrer hojas bancarias numéricas
+    ' =====================================================
+    For Each ws In ThisWorkbook.Worksheets
+        If O08_EsHojaNumerica(ws.Name) Then
+            If Not O08_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                matchedBancos = matchedBancos + O08_ProcesarHojaBanco( _
+                    ws, wsCFDI, dictCFDI, dictUUIDRows, colCFDI_UUID, colCFDI_Cta)
+            End If
+        End If
+    Next ws
+
+    ' =====================================================
+    ' Recorrer EST MP
+    ' =====================================================
+    Set wsEST = O08_GetSheet(SH_EST)
+    If Not wsEST Is Nothing Then
+        matchedEST = O08_ProcesarESTMP( _
+            wsEST, wsCFDI, dictCFDI, dictUUIDRows, colCFDI_UUID, colCFDI_Cta)
+    End If
+
+    wsCFDI.Columns(colCFDI_UUID).NumberFormat = "@"
+    wsCFDI.Columns(colCFDI_Cta).NumberFormat = "@"
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Conciliación PPD terminada." & vbCrLf & vbCrLf & _
+           "Matches en bancos: " & matchedBancos & vbCrLf & _
+           "Matches en EST MP: " & matchedEST, vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en O08_CONCILIAR_BANCOS_VS_CFDI_E_PPD: " & Err.Description, vbExclamation
+End Sub
+
+
+' =====================================================
+' PROCESAR HOJA BANCARIA
+' =====================================================
+Private Function O08_ProcesarHojaBanco( _
+    ByVal ws As Worksheet, _
+    ByVal wsCFDI As Worksheet, _
+    ByVal dictCFDI As Object, _
+    ByVal dictUUIDRows As Object, _
+    ByVal colCFDI_UUID As Long, _
+    ByVal colCFDI_Cta As Long) As Long
+
+    Dim hdrDia As Range, hdrConcepto As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colCargo As Long, colAbono As Long, colObs As Long, colCompl As Long
+    Dim colMother As Long
+    Dim lastRow As Long, r As Long
+
+    Dim cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim cfdiRow As Long
+    Dim obsTxt As String, complTxt As String
+    Dim motherTxt As String, matchedUUID As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Function
+
+    hdrRow = hdrDia.Row
+
+    Set hdrConcepto = O08_FindHeader(ws, hdrRow, Array("Concepto / Referencia", "Concepto", "Referencia", "Concepto/Referencia"))
+    Set hdrCargo = O08_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = O08_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrConcepto Is Nothing Or hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Function
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colObs = O08_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colCompl = O08_EnsureHeaderCol(ws, hdrRow, "COMPL. CTA")
+    colMother = O08_EnsureHeaderCol(ws, hdrRow, "UUID MADRE")
+
+    lastRow = O08_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        ' 1) Sincronizar Cuenta bancaria por UUID MADRE ya existente
+        motherTxt = Trim$(CStr(ws.Cells(r, colMother).Value))
+        If motherTxt <> "" Then
+            O08_SyncCuentaByUUIDMadre wsCFDI, dictUUIDRows, motherTxt, colCFDI_Cta, ws.Name
+        End If
+
+        cargoVal = O08_ParseNumber(ws.Cells(r, colCargo).Value)
+        If cargoVal = 0 Then GoTo SiguienteR
+
+        If O08_ParseNumber(ws.Cells(r, colAbono).Value) <> 0 Then GoTo SiguienteR
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        complTxt = UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value)))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If complTxt <> "" And complTxt <> "PPD" Then GoTo SiguienteR
+
+        cents = O08_ToCents(cargoVal)
+        tol = O08_ToleranceCents(cents)
+
+        If O08_TryPopMatch(dictCFDI, cents, tol, cfdiRow) Then
+
+            matchedUUID = Trim$(CStr(wsCFDI.Cells(cfdiRow, colCFDI_UUID).Value))
+            ws.Cells(r, colCompl).Value = "PPD"
+
+            ' SOLO escribir en UUID MADRE si está vacío
+            If Trim$(CStr(ws.Cells(r, colMother).Value)) = "" Then
+                ws.Cells(r, colMother).Value = matchedUUID
+            End If
+
+            If Trim$(CStr(wsCFDI.Cells(cfdiRow, colCFDI_Cta).Value)) = "" Then
+                wsCFDI.Cells(cfdiRow, colCFDI_Cta).Value = ws.Name
+            End If
+
+            ' Sincronizar por UUID MADRE (visible o recién escrito)
+            O08_SyncCuentaByUUIDMadre wsCFDI, dictUUIDRows, ws.Cells(r, colMother).Value, colCFDI_Cta, ws.Name
+
+            O08_ProcesarHojaBanco = O08_ProcesarHojaBanco + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colCompl).NumberFormat = "@"
+    ws.Columns(colMother).NumberFormat = "@"
+End Function
+
+
+' =====================================================
+' PROCESAR EST MP
+' =====================================================
+Private Function O08_ProcesarESTMP( _
+    ByVal ws As Worksheet, _
+    ByVal wsCFDI As Worksheet, _
+    ByVal dictCFDI As Object, _
+    ByVal dictUUIDRows As Object, _
+    ByVal colCFDI_UUID As Long, _
+    ByVal colCFDI_Cta As Long) As Long
+
+    Dim hdrRow As Long
+    Dim colRef As Long, colCargo As Long, colAbono As Long
+    Dim colObs As Long, colCompl As Long, colMother As Long
+    Dim lastRow As Long, r As Long
+
+    Dim cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim cfdiRow As Long
+    Dim obsTxt As String, complTxt As String
+    Dim motherTxt As String, matchedUUID As String
+
+    hdrRow = O08_FindHeaderRowEST(ws)
+    If hdrRow = 0 Then Exit Function
+
+    colRef = O08_FindHeaderCol(ws, hdrRow, Array("REFERENCE_ID"))
+    colCargo = O08_FindHeaderCol(ws, hdrRow, Array("cargo"))
+    colAbono = O08_FindHeaderCol(ws, hdrRow, Array("abono"))
+
+    If colRef = 0 Or colCargo = 0 Then Exit Function
+
+    colObs = O08_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colCompl = O08_EnsureHeaderCol(ws, hdrRow, "COMPL. CTA")
+    colMother = O08_EnsureHeaderCol(ws, hdrRow, "UUID MADRE")
+
+    lastRow = O08_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        ' 1) Sincronizar Cuenta bancaria por UUID MADRE ya existente
+        motherTxt = Trim$(CStr(ws.Cells(r, colMother).Value))
+        If motherTxt <> "" Then
+            O08_SyncCuentaByUUIDMadre wsCFDI, dictUUIDRows, motherTxt, colCFDI_Cta, "EST MP"
+        End If
+
+        cargoVal = O08_ParseNumber(ws.Cells(r, colCargo).Value)
+        If cargoVal = 0 Then GoTo SiguienteR
+
+        If colAbono > 0 Then
+            If O08_ParseNumber(ws.Cells(r, colAbono).Value) <> 0 Then GoTo SiguienteR
+        End If
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        complTxt = UCase$(Trim$(CStr(ws.Cells(r, colCompl).Value)))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If complTxt <> "" And complTxt <> "PPD" Then GoTo SiguienteR
+
+        cents = O08_ToCents(cargoVal)
+        tol = O08_ToleranceCents(cents)
+
+        If O08_TryPopMatch(dictCFDI, cents, tol, cfdiRow) Then
+
+            matchedUUID = Trim$(CStr(wsCFDI.Cells(cfdiRow, colCFDI_UUID).Value))
+            ws.Cells(r, colCompl).Value = "PPD"
+
+            ' SOLO escribir en UUID MADRE si está vacío
+            If Trim$(CStr(ws.Cells(r, colMother).Value)) = "" Then
+                ws.Cells(r, colMother).Value = matchedUUID
+            End If
+
+            If Trim$(CStr(wsCFDI.Cells(cfdiRow, colCFDI_Cta).Value)) = "" Then
+                wsCFDI.Cells(cfdiRow, colCFDI_Cta).Value = "EST MP"
+            End If
+
+            O08_SyncCuentaByUUIDMadre wsCFDI, dictUUIDRows, ws.Cells(r, colMother).Value, colCFDI_Cta, "EST MP"
+
+            O08_ProcesarESTMP = O08_ProcesarESTMP + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colCompl).NumberFormat = "@"
+    ws.Columns(colMother).NumberFormat = "@"
+End Function
+
+
+' =====================================================
+' SINCRONIZAR CFDI_E_PPD DESDE PAGOS E / COMPL. E
+' =====================================================
+Private Sub O08_SyncCFDIPPDFromPagosE( _
+    ByVal wsPagos As Worksheet, _
+    ByVal wsCFDI As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal colCFDI_Cta As Long)
+
+    Dim hdrPagos As Long
+    Dim colMother As Long, colCta As Long
+    Dim lastRow As Long, r As Long
+    Dim motherTxt As String, cuentaTxt As String
+
+    hdrPagos = O08_FindHeaderRowPagos(wsPagos)
+    If hdrPagos = 0 Then Exit Sub
+
+    colMother = O08_FindHeaderCol(wsPagos, hdrPagos, Array("UUID Madre", "UUID MADRE", "UUID_MADRE"))
+    colCta = O08_FindHeaderCol(wsPagos, hdrPagos, Array("Cuenta bancaria"))
+
+    If colMother = 0 Or colCta = 0 Then Exit Sub
+
+    lastRow = O08_LastUsedRow(wsPagos)
+    If lastRow <= hdrPagos Then Exit Sub
+
+    For r = hdrPagos + 1 To lastRow
+        motherTxt = Trim$(CStr(wsPagos.Cells(r, colMother).Value))
+        cuentaTxt = Trim$(CStr(wsPagos.Cells(r, colCta).Value))
+
+        If motherTxt <> "" And cuentaTxt <> "" Then
+            O08_SyncCuentaByUUIDMadre wsCFDI, dictUUIDRows, motherTxt, colCFDI_Cta, cuentaTxt
+        End If
+    Next r
+End Sub
+
+
+' =====================================================
+' SINCRONIZAR CUENTA BANCARIA EN CFDI_E_PPD POR UUID MADRE
+' =====================================================
+Private Sub O08_SyncCuentaByUUIDMadre( _
+    ByVal wsCFDI As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal motherValue As Variant, _
+    ByVal colCFDI_Cta As Long, _
+    ByVal sourceName As String)
+
+    Dim k As String
+    Dim coll As Collection
+    Dim i As Long, rr As Long
+
+    k = O08_NormKey(motherValue)
+    If k = "" Then Exit Sub
+    If Not dictUUIDRows.Exists(k) Then Exit Sub
+
+    Set coll = dictUUIDRows(k)
+
+    For i = 1 To coll.Count
+        rr = CLng(coll(i))
+        If Trim$(CStr(wsCFDI.Cells(rr, colCFDI_Cta).Value)) = "" Then
+            wsCFDI.Cells(rr, colCFDI_Cta).Value = sourceName
+        End If
+    Next i
+End Sub
+
+
+' =====================================================
+' INDEXAR CFDI POR UUID
+' =====================================================
+Private Sub O08_BuildUUIDIndex( _
+    ByVal wsCFDI As Worksheet, _
+    ByVal colUUID As Long, _
+    ByVal lastRow As Long, _
+    ByVal dictUUIDRows As Object)
+
+    Dim r As Long
+    Dim k As String
+    Dim coll As Collection
+
+    For r = 2 To lastRow
+        k = O08_NormKey(wsCFDI.Cells(r, colUUID).Value)
+        If k <> "" Then
+            If Not dictUUIDRows.Exists(k) Then
+                Set coll = New Collection
+                dictUUIDRows.Add k, coll
+            End If
+            Set coll = dictUUIDRows(k)
+            coll.Add r
+        End If
+    Next r
+End Sub
+
+
+' =====================================================
+' DICCIONARIO CFDI POR CENTAVOS
+' =====================================================
+Private Sub O08_AddCfdiRow(ByVal dictCFDI As Object, ByVal cents As Long, ByVal rowCFDI As Long)
+    Dim k As String
+    Dim coll As Collection
+
+    k = CStr(cents)
+
+    If Not dictCFDI.Exists(k) Then
+        Set coll = New Collection
+        dictCFDI.Add k, coll
+    End If
+
+    Set coll = dictCFDI(k)
+    coll.Add rowCFDI
+End Sub
+
+
+Private Function O08_TryPopMatch(ByVal dictCFDI As Object, ByVal centsBase As Long, ByVal tolCents As Long, ByRef rowCFDI As Long) As Boolean
+    Dim d As Long
+    Dim k As String
+    Dim coll As Collection
+
+    For d = 0 To tolCents
+
+        k = CStr(centsBase + d)
+        If dictCFDI.Exists(k) Then
+            Set coll = dictCFDI(k)
+            If coll.Count > 0 Then
+                rowCFDI = CLng(coll(1))
+                coll.Remove 1
+                If coll.Count = 0 Then dictCFDI.Remove k
+                O08_TryPopMatch = True
+                Exit Function
+            End If
+        End If
+
+        If d > 0 Then
+            k = CStr(centsBase - d)
+            If dictCFDI.Exists(k) Then
+                Set coll = dictCFDI(k)
+                If coll.Count > 0 Then
+                    rowCFDI = CLng(coll(1))
+                    coll.Remove 1
+                    If coll.Count = 0 Then dictCFDI.Remove k
+                    O08_TryPopMatch = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next d
+End Function
+
+
+' =====================================================
+' HELPERS
+' =====================================================
+Private Function O08_FindPagosSheet() As Worksheet
+    Dim arr, i As Long
+    arr = Array("PAGOS E", "COMPL. E", "PAGOS_E", "COMPL E")
+
+    For i = LBound(arr) To UBound(arr)
+        Set O08_FindPagosSheet = O08_GetSheet(CStr(arr(i)))
+        If Not O08_FindPagosSheet Is Nothing Then Exit Function
+    Next i
+End Function
+
+
+Private Function O08_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set O08_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function O08_FindHeaderRowPagos(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 15
+        If O08_FindHeaderCol(ws, r, Array("UUID Madre", "UUID MADRE", "UUID_MADRE")) > 0 And _
+           O08_FindHeaderCol(ws, r, Array("Cuenta bancaria")) > 0 Then
+            O08_FindHeaderRowPagos = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function O08_FindHeaderRowEST(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 20
+        If O08_FindHeaderCol(ws, r, Array("REFERENCE_ID")) > 0 And _
+           O08_FindHeaderCol(ws, r, Array("cargo")) > 0 Then
+            O08_FindHeaderRowEST = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function O08_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = O08_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = O08_NormHeader(CStr(headers(i))) Then
+                Set O08_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O08_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = O08_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = O08_NormHeader(CStr(headerNames(i))) Then
+                O08_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function O08_EnsureHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim col As Long
+
+    col = O08_FindHeaderCol(ws, hdrRow, Array(headerText))
+
+    If col > 0 Then
+        O08_EnsureHeaderCol = col
+    Else
+        O08_EnsureHeaderCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, O08_EnsureHeaderCol).Value = headerText
+        ws.Cells(hdrRow, O08_EnsureHeaderCol).Font.Bold = True
+    End If
+End Function
+
+
+Private Function O08_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    O08_NormHeader = s
+End Function
+
+
+Private Function O08_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        O08_LastUsedRow = 0
+    Else
+        O08_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function O08_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        O08_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        O08_ParseNumber = CDbl(s)
+        If neg Then O08_ParseNumber = -O08_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    O08_ParseNumber = 0
+End Function
+
+
+Private Function O08_ToCents(ByVal v As Variant) As Long
+    O08_ToCents = CLng(Round(O08_ParseNumber(v) * 100, 0))
+End Function
+
+
+Private Function O08_ToleranceCents(ByVal centsAmount As Long) As Long
+    If Abs(centsAmount) < 5000000 Then
+        O08_ToleranceCents = 10
+    Else
+        O08_ToleranceCents = 50
+    End If
+End Function
+
+
+Private Function O08_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    O08_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function O08_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    O08_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function O08_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    O08_NormKey = s
+End Function
+

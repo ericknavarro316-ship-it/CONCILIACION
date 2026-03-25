@@ -1,0 +1,2562 @@
+Option Explicit
+
+Private I00_MODO_MAESTRO As Boolean
+
+Public Sub I01_CONCILIAR_VENTAS_BBVA_VS_BANCOS()
+
+    Const SH_VENTAS As String = "VENTAS_BBVA"
+
+    Dim wsVentas As Worksheet
+    Dim hdrVentas As Long, lastVentas As Long
+    Dim colVId As Long, colVUUID As Long, colVCuenta As Long
+    Dim colVTotal As Long, colVImporte As Long, colVMonto As Long
+    Dim colVPrecio As Long, colVCantidad As Long
+
+    Dim wsCFDIPUE As Worksheet, wsCFDIPPD As Worksheet
+    Dim hdrCFDIPUE As Long, hdrCFDIPPD As Long
+    Dim colPUEUUID As Long, colPUECuenta As Long, colPUEId As Long
+    Dim colPPDUUID As Long, colPPDCuenta As Long, colPPDId As Long
+
+    Dim dictSalesByAmount As Object
+    Dim dictGroupRows As Object
+    Dim dictGroupUUID As Object
+    Dim dictGroupAmount As Object
+    Dim dictGroupCuenta As Object
+
+    Dim dictPUE As Object, dictPPD As Object
+
+    Dim ws As Worksheet
+    Dim matchedCount As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsVentas = I01_GetSheet(SH_VENTAS)
+    If wsVentas Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_VENTAS & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrVentas = I01_FindHeaderRowVentas(wsVentas)
+    If hdrVentas = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en VENTAS_BBVA.", vbExclamation
+        Exit Sub
+    End If
+
+    colVId = I01_FindHeaderCol(wsVentas, hdrVentas, Array("ID_venta", "id_venta"))
+    colVUUID = I01_FindHeaderCol(wsVentas, hdrVentas, Array("UUID", "uuid"))
+    colVCuenta = I01_EnsureHeaderCol(wsVentas, hdrVentas, "Cuenta bancaria")
+
+    colVTotal = I01_FindHeaderCol(wsVentas, hdrVentas, Array("Total", "total"))
+    colVImporte = I01_FindHeaderCol(wsVentas, hdrVentas, Array("Importe", "importe"))
+    colVMonto = I01_FindHeaderCol(wsVentas, hdrVentas, Array("Monto", "monto", "Monto total", "monto total", "Total venta", "total venta", "Valor de la operación", "Valor de la operacion"))
+    colVPrecio = I01_FindHeaderCol(wsVentas, hdrVentas, Array("precio_unitario", "precio unitario", "Precio_Unitario", "Precio Unitario"))
+    colVCantidad = I01_FindHeaderCol(wsVentas, hdrVentas, Array("Cantidad", "cantidad", "Qty", "qty", "Cant", "cant"))
+
+    If colVId = 0 Or colVUUID = 0 Then
+        MsgBox "Faltan columnas requeridas en VENTAS_BBVA." & vbCrLf & _
+               "Se requiere: ID_venta y UUID.", vbExclamation
+        Exit Sub
+    End If
+
+    If colVTotal = 0 And colVImporte = 0 And colVMonto = 0 And colVPrecio = 0 Then
+        MsgBox "No encontré una columna de importe en VENTAS_BBVA." & vbCrLf & _
+               "Busqué: Total, Importe, Monto y Precio_Unitario.", vbExclamation
+        Exit Sub
+    End If
+
+    lastVentas = I01_LastUsedRow(wsVentas)
+    If lastVentas <= hdrVentas Then
+        MsgBox "VENTAS_BBVA no tiene datos.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    ' ==========================================
+    ' Preparar índices CFDI I PUE / PPD por UUID
+    ' ==========================================
+    Set wsCFDIPUE = I01_GetSheet("CFDI_I_PUE")
+    If Not wsCFDIPUE Is Nothing Then
+        hdrCFDIPUE = I01_FindHeaderRowUUID(wsCFDIPUE)
+        If hdrCFDIPUE > 0 Then
+            colPUEUUID = I01_FindHeaderCol(wsCFDIPUE, hdrCFDIPUE, Array("UUID", "uuid"))
+            colPUECuenta = I01_EnsureHeaderCol(wsCFDIPUE, hdrCFDIPUE, "Cuenta bancaria")
+            colPUEId = I01_EnsureHeaderColMulti(wsCFDIPUE, hdrCFDIPUE, Array("ID_venta", "id_venta"), "ID_venta")
+
+            Set dictPUE = CreateObject("Scripting.Dictionary")
+            I01_BuildUUIDIndex wsCFDIPUE, hdrCFDIPUE, colPUEUUID, dictPUE
+        End If
+    End If
+
+    Set wsCFDIPPD = I01_GetSheet("CFDI_I_PPD")
+    If Not wsCFDIPPD Is Nothing Then
+        hdrCFDIPPD = I01_FindHeaderRowUUID(wsCFDIPPD)
+        If hdrCFDIPPD > 0 Then
+            colPPDUUID = I01_FindHeaderCol(wsCFDIPPD, hdrCFDIPPD, Array("UUID", "uuid"))
+            colPPDCuenta = I01_EnsureHeaderCol(wsCFDIPPD, hdrCFDIPPD, "Cuenta bancaria")
+            colPPDId = I01_EnsureHeaderColMulti(wsCFDIPPD, hdrCFDIPPD, Array("ID_venta", "id_venta"), "ID_venta")
+
+            Set dictPPD = CreateObject("Scripting.Dictionary")
+            I01_BuildUUIDIndex wsCFDIPPD, hdrCFDIPPD, colPPDUUID, dictPPD
+        End If
+    End If
+
+    ' ==========================================
+    ' Agrupar VENTAS_BBVA por ID_venta
+    ' ==========================================
+    Set dictSalesByAmount = CreateObject("Scripting.Dictionary")
+    Set dictGroupRows = CreateObject("Scripting.Dictionary")
+    Set dictGroupUUID = CreateObject("Scripting.Dictionary")
+    Set dictGroupAmount = CreateObject("Scripting.Dictionary")
+    Set dictGroupCuenta = CreateObject("Scripting.Dictionary")
+
+    I01_BuildVentasGroups wsVentas, hdrVentas, lastVentas, _
+                          colVId, colVUUID, colVCuenta, _
+                          colVTotal, colVImporte, colVMonto, colVPrecio, colVCantidad, _
+                          dictSalesByAmount, dictGroupRows, dictGroupUUID, dictGroupAmount, dictGroupCuenta
+
+    ' ==========================================
+    ' Recorrer hojas bancarias numéricas
+    ' ==========================================
+    For Each ws In ThisWorkbook.Worksheets
+        If I01_EsHojaNumerica(ws.Name) Then
+            If Not I01_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                matchedCount = matchedCount + I01_ProcesarHojaBanco( _
+                    ws, wsVentas, _
+                    dictSalesByAmount, dictGroupRows, dictGroupUUID, dictGroupCuenta, _
+                    colVCuenta, _
+                    wsCFDIPUE, dictPUE, colPUECuenta, colPUEId, _
+                    wsCFDIPPD, dictPPD, colPPDCuenta, colPPDId)
+            End If
+        End If
+    Next ws
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    If Not I00_MODO_MAESTRO Then
+        MsgBox "Conciliación VENTAS_BBVA vs bancos terminada." & vbCrLf & _
+               "Ventas conciliadas: " & matchedCount, vbInformation
+    End If
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en I01_CONCILIAR_VENTAS_BBVA_VS_BANCOS: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub I01_BuildVentasGroups( _
+    ByVal wsVentas As Worksheet, _
+    ByVal hdrRow As Long, _
+    ByVal lastRow As Long, _
+    ByVal colVId As Long, _
+    ByVal colVUUID As Long, _
+    ByVal colVCuenta As Long, _
+    ByVal colVTotal As Long, _
+    ByVal colVImporte As Long, _
+    ByVal colVMonto As Long, _
+    ByVal colVPrecio As Long, _
+    ByVal colVCantidad As Long, _
+    ByVal dictSalesByAmount As Object, _
+    ByVal dictGroupRows As Object, _
+    ByVal dictGroupUUID As Object, _
+    ByVal dictGroupAmount As Object, _
+    ByVal dictGroupCuenta As Object)
+
+    Dim r As Long
+    Dim idVenta As String, uuidTxt As String, cuentaTxt As String
+    Dim amountLine As Double
+    Dim cents As Long
+    Dim coll As Collection
+    Dim keyAmount As String
+
+    For r = hdrRow + 1 To lastRow
+
+        idVenta = Trim$(CStr(wsVentas.Cells(r, colVId).Value))
+        If idVenta = "" Then GoTo SiguienteR
+
+        uuidTxt = Trim$(CStr(wsVentas.Cells(r, colVUUID).Value))
+        cuentaTxt = Trim$(CStr(wsVentas.Cells(r, colVCuenta).Value))
+        amountLine = I01_GetVentaLineAmount(wsVentas, r, colVTotal, colVImporte, colVMonto, colVPrecio, colVCantidad)
+
+        If amountLine = 0 Then GoTo SiguienteR
+
+        If Not dictGroupRows.Exists(idVenta) Then
+            Set coll = New Collection
+            dictGroupRows.Add idVenta, coll
+            dictGroupAmount.Add idVenta, CLng(0)
+            dictGroupUUID.Add idVenta, uuidTxt
+            dictGroupCuenta.Add idVenta, cuentaTxt
+        End If
+
+        Set coll = dictGroupRows(idVenta)
+        coll.Add r
+
+        dictGroupAmount(idVenta) = CLng(dictGroupAmount(idVenta)) + I01_ToCents(amountLine)
+
+        If Trim$(CStr(dictGroupUUID(idVenta))) = "" And uuidTxt <> "" Then
+            dictGroupUUID(idVenta) = uuidTxt
+        End If
+
+        If Trim$(CStr(dictGroupCuenta(idVenta))) = "" And cuentaTxt <> "" Then
+            dictGroupCuenta(idVenta) = cuentaTxt
+        End If
+
+SiguienteR:
+    Next r
+
+    ' Solo grupos sin cuenta bancaria previa
+    Dim idKey As Variant
+    For Each idKey In dictGroupAmount.Keys
+        If Trim$(CStr(dictGroupCuenta(idKey))) = "" Then
+            cents = CLng(dictGroupAmount(idKey))
+            If cents <> 0 Then
+                keyAmount = CStr(cents)
+                If Not dictSalesByAmount.Exists(keyAmount) Then
+                    Set coll = New Collection
+                    dictSalesByAmount.Add keyAmount, coll
+                End If
+                Set coll = dictSalesByAmount(keyAmount)
+                coll.Add CStr(idKey)
+            End If
+        End If
+    Next idKey
+End Sub
+
+
+Private Function I01_GetVentaLineAmount( _
+    ByVal ws As Worksheet, _
+    ByVal rowNum As Long, _
+    ByVal colVTotal As Long, _
+    ByVal colVImporte As Long, _
+    ByVal colVMonto As Long, _
+    ByVal colVPrecio As Long, _
+    ByVal colVCantidad As Long) As Double
+
+    Dim totalVal As Double
+    Dim importeVal As Double
+    Dim montoVal As Double
+    Dim precioVal As Double
+    Dim cantidadVal As Double
+
+    If colVTotal > 0 Then
+        totalVal = I01_ParseNumber(ws.Cells(rowNum, colVTotal).Value)
+        If totalVal <> 0 Then
+            I01_GetVentaLineAmount = totalVal
+            Exit Function
+        End If
+    End If
+
+    If colVImporte > 0 Then
+        importeVal = I01_ParseNumber(ws.Cells(rowNum, colVImporte).Value)
+        If importeVal <> 0 Then
+            I01_GetVentaLineAmount = importeVal
+            Exit Function
+        End If
+    End If
+
+    If colVMonto > 0 Then
+        montoVal = I01_ParseNumber(ws.Cells(rowNum, colVMonto).Value)
+        If montoVal <> 0 Then
+            I01_GetVentaLineAmount = montoVal
+            Exit Function
+        End If
+    End If
+
+    If colVPrecio > 0 Then
+        precioVal = I01_ParseNumber(ws.Cells(rowNum, colVPrecio).Value)
+
+        If colVCantidad > 0 Then
+            cantidadVal = I01_ParseNumber(ws.Cells(rowNum, colVCantidad).Value)
+            If cantidadVal = 0 Then cantidadVal = 1
+            I01_GetVentaLineAmount = precioVal * cantidadVal
+        Else
+            I01_GetVentaLineAmount = precioVal
+        End If
+    End If
+End Function
+
+
+Private Function I01_ProcesarHojaBanco( _
+    ByVal ws As Worksheet, _
+    ByVal wsVentas As Worksheet, _
+    ByVal dictSalesByAmount As Object, _
+    ByVal dictGroupRows As Object, _
+    ByVal dictGroupUUID As Object, _
+    ByVal dictGroupCuenta As Object, _
+    ByVal colVCuenta As Long, _
+    ByVal wsCFDIPUE As Worksheet, _
+    ByVal dictPUE As Object, _
+    ByVal colPUECuenta As Long, _
+    ByVal colPUEId As Long, _
+    ByVal wsCFDIPPD As Worksheet, _
+    ByVal dictPPD As Object, _
+    ByVal colPPDCuenta As Long, _
+    ByVal colPPDId As Long) As Long
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colAbono As Long, colCargo As Long, colObs As Long, colIdVenta As Long
+    Dim lastRow As Long, r As Long
+
+    Dim abonoVal As Double, cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim idVenta As String, uuidTxt As String
+    Dim obsTxt As String, idTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Function
+
+    hdrRow = hdrDia.Row
+
+    Set hdrCargo = I01_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = I01_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Function
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colObs = I01_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colIdVenta = I01_EnsureHeaderColMulti(ws, hdrRow, Array("ID_venta", "id_venta"), "ID_venta")
+
+    lastRow = I01_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        abonoVal = I01_ParseNumber(ws.Cells(r, colAbono).Value)
+        cargoVal = I01_ParseNumber(ws.Cells(r, colCargo).Value)
+
+        If abonoVal <= 0 Then GoTo SiguienteR
+        If cargoVal <> 0 Then GoTo SiguienteR
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        idTxt = Trim$(CStr(ws.Cells(r, colIdVenta).Value))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If idTxt <> "" Then GoTo SiguienteR
+
+        cents = I01_ToCents(abonoVal)
+        tol = I01_ToleranceCents(cents)
+
+        If I01_TryPopVentaGroupMatch(dictSalesByAmount, cents, tol, idVenta) Then
+
+            uuidTxt = Trim$(CStr(dictGroupUUID(idVenta)))
+
+            ws.Cells(r, colIdVenta).Value = idVenta
+            ws.Cells(r, colObs).Value = uuidTxt
+
+            I01_UpdateVentasGroupCuenta wsVentas, dictGroupRows(idVenta), colVCuenta, ws.Name
+
+            If Not wsCFDIPUE Is Nothing Then
+                I01_UpdateCFDIByUUID wsCFDIPUE, dictPUE, uuidTxt, colPUECuenta, colPUEId, ws.Name, idVenta
+            End If
+
+            If Not wsCFDIPPD Is Nothing Then
+                I01_UpdateCFDIByUUID wsCFDIPPD, dictPPD, uuidTxt, colPPDCuenta, colPPDId, ws.Name, idVenta
+            End If
+
+            I01_ProcesarHojaBanco = I01_ProcesarHojaBanco + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colObs).NumberFormat = "@"
+    ws.Columns(colIdVenta).NumberFormat = "@"
+End Function
+
+
+Private Sub I01_UpdateVentasGroupCuenta( _
+    ByVal wsVentas As Worksheet, _
+    ByVal rowsColl As Collection, _
+    ByVal colVCuenta As Long, _
+    ByVal cuentaBancaria As String)
+
+    Dim i As Long
+    Dim rr As Long
+
+    For i = 1 To rowsColl.Count
+        rr = CLng(rowsColl(i))
+        wsVentas.Cells(rr, colVCuenta).Value = cuentaBancaria
+    Next i
+End Sub
+
+
+Private Sub I01_UpdateCFDIByUUID( _
+    ByVal ws As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal uuidValue As String, _
+    ByVal colCuenta As Long, _
+    ByVal colIdVenta As Long, _
+    ByVal cuentaBancaria As String, _
+    ByVal idVenta As String)
+
+    Dim k As String
+    Dim coll As Collection
+    Dim i As Long, rr As Long
+
+    If dictUUIDRows Is Nothing Then Exit Sub
+
+    k = I01_NormKey(uuidValue)
+    If k = "" Then Exit Sub
+    If Not dictUUIDRows.Exists(k) Then Exit Sub
+
+    Set coll = dictUUIDRows(k)
+
+    For i = 1 To coll.Count
+        rr = CLng(coll(i))
+        ws.Cells(rr, colCuenta).Value = cuentaBancaria
+        ws.Cells(rr, colIdVenta).Value = idVenta
+    Next i
+End Sub
+
+
+Private Sub I01_BuildUUIDIndex( _
+    ByVal ws As Worksheet, _
+    ByVal hdrRow As Long, _
+    ByVal colUUID As Long, _
+    ByVal dictUUIDRows As Object)
+
+    Dim lastRow As Long, r As Long
+    Dim k As String
+    Dim coll As Collection
+
+    lastRow = I01_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        k = I01_NormKey(ws.Cells(r, colUUID).Value)
+        If k <> "" Then
+            If Not dictUUIDRows.Exists(k) Then
+                Set coll = New Collection
+                dictUUIDRows.Add k, coll
+            End If
+            Set coll = dictUUIDRows(k)
+            coll.Add r
+        End If
+    Next r
+End Sub
+
+
+Private Function I01_TryPopVentaGroupMatch( _
+    ByVal dictSalesByAmount As Object, _
+    ByVal centsBase As Long, _
+    ByVal tolCents As Long, _
+    ByRef idVenta As String) As Boolean
+
+    Dim d As Long
+    Dim k As String
+    Dim coll As Collection
+
+    For d = 0 To tolCents
+
+        k = CStr(centsBase + d)
+        If dictSalesByAmount.Exists(k) Then
+            Set coll = dictSalesByAmount(k)
+            If coll.Count > 0 Then
+                idVenta = CStr(coll(1))
+                coll.Remove 1
+                If coll.Count = 0 Then dictSalesByAmount.Remove k
+                I01_TryPopVentaGroupMatch = True
+                Exit Function
+            End If
+        End If
+
+        If d > 0 Then
+            k = CStr(centsBase - d)
+            If dictSalesByAmount.Exists(k) Then
+                Set coll = dictSalesByAmount(k)
+                If coll.Count > 0 Then
+                    idVenta = CStr(coll(1))
+                    coll.Remove 1
+                    If coll.Count = 0 Then dictSalesByAmount.Remove k
+                    I01_TryPopVentaGroupMatch = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next d
+End Function
+
+
+Private Function I01_FindHeaderRowVentas(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If I01_FindHeaderCol(ws, r, Array("ID_venta", "id_venta")) > 0 And _
+           I01_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Then
+            I01_FindHeaderRowVentas = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function I01_FindHeaderRowUUID(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If I01_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Then
+            I01_FindHeaderRowUUID = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function I01_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set I01_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function I01_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = I01_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = I01_NormHeader(CStr(headers(i))) Then
+                Set I01_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function I01_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = I01_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = I01_NormHeader(CStr(headerNames(i))) Then
+                I01_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function I01_EnsureHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim col As Long
+
+    col = I01_FindHeaderCol(ws, hdrRow, Array(headerText))
+
+    If col > 0 Then
+        I01_EnsureHeaderCol = col
+    Else
+        I01_EnsureHeaderCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, I01_EnsureHeaderCol).Value = headerText
+        ws.Cells(hdrRow, I01_EnsureHeaderCol).Font.Bold = True
+    End If
+End Function
+
+
+Private Function I01_EnsureHeaderColMulti(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant, ByVal newHeader As String) As Long
+    Dim col As Long
+
+    col = I01_FindHeaderCol(ws, hdrRow, headers)
+
+    If col > 0 Then
+        I01_EnsureHeaderColMulti = col
+    Else
+        I01_EnsureHeaderColMulti = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, I01_EnsureHeaderColMulti).Value = newHeader
+        ws.Cells(hdrRow, I01_EnsureHeaderColMulti).Font.Bold = True
+    End If
+End Function
+
+
+Private Function I01_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    I01_NormHeader = s
+End Function
+
+
+Private Function I01_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        I01_LastUsedRow = 0
+    Else
+        I01_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function I01_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        I01_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        I01_ParseNumber = CDbl(s)
+        If neg Then I01_ParseNumber = -I01_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    I01_ParseNumber = 0
+End Function
+
+
+Private Function I01_ToCents(ByVal v As Variant) As Long
+    I01_ToCents = CLng(Round(I01_ParseNumber(v) * 100, 0))
+End Function
+
+
+Private Function I01_ToleranceCents(ByVal centsAmount As Long) As Long
+    If Abs(centsAmount) < 5000000 Then
+        I01_ToleranceCents = 10
+    Else
+        I01_ToleranceCents = 50
+    End If
+End Function
+
+
+Private Function I01_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    I01_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function I01_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    I01_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function I01_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    I01_NormKey = s
+End Function
+
+Public Sub I02_CONCILIAR_VENTAS_SCOOTERZONE_VS_BANCOS()
+
+    Const SH_VENTAS As String = "VENTAS_SCOOTERZONE"
+
+    Dim wsVentas As Worksheet
+    Dim hdrVentas As Long, lastVentas As Long
+    Dim colVId As Long, colVUUID As Long, colVCuenta As Long, colVTrans As Long
+    Dim colVTotal As Long, colVImporte As Long, colVMonto As Long
+    Dim colVPrecio As Long, colVCantidad As Long
+
+    Dim wsCFDIPUE As Worksheet, wsCFDIPPD As Worksheet, wsPagosI As Worksheet
+    Dim hdrCFDIPUE As Long, hdrCFDIPPD As Long, hdrPagosI As Long
+    Dim colPUEUUID As Long, colPUECuenta As Long, colPUEId As Long
+    Dim colPPDUUID As Long, colPPDCuenta As Long, colPPDId As Long
+    Dim colPagUUID As Long, colPagUUIDMadre As Long, colPagCuenta As Long, colPagId As Long
+
+    Dim dictSalesByAmount As Object
+    Dim dictGroupRows As Object
+    Dim dictGroupUUIDList As Object
+    Dim dictGroupAmount As Object
+    Dim dictGroupCuenta As Object
+    Dim dictGroupIdList As Object
+
+    Dim dictPUE As Object, dictPPD As Object
+    Dim dictPagosUUID As Object, dictPagosMother As Object
+
+    Dim ws As Worksheet
+    Dim matchedCount As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsVentas = I02_GetSheet(SH_VENTAS)
+    If wsVentas Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_VENTAS & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrVentas = I02_FindHeaderRowVentas(wsVentas)
+    If hdrVentas = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en VENTAS_SCOOTERZONE.", vbExclamation
+        Exit Sub
+    End If
+
+    colVId = I02_FindHeaderCol(wsVentas, hdrVentas, Array("ID_venta", "id_venta"))
+    colVUUID = I02_FindHeaderCol(wsVentas, hdrVentas, Array("UUID", "uuid"))
+    colVCuenta = I02_EnsureHeaderCol(wsVentas, hdrVentas, "Cuenta bancaria")
+    colVTrans = I02_FindHeaderCol(wsVentas, hdrVentas, Array("numero_transaccion", "Número de transacción", "Numero de transaccion", "numero transaccion", "Numero transaccion", "Operacion relacionada"))
+
+    colVTotal = I02_FindHeaderCol(wsVentas, hdrVentas, Array("Total", "total"))
+    colVImporte = I02_FindHeaderCol(wsVentas, hdrVentas, Array("Importe", "importe"))
+    colVMonto = I02_FindHeaderCol(wsVentas, hdrVentas, Array("Monto", "monto", "Monto total", "monto total", "Total venta", "total venta", "Valor de la operación", "Valor de la operacion"))
+    colVPrecio = I02_FindHeaderCol(wsVentas, hdrVentas, Array("precio_unitario", "precio unitario", "Precio_Unitario", "Precio Unitario"))
+    colVCantidad = I02_FindHeaderCol(wsVentas, hdrVentas, Array("Cantidad", "cantidad", "Qty", "qty", "Cant", "cant"))
+
+    If colVId = 0 Or colVUUID = 0 Then
+        MsgBox "Faltan columnas requeridas en VENTAS_SCOOTERZONE." & vbCrLf & _
+               "Se requiere: ID_venta y UUID.", vbExclamation
+        Exit Sub
+    End If
+
+    If colVTotal = 0 And colVImporte = 0 And colVMonto = 0 And colVPrecio = 0 Then
+        MsgBox "No encontré una columna de importe en VENTAS_SCOOTERZONE." & vbCrLf & _
+               "Busqué: Total, Importe, Monto y Precio_Unitario.", vbExclamation
+        Exit Sub
+    End If
+
+    lastVentas = I02_LastUsedRow(wsVentas)
+    If lastVentas <= hdrVentas Then
+        MsgBox "VENTAS_SCOOTERZONE no tiene datos.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    ' ==========================================
+    ' CFDI I PUE
+    ' ==========================================
+    Set wsCFDIPUE = I02_GetSheet("CFDI_I_PUE")
+    If Not wsCFDIPUE Is Nothing Then
+        hdrCFDIPUE = I02_FindHeaderRowUUID(wsCFDIPUE)
+        If hdrCFDIPUE > 0 Then
+            colPUEUUID = I02_FindHeaderCol(wsCFDIPUE, hdrCFDIPUE, Array("UUID", "uuid"))
+            colPUECuenta = I02_EnsureHeaderCol(wsCFDIPUE, hdrCFDIPUE, "Cuenta bancaria")
+            colPUEId = I02_EnsureHeaderColMulti(wsCFDIPUE, hdrCFDIPUE, Array("ID_venta", "id_venta"), "ID_venta")
+
+            Set dictPUE = CreateObject("Scripting.Dictionary")
+            I02_BuildUUIDIndex wsCFDIPUE, hdrCFDIPUE, colPUEUUID, dictPUE
+        End If
+    End If
+
+    ' ==========================================
+    ' CFDI I PPD
+    ' ==========================================
+    Set wsCFDIPPD = I02_GetSheet("CFDI_I_PPD")
+    If Not wsCFDIPPD Is Nothing Then
+        hdrCFDIPPD = I02_FindHeaderRowUUID(wsCFDIPPD)
+        If hdrCFDIPPD > 0 Then
+            colPPDUUID = I02_FindHeaderCol(wsCFDIPPD, hdrCFDIPPD, Array("UUID", "uuid"))
+            colPPDCuenta = I02_EnsureHeaderCol(wsCFDIPPD, hdrCFDIPPD, "Cuenta bancaria")
+            colPPDId = I02_EnsureHeaderColMulti(wsCFDIPPD, hdrCFDIPPD, Array("ID_venta", "id_venta"), "ID_venta")
+
+            Set dictPPD = CreateObject("Scripting.Dictionary")
+            I02_BuildUUIDIndex wsCFDIPPD, hdrCFDIPPD, colPPDUUID, dictPPD
+        End If
+    End If
+
+    ' ==========================================
+    ' PAGOS I / COMPL. I
+    ' ==========================================
+    Set wsPagosI = I02_FindPagosISheet()
+    If Not wsPagosI Is Nothing Then
+        hdrPagosI = I02_FindHeaderRowPagosI(wsPagosI)
+        If hdrPagosI > 0 Then
+            colPagUUID = I02_FindHeaderCol(wsPagosI, hdrPagosI, Array("UUID", "uuid"))
+            colPagUUIDMadre = I02_FindHeaderCol(wsPagosI, hdrPagosI, Array("UUID Madre", "UUID MADRE", "UUID_MADRE"))
+            colPagCuenta = I02_EnsureHeaderCol(wsPagosI, hdrPagosI, "Cuenta bancaria")
+            colPagId = I02_EnsureHeaderColMulti(wsPagosI, hdrPagosI, Array("ID_venta", "id_venta"), "ID_venta")
+
+            Set dictPagosUUID = CreateObject("Scripting.Dictionary")
+            Set dictPagosMother = CreateObject("Scripting.Dictionary")
+
+            If colPagUUID > 0 Then I02_BuildUUIDIndex wsPagosI, hdrPagosI, colPagUUID, dictPagosUUID
+            If colPagUUIDMadre > 0 Then I02_BuildUUIDIndex wsPagosI, hdrPagosI, colPagUUIDMadre, dictPagosMother
+        End If
+    End If
+
+    ' ==========================================
+    ' Agrupar ventas
+    ' ==========================================
+    Set dictSalesByAmount = CreateObject("Scripting.Dictionary")
+    Set dictGroupRows = CreateObject("Scripting.Dictionary")
+    Set dictGroupUUIDList = CreateObject("Scripting.Dictionary")
+    Set dictGroupAmount = CreateObject("Scripting.Dictionary")
+    Set dictGroupCuenta = CreateObject("Scripting.Dictionary")
+    Set dictGroupIdList = CreateObject("Scripting.Dictionary")
+
+    I02_BuildVentasGroups wsVentas, hdrVentas, lastVentas, _
+                          colVId, colVUUID, colVCuenta, colVTrans, _
+                          colVTotal, colVImporte, colVMonto, colVPrecio, colVCantidad, _
+                          dictSalesByAmount, dictGroupRows, dictGroupUUIDList, dictGroupAmount, dictGroupCuenta, dictGroupIdList
+
+    ' ==========================================
+    ' Recorrer hojas bancarias numéricas
+    ' ==========================================
+    For Each ws In ThisWorkbook.Worksheets
+        If I02_EsHojaNumerica(ws.Name) Then
+            If Not I02_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                matchedCount = matchedCount + I02_ProcesarHojaBanco( _
+                    ws, wsVentas, _
+                    dictSalesByAmount, dictGroupRows, dictGroupUUIDList, dictGroupCuenta, dictGroupIdList, _
+                    colVCuenta, _
+                    wsCFDIPUE, dictPUE, colPUECuenta, colPUEId, _
+                    wsCFDIPPD, dictPPD, colPPDCuenta, colPPDId, _
+                    wsPagosI, dictPagosUUID, dictPagosMother, colPagCuenta, colPagId)
+            End If
+        End If
+    Next ws
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    If Not I00_MODO_MAESTRO Then
+        MsgBox "Conciliación VENTAS_SCOOTERZONE vs bancos terminada." & vbCrLf & _
+               "Grupos conciliados: " & matchedCount, vbInformation
+    End If
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en I02_CONCILIAR_VENTAS_SCOOTERZONE_VS_BANCOS: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub I02_BuildVentasGroups( _
+    ByVal wsVentas As Worksheet, _
+    ByVal hdrRow As Long, _
+    ByVal lastRow As Long, _
+    ByVal colVId As Long, _
+    ByVal colVUUID As Long, _
+    ByVal colVCuenta As Long, _
+    ByVal colVTrans As Long, _
+    ByVal colVTotal As Long, _
+    ByVal colVImporte As Long, _
+    ByVal colVMonto As Long, _
+    ByVal colVPrecio As Long, _
+    ByVal colVCantidad As Long, _
+    ByVal dictSalesByAmount As Object, _
+    ByVal dictGroupRows As Object, _
+    ByVal dictGroupUUIDList As Object, _
+    ByVal dictGroupAmount As Object, _
+    ByVal dictGroupCuenta As Object, _
+    ByVal dictGroupIdList As Object)
+
+    Dim r As Long
+    Dim idVenta As String, uuidTxt As String, cuentaTxt As String, transTxt As String
+    Dim amountLine As Double
+    Dim cents As Long
+    Dim coll As Collection
+    Dim keyAmount As String
+    Dim groupKey As String
+    Dim groupId As Variant
+
+    For r = hdrRow + 1 To lastRow
+
+        idVenta = Trim$(CStr(wsVentas.Cells(r, colVId).Value))
+        If idVenta = "" Then GoTo SiguienteR
+
+        uuidTxt = Trim$(CStr(wsVentas.Cells(r, colVUUID).Value))
+        cuentaTxt = Trim$(CStr(wsVentas.Cells(r, colVCuenta).Value))
+        transTxt = I02_GetCellText(wsVentas, r, colVTrans)
+        amountLine = I02_GetVentaLineAmount(wsVentas, r, colVTotal, colVImporte, colVMonto, colVPrecio, colVCantidad)
+
+        If amountLine = 0 Then GoTo SiguienteR
+
+        If transTxt <> "" Then
+            groupKey = "T|" & I02_NormKey(transTxt)
+        Else
+            groupKey = "I|" & I02_NormKey(idVenta)
+        End If
+
+        If groupKey = "" Then GoTo SiguienteR
+
+        If Not dictGroupRows.Exists(groupKey) Then
+            Set coll = New Collection
+            dictGroupRows.Add groupKey, coll
+            dictGroupAmount.Add groupKey, CLng(0)
+            dictGroupUUIDList.Add groupKey, ""
+            dictGroupCuenta.Add groupKey, cuentaTxt
+            dictGroupIdList.Add groupKey, ""
+        End If
+
+        Set coll = dictGroupRows(groupKey)
+        coll.Add r
+
+        dictGroupAmount(groupKey) = CLng(dictGroupAmount(groupKey)) + I02_ToCents(amountLine)
+
+        dictGroupIdList(groupKey) = I02_AppendUniqueToken(CStr(dictGroupIdList(groupKey)), idVenta)
+        dictGroupUUIDList(groupKey) = I02_AppendUniqueToken(CStr(dictGroupUUIDList(groupKey)), uuidTxt)
+
+        If Trim$(CStr(dictGroupCuenta(groupKey))) = "" And cuentaTxt <> "" Then
+            dictGroupCuenta(groupKey) = cuentaTxt
+        End If
+
+SiguienteR:
+    Next r
+
+    For Each groupId In dictGroupAmount.Keys
+        If Trim$(CStr(dictGroupCuenta(groupId))) = "" Then
+            cents = CLng(dictGroupAmount(groupId))
+            If cents <> 0 Then
+                keyAmount = CStr(cents)
+                If Not dictSalesByAmount.Exists(keyAmount) Then
+                    Set coll = New Collection
+                    dictSalesByAmount.Add keyAmount, coll
+                End If
+                Set coll = dictSalesByAmount(keyAmount)
+                coll.Add CStr(groupId)
+            End If
+        End If
+    Next groupId
+End Sub
+
+
+Private Function I02_GetVentaLineAmount( _
+    ByVal ws As Worksheet, _
+    ByVal rowNum As Long, _
+    ByVal colVTotal As Long, _
+    ByVal colVImporte As Long, _
+    ByVal colVMonto As Long, _
+    ByVal colVPrecio As Long, _
+    ByVal colVCantidad As Long) As Double
+
+    Dim totalVal As Double
+    Dim importeVal As Double
+    Dim montoVal As Double
+    Dim precioVal As Double
+    Dim cantidadVal As Double
+
+    If colVTotal > 0 Then
+        totalVal = I02_ParseNumber(ws.Cells(rowNum, colVTotal).Value)
+        If totalVal <> 0 Then
+            I02_GetVentaLineAmount = totalVal
+            Exit Function
+        End If
+    End If
+
+    If colVImporte > 0 Then
+        importeVal = I02_ParseNumber(ws.Cells(rowNum, colVImporte).Value)
+        If importeVal <> 0 Then
+            I02_GetVentaLineAmount = importeVal
+            Exit Function
+        End If
+    End If
+
+    If colVMonto > 0 Then
+        montoVal = I02_ParseNumber(ws.Cells(rowNum, colVMonto).Value)
+        If montoVal <> 0 Then
+            I02_GetVentaLineAmount = montoVal
+            Exit Function
+        End If
+    End If
+
+    If colVPrecio > 0 Then
+        precioVal = I02_ParseNumber(ws.Cells(rowNum, colVPrecio).Value)
+
+        If colVCantidad > 0 Then
+            cantidadVal = I02_ParseNumber(ws.Cells(rowNum, colVCantidad).Value)
+            If cantidadVal = 0 Then cantidadVal = 1
+            I02_GetVentaLineAmount = precioVal * cantidadVal
+        Else
+            I02_GetVentaLineAmount = precioVal
+        End If
+    End If
+End Function
+
+
+Private Function I02_ProcesarHojaBanco( _
+    ByVal ws As Worksheet, _
+    ByVal wsVentas As Worksheet, _
+    ByVal dictSalesByAmount As Object, _
+    ByVal dictGroupRows As Object, _
+    ByVal dictGroupUUIDList As Object, _
+    ByVal dictGroupCuenta As Object, _
+    ByVal dictGroupIdList As Object, _
+    ByVal colVCuenta As Long, _
+    ByVal wsCFDIPUE As Worksheet, _
+    ByVal dictPUE As Object, _
+    ByVal colPUECuenta As Long, _
+    ByVal colPUEId As Long, _
+    ByVal wsCFDIPPD As Worksheet, _
+    ByVal dictPPD As Object, _
+    ByVal colPPDCuenta As Long, _
+    ByVal colPPDId As Long, _
+    ByVal wsPagosI As Worksheet, _
+    ByVal dictPagosUUID As Object, _
+    ByVal dictPagosMother As Object, _
+    ByVal colPagCuenta As Long, _
+    ByVal colPagId As Long) As Long
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colAbono As Long, colCargo As Long, colObs As Long, colIdVenta As Long
+    Dim lastRow As Long, r As Long
+
+    Dim abonoVal As Double, cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim groupKey As String
+    Dim uuidList As String, idList As String
+    Dim obsTxt As String, idTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Function
+
+    hdrRow = hdrDia.Row
+
+    Set hdrCargo = I02_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = I02_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Function
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colObs = I02_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colIdVenta = I02_EnsureHeaderColMulti(ws, hdrRow, Array("ID_venta", "id_venta"), "ID_venta")
+
+    lastRow = I02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        abonoVal = I02_ParseNumber(ws.Cells(r, colAbono).Value)
+        cargoVal = I02_ParseNumber(ws.Cells(r, colCargo).Value)
+
+        If abonoVal <= 0 Then GoTo SiguienteR
+        If cargoVal <> 0 Then GoTo SiguienteR
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        idTxt = Trim$(CStr(ws.Cells(r, colIdVenta).Value))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If idTxt <> "" Then GoTo SiguienteR
+
+        cents = I02_ToCents(abonoVal)
+        tol = I02_ToleranceCents(cents)
+
+        If I02_TryPopVentaGroupMatch(dictSalesByAmount, cents, tol, groupKey) Then
+
+            uuidList = Trim$(CStr(dictGroupUUIDList(groupKey)))
+            idList = Trim$(CStr(dictGroupIdList(groupKey)))
+
+            ws.Cells(r, colIdVenta).Value = idList
+            ws.Cells(r, colObs).Value = uuidList
+
+            I02_UpdateVentasGroupCuenta wsVentas, dictGroupRows(groupKey), colVCuenta, ws.Name
+
+            If Not wsCFDIPUE Is Nothing Then
+                I02_UpdateMultipleUUIDs wsCFDIPUE, dictPUE, uuidList, colPUECuenta, colPUEId, ws.Name, idList
+            End If
+
+            If Not wsCFDIPPD Is Nothing Then
+                I02_UpdateMultipleUUIDs wsCFDIPPD, dictPPD, uuidList, colPPDCuenta, colPPDId, ws.Name, idList
+            End If
+
+            If Not wsPagosI Is Nothing Then
+                I02_UpdatePagosIMultipleUUIDs wsPagosI, dictPagosUUID, dictPagosMother, uuidList, colPagCuenta, colPagId, ws.Name, idList
+            End If
+
+            I02_ProcesarHojaBanco = I02_ProcesarHojaBanco + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colObs).NumberFormat = "@"
+    ws.Columns(colIdVenta).NumberFormat = "@"
+End Function
+
+
+Private Sub I02_UpdateVentasGroupCuenta( _
+    ByVal wsVentas As Worksheet, _
+    ByVal rowsColl As Collection, _
+    ByVal colVCuenta As Long, _
+    ByVal cuentaBancaria As String)
+
+    Dim i As Long
+    Dim rr As Long
+
+    For i = 1 To rowsColl.Count
+        rr = CLng(rowsColl(i))
+        wsVentas.Cells(rr, colVCuenta).Value = cuentaBancaria
+    Next i
+End Sub
+
+
+Private Sub I02_UpdateMultipleUUIDs( _
+    ByVal ws As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal uuidList As String, _
+    ByVal colCuenta As Long, _
+    ByVal colIdVenta As Long, _
+    ByVal cuentaBancaria As String, _
+    ByVal idVenta As String)
+
+    Dim arr As Variant
+    Dim i As Long
+    Dim oneUUID As String
+
+    If Trim$(uuidList) = "" Then Exit Sub
+    If dictUUIDRows Is Nothing Then Exit Sub
+
+    arr = Split(uuidList, " | ")
+
+    For i = LBound(arr) To UBound(arr)
+        oneUUID = Trim$(CStr(arr(i)))
+        If oneUUID <> "" Then
+            I02_UpdateCFDIByUUID ws, dictUUIDRows, oneUUID, colCuenta, colIdVenta, cuentaBancaria, idVenta
+        End If
+    Next i
+End Sub
+
+
+Private Sub I02_UpdateCFDIByUUID( _
+    ByVal ws As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal uuidValue As String, _
+    ByVal colCuenta As Long, _
+    ByVal colIdVenta As Long, _
+    ByVal cuentaBancaria As String, _
+    ByVal idVenta As String)
+
+    Dim k As String
+    Dim coll As Collection
+    Dim i As Long, rr As Long
+
+    If dictUUIDRows Is Nothing Then Exit Sub
+
+    k = I02_NormKey(uuidValue)
+    If k = "" Then Exit Sub
+    If Not dictUUIDRows.Exists(k) Then Exit Sub
+
+    Set coll = dictUUIDRows(k)
+
+    For i = 1 To coll.Count
+        rr = CLng(coll(i))
+        ws.Cells(rr, colCuenta).Value = cuentaBancaria
+        ws.Cells(rr, colIdVenta).Value = idVenta
+    Next i
+End Sub
+
+
+Private Sub I02_UpdatePagosIMultipleUUIDs( _
+    ByVal ws As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal dictMotherRows As Object, _
+    ByVal uuidList As String, _
+    ByVal colCuenta As Long, _
+    ByVal colIdVenta As Long, _
+    ByVal cuentaBancaria As String, _
+    ByVal idVenta As String)
+
+    Dim arr As Variant
+    Dim i As Long
+    Dim oneUUID As String
+
+    If Trim$(uuidList) = "" Then Exit Sub
+
+    arr = Split(uuidList, " | ")
+
+    For i = LBound(arr) To UBound(arr)
+        oneUUID = Trim$(CStr(arr(i)))
+        If oneUUID <> "" Then
+            I02_UpdateCFDIByUUID ws, dictUUIDRows, oneUUID, colCuenta, colIdVenta, cuentaBancaria, idVenta
+            I02_UpdateCFDIByUUID ws, dictMotherRows, oneUUID, colCuenta, colIdVenta, cuentaBancaria, idVenta
+        End If
+    Next i
+End Sub
+
+
+Private Sub I02_BuildUUIDIndex( _
+    ByVal ws As Worksheet, _
+    ByVal hdrRow As Long, _
+    ByVal colUUID As Long, _
+    ByVal dictUUIDRows As Object)
+
+    Dim lastRow As Long, r As Long
+    Dim k As String
+    Dim coll As Collection
+
+    lastRow = I02_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+    If colUUID <= 0 Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        k = I02_NormKey(ws.Cells(r, colUUID).Value)
+        If k <> "" Then
+            If Not dictUUIDRows.Exists(k) Then
+                Set coll = New Collection
+                dictUUIDRows.Add k, coll
+            End If
+            Set coll = dictUUIDRows(k)
+            coll.Add r
+        End If
+    Next r
+End Sub
+
+
+Private Function I02_TryPopVentaGroupMatch( _
+    ByVal dictSalesByAmount As Object, _
+    ByVal centsBase As Long, _
+    ByVal tolCents As Long, _
+    ByRef groupKey As String) As Boolean
+
+    Dim d As Long
+    Dim k As String
+    Dim coll As Collection
+
+    For d = 0 To tolCents
+
+        k = CStr(centsBase + d)
+        If dictSalesByAmount.Exists(k) Then
+            Set coll = dictSalesByAmount(k)
+            If coll.Count > 0 Then
+                groupKey = CStr(coll(1))
+                coll.Remove 1
+                If coll.Count = 0 Then dictSalesByAmount.Remove k
+                I02_TryPopVentaGroupMatch = True
+                Exit Function
+            End If
+        End If
+
+        If d > 0 Then
+            k = CStr(centsBase - d)
+            If dictSalesByAmount.Exists(k) Then
+                Set coll = dictSalesByAmount(k)
+                If coll.Count > 0 Then
+                    groupKey = CStr(coll(1))
+                    coll.Remove 1
+                    If coll.Count = 0 Then dictSalesByAmount.Remove k
+                    I02_TryPopVentaGroupMatch = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next d
+End Function
+
+
+Private Function I02_AppendUniqueToken(ByVal existingList As String, ByVal token As String) As String
+    Dim arr As Variant
+    Dim i As Long
+    Dim cleanToken As String
+
+    cleanToken = Trim$(token)
+    If cleanToken = "" Then
+        I02_AppendUniqueToken = existingList
+        Exit Function
+    End If
+
+    If Trim$(existingList) = "" Then
+        I02_AppendUniqueToken = cleanToken
+        Exit Function
+    End If
+
+    arr = Split(existingList, " | ")
+    For i = LBound(arr) To UBound(arr)
+        If StrComp(Trim$(CStr(arr(i))), cleanToken, vbTextCompare) = 0 Then
+            I02_AppendUniqueToken = existingList
+            Exit Function
+        End If
+    Next i
+
+    I02_AppendUniqueToken = existingList & " | " & cleanToken
+End Function
+
+
+Private Function I02_GetCellText(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal colNum As Long) As String
+    If ws Is Nothing Then Exit Function
+    If colNum <= 0 Then Exit Function
+    I02_GetCellText = Trim$(CStr(ws.Cells(rowNum, colNum).Value))
+End Function
+
+
+Private Function I02_FindPagosISheet() As Worksheet
+    Dim arr, i As Long
+    arr = Array("PAGOS I", "COMPL. I", "COMPL I", "PAGOS_I", "COMPL_I")
+
+    For i = LBound(arr) To UBound(arr)
+        Set I02_FindPagosISheet = I02_GetSheet(CStr(arr(i)))
+        If Not I02_FindPagosISheet Is Nothing Then Exit Function
+    Next i
+End Function
+
+
+Private Function I02_FindHeaderRowPagosI(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 15
+        If I02_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Or _
+           I02_FindHeaderCol(ws, r, Array("UUID Madre", "UUID MADRE", "UUID_MADRE")) > 0 Then
+            I02_FindHeaderRowPagosI = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function I02_FindHeaderRowVentas(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If I02_FindHeaderCol(ws, r, Array("ID_venta", "id_venta")) > 0 And _
+           I02_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Then
+            I02_FindHeaderRowVentas = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function I02_FindHeaderRowUUID(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If I02_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Then
+            I02_FindHeaderRowUUID = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function I02_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set I02_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function I02_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = I02_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = I02_NormHeader(CStr(headers(i))) Then
+                Set I02_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function I02_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = I02_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = I02_NormHeader(CStr(headerNames(i))) Then
+                I02_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function I02_EnsureHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim col As Long
+
+    col = I02_FindHeaderCol(ws, hdrRow, Array(headerText))
+
+    If col > 0 Then
+        I02_EnsureHeaderCol = col
+    Else
+        I02_EnsureHeaderCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, I02_EnsureHeaderCol).Value = headerText
+        ws.Cells(hdrRow, I02_EnsureHeaderCol).Font.Bold = True
+    End If
+End Function
+
+
+Private Function I02_EnsureHeaderColMulti(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant, ByVal newHeader As String) As Long
+    Dim col As Long
+
+    col = I02_FindHeaderCol(ws, hdrRow, headers)
+
+    If col > 0 Then
+        I02_EnsureHeaderColMulti = col
+    Else
+        I02_EnsureHeaderColMulti = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, I02_EnsureHeaderColMulti).Value = newHeader
+        ws.Cells(hdrRow, I02_EnsureHeaderColMulti).Font.Bold = True
+    End If
+End Function
+
+
+Private Function I02_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    I02_NormHeader = s
+End Function
+
+
+Private Function I02_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        I02_LastUsedRow = 0
+    Else
+        I02_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function I02_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        I02_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        I02_ParseNumber = CDbl(s)
+        If neg Then I02_ParseNumber = -I02_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    I02_ParseNumber = 0
+End Function
+
+
+Private Function I02_ToCents(ByVal v As Variant) As Long
+    I02_ToCents = CLng(Round(I02_ParseNumber(v) * 100, 0))
+End Function
+
+
+Private Function I02_ToleranceCents(ByVal centsAmount As Long) As Long
+    If Abs(centsAmount) < 5000000 Then
+        I02_ToleranceCents = 10
+    Else
+        I02_ToleranceCents = 50
+    End If
+End Function
+
+
+Private Function I02_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    I02_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function I02_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    I02_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function I02_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    I02_NormKey = s
+End Function
+
+Public Sub I03_CONCILIAR_VENTAS_SIN_BANCO_VS_BANCOS()
+
+    Const SH_VENTAS As String = "VENTAS_SIN_BANCO"
+
+    Dim wsVentas As Worksheet
+    Dim hdrVentas As Long, lastVentas As Long
+    Dim colVId As Long, colVUUID As Long, colVCuenta As Long, colVTrans As Long
+    Dim colVTotal As Long, colVImporte As Long, colVMonto As Long
+    Dim colVPrecio As Long, colVCantidad As Long
+
+    Dim wsCFDIPUE As Worksheet, wsCFDIPPD As Worksheet, wsPagosI As Worksheet
+    Dim hdrCFDIPUE As Long, hdrCFDIPPD As Long, hdrPagosI As Long
+    Dim colPUEUUID As Long, colPUECuenta As Long, colPUEId As Long
+    Dim colPPDUUID As Long, colPPDCuenta As Long, colPPDId As Long
+    Dim colPagUUID As Long, colPagUUIDMadre As Long, colPagCuenta As Long, colPagId As Long
+
+    Dim dictSalesByAmount As Object
+    Dim dictGroupRows As Object
+    Dim dictGroupUUIDList As Object
+    Dim dictGroupAmount As Object
+    Dim dictGroupCuenta As Object
+    Dim dictGroupIdList As Object
+
+    Dim dictPUE As Object, dictPPD As Object
+    Dim dictPagosUUID As Object, dictPagosMother As Object
+
+    Dim ws As Worksheet
+    Dim matchedCount As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    Set wsVentas = I03_GetSheet(SH_VENTAS)
+    If wsVentas Is Nothing Then
+        MsgBox "No existe la hoja '" & SH_VENTAS & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    hdrVentas = I03_FindHeaderRowVentas(wsVentas)
+    If hdrVentas = 0 Then
+        MsgBox "No pude identificar la fila de encabezados en VENTAS_SIN_BANCO.", vbExclamation
+        Exit Sub
+    End If
+
+    colVId = I03_FindHeaderCol(wsVentas, hdrVentas, Array("ID_venta", "id_venta"))
+    colVUUID = I03_FindHeaderCol(wsVentas, hdrVentas, Array("UUID", "uuid"))
+    colVCuenta = I03_EnsureHeaderCol(wsVentas, hdrVentas, "Cuenta bancaria")
+    colVTrans = I03_FindHeaderCol(wsVentas, hdrVentas, Array("numero_transaccion", "Número de transacción", "Numero de transaccion", "numero transaccion", "Numero transaccion", "Operacion relacionada"))
+
+    colVTotal = I03_FindHeaderCol(wsVentas, hdrVentas, Array("Total", "total"))
+    colVImporte = I03_FindHeaderCol(wsVentas, hdrVentas, Array("Importe", "importe"))
+    colVMonto = I03_FindHeaderCol(wsVentas, hdrVentas, Array("Monto", "monto", "Monto total", "monto total", "Total venta", "total venta", "Valor de la operación", "Valor de la operacion"))
+    colVPrecio = I03_FindHeaderCol(wsVentas, hdrVentas, Array("precio_unitario", "precio unitario", "Precio_Unitario", "Precio Unitario"))
+    colVCantidad = I03_FindHeaderCol(wsVentas, hdrVentas, Array("Cantidad", "cantidad", "Qty", "qty", "Cant", "cant"))
+
+    If colVId = 0 Or colVUUID = 0 Then
+        MsgBox "Faltan columnas requeridas en VENTAS_SIN_BANCO." & vbCrLf & _
+               "Se requiere: ID_venta y UUID.", vbExclamation
+        Exit Sub
+    End If
+
+    If colVTotal = 0 And colVImporte = 0 And colVMonto = 0 And colVPrecio = 0 Then
+        MsgBox "No encontré una columna de importe en VENTAS_SIN_BANCO." & vbCrLf & _
+               "Busqué: Total, Importe, Monto y Precio_Unitario.", vbExclamation
+        Exit Sub
+    End If
+
+    lastVentas = I03_LastUsedRow(wsVentas)
+    If lastVentas <= hdrVentas Then
+        MsgBox "VENTAS_SIN_BANCO no tiene datos.", vbExclamation
+        Exit Sub
+    End If
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    ' ==========================================
+    ' CFDI I PUE
+    ' ==========================================
+    Set wsCFDIPUE = I03_GetSheet("CFDI_I_PUE")
+    If Not wsCFDIPUE Is Nothing Then
+        hdrCFDIPUE = I03_FindHeaderRowUUID(wsCFDIPUE)
+        If hdrCFDIPUE > 0 Then
+            colPUEUUID = I03_FindHeaderCol(wsCFDIPUE, hdrCFDIPUE, Array("UUID", "uuid"))
+            colPUECuenta = I03_EnsureHeaderCol(wsCFDIPUE, hdrCFDIPUE, "Cuenta bancaria")
+            colPUEId = I03_EnsureHeaderColMulti(wsCFDIPUE, hdrCFDIPUE, Array("ID_venta", "id_venta"), "ID_venta")
+
+            Set dictPUE = CreateObject("Scripting.Dictionary")
+            I03_BuildUUIDIndex wsCFDIPUE, hdrCFDIPUE, colPUEUUID, dictPUE
+        End If
+    End If
+
+    ' ==========================================
+    ' CFDI I PPD
+    ' ==========================================
+    Set wsCFDIPPD = I03_GetSheet("CFDI_I_PPD")
+    If Not wsCFDIPPD Is Nothing Then
+        hdrCFDIPPD = I03_FindHeaderRowUUID(wsCFDIPPD)
+        If hdrCFDIPPD > 0 Then
+            colPPDUUID = I03_FindHeaderCol(wsCFDIPPD, hdrCFDIPPD, Array("UUID", "uuid"))
+            colPPDCuenta = I03_EnsureHeaderCol(wsCFDIPPD, hdrCFDIPPD, "Cuenta bancaria")
+            colPPDId = I03_EnsureHeaderColMulti(wsCFDIPPD, hdrCFDIPPD, Array("ID_venta", "id_venta"), "ID_venta")
+
+            Set dictPPD = CreateObject("Scripting.Dictionary")
+            I03_BuildUUIDIndex wsCFDIPPD, hdrCFDIPPD, colPPDUUID, dictPPD
+        End If
+    End If
+
+    ' ==========================================
+    ' PAGOS I / COMPL. I
+    ' ==========================================
+    Set wsPagosI = I03_FindPagosISheet()
+    If Not wsPagosI Is Nothing Then
+        hdrPagosI = I03_FindHeaderRowPagosI(wsPagosI)
+        If hdrPagosI > 0 Then
+            colPagUUID = I03_FindHeaderCol(wsPagosI, hdrPagosI, Array("UUID", "uuid"))
+            colPagUUIDMadre = I03_FindHeaderCol(wsPagosI, hdrPagosI, Array("UUID Madre", "UUID MADRE", "UUID_MADRE"))
+            colPagCuenta = I03_EnsureHeaderCol(wsPagosI, hdrPagosI, "Cuenta bancaria")
+            colPagId = I03_EnsureHeaderColMulti(wsPagosI, hdrPagosI, Array("ID_venta", "id_venta"), "ID_venta")
+
+            Set dictPagosUUID = CreateObject("Scripting.Dictionary")
+            Set dictPagosMother = CreateObject("Scripting.Dictionary")
+
+            If colPagUUID > 0 Then I03_BuildUUIDIndex wsPagosI, hdrPagosI, colPagUUID, dictPagosUUID
+            If colPagUUIDMadre > 0 Then I03_BuildUUIDIndex wsPagosI, hdrPagosI, colPagUUIDMadre, dictPagosMother
+        End If
+    End If
+
+    ' ==========================================
+    ' Agrupar ventas
+    ' ==========================================
+    Set dictSalesByAmount = CreateObject("Scripting.Dictionary")
+    Set dictGroupRows = CreateObject("Scripting.Dictionary")
+    Set dictGroupUUIDList = CreateObject("Scripting.Dictionary")
+    Set dictGroupAmount = CreateObject("Scripting.Dictionary")
+    Set dictGroupCuenta = CreateObject("Scripting.Dictionary")
+    Set dictGroupIdList = CreateObject("Scripting.Dictionary")
+
+    I03_BuildVentasGroups wsVentas, hdrVentas, lastVentas, _
+                          colVId, colVUUID, colVCuenta, colVTrans, _
+                          colVTotal, colVImporte, colVMonto, colVPrecio, colVCantidad, _
+                          dictSalesByAmount, dictGroupRows, dictGroupUUIDList, dictGroupAmount, dictGroupCuenta, dictGroupIdList
+
+    ' ==========================================
+    ' Recorrer hojas bancarias numéricas
+    ' ==========================================
+    For Each ws In ThisWorkbook.Worksheets
+        If I03_EsHojaNumerica(ws.Name) Then
+            If Not I03_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                matchedCount = matchedCount + I03_ProcesarHojaBanco( _
+                    ws, wsVentas, _
+                    dictSalesByAmount, dictGroupRows, dictGroupUUIDList, dictGroupCuenta, dictGroupIdList, _
+                    colVCuenta, _
+                    wsCFDIPUE, dictPUE, colPUECuenta, colPUEId, _
+                    wsCFDIPPD, dictPPD, colPPDCuenta, colPPDId, _
+                    wsPagosI, dictPagosUUID, dictPagosMother, colPagCuenta, colPagId)
+            End If
+        End If
+    Next ws
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    If Not I00_MODO_MAESTRO Then
+        MsgBox "Conciliación VENTAS_SIN_BANCO vs bancos terminada." & vbCrLf & _
+               "Grupos conciliados: " & matchedCount, vbInformation
+    End If
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en I03_CONCILIAR_VENTAS_SIN_BANCO_VS_BANCOS: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub I03_BuildVentasGroups( _
+    ByVal wsVentas As Worksheet, _
+    ByVal hdrRow As Long, _
+    ByVal lastRow As Long, _
+    ByVal colVId As Long, _
+    ByVal colVUUID As Long, _
+    ByVal colVCuenta As Long, _
+    ByVal colVTrans As Long, _
+    ByVal colVTotal As Long, _
+    ByVal colVImporte As Long, _
+    ByVal colVMonto As Long, _
+    ByVal colVPrecio As Long, _
+    ByVal colVCantidad As Long, _
+    ByVal dictSalesByAmount As Object, _
+    ByVal dictGroupRows As Object, _
+    ByVal dictGroupUUIDList As Object, _
+    ByVal dictGroupAmount As Object, _
+    ByVal dictGroupCuenta As Object, _
+    ByVal dictGroupIdList As Object)
+
+    Dim r As Long
+    Dim idVenta As String, uuidTxt As String, cuentaTxt As String, transTxt As String
+    Dim amountLine As Double
+    Dim cents As Long
+    Dim coll As Collection
+    Dim keyAmount As String
+    Dim groupKey As String
+    Dim groupId As Variant
+
+    For r = hdrRow + 1 To lastRow
+
+        idVenta = Trim$(CStr(wsVentas.Cells(r, colVId).Value))
+        If idVenta = "" Then GoTo SiguienteR
+
+        uuidTxt = Trim$(CStr(wsVentas.Cells(r, colVUUID).Value))
+        cuentaTxt = Trim$(CStr(wsVentas.Cells(r, colVCuenta).Value))
+        transTxt = I03_GetCellText(wsVentas, r, colVTrans)
+        amountLine = I03_GetVentaLineAmount(wsVentas, r, colVTotal, colVImporte, colVMonto, colVPrecio, colVCantidad)
+
+        If amountLine = 0 Then GoTo SiguienteR
+
+        If transTxt <> "" Then
+            groupKey = "T|" & I03_NormKey(transTxt)
+        Else
+            groupKey = "I|" & I03_NormKey(idVenta)
+        End If
+
+        If groupKey = "" Then GoTo SiguienteR
+
+        If Not dictGroupRows.Exists(groupKey) Then
+            Set coll = New Collection
+            dictGroupRows.Add groupKey, coll
+            dictGroupAmount.Add groupKey, CLng(0)
+            dictGroupUUIDList.Add groupKey, ""
+            dictGroupCuenta.Add groupKey, cuentaTxt
+            dictGroupIdList.Add groupKey, ""
+        End If
+
+        Set coll = dictGroupRows(groupKey)
+        coll.Add r
+
+        dictGroupAmount(groupKey) = CLng(dictGroupAmount(groupKey)) + I03_ToCents(amountLine)
+
+        dictGroupIdList(groupKey) = I03_AppendUniqueToken(CStr(dictGroupIdList(groupKey)), idVenta)
+        dictGroupUUIDList(groupKey) = I03_AppendUniqueToken(CStr(dictGroupUUIDList(groupKey)), uuidTxt)
+
+        If Trim$(CStr(dictGroupCuenta(groupKey))) = "" And cuentaTxt <> "" Then
+            dictGroupCuenta(groupKey) = cuentaTxt
+        End If
+
+SiguienteR:
+    Next r
+
+    For Each groupId In dictGroupAmount.Keys
+        If Trim$(CStr(dictGroupCuenta(groupId))) = "" Then
+            cents = CLng(dictGroupAmount(groupId))
+            If cents <> 0 Then
+                keyAmount = CStr(cents)
+                If Not dictSalesByAmount.Exists(keyAmount) Then
+                    Set coll = New Collection
+                    dictSalesByAmount.Add keyAmount, coll
+                End If
+                Set coll = dictSalesByAmount(keyAmount)
+                coll.Add CStr(groupId)
+            End If
+        End If
+    Next groupId
+End Sub
+
+
+Private Function I03_GetVentaLineAmount( _
+    ByVal ws As Worksheet, _
+    ByVal rowNum As Long, _
+    ByVal colVTotal As Long, _
+    ByVal colVImporte As Long, _
+    ByVal colVMonto As Long, _
+    ByVal colVPrecio As Long, _
+    ByVal colVCantidad As Long) As Double
+
+    Dim totalVal As Double
+    Dim importeVal As Double
+    Dim montoVal As Double
+    Dim precioVal As Double
+    Dim cantidadVal As Double
+
+    If colVTotal > 0 Then
+        totalVal = I03_ParseNumber(ws.Cells(rowNum, colVTotal).Value)
+        If totalVal <> 0 Then
+            I03_GetVentaLineAmount = totalVal
+            Exit Function
+        End If
+    End If
+
+    If colVImporte > 0 Then
+        importeVal = I03_ParseNumber(ws.Cells(rowNum, colVImporte).Value)
+        If importeVal <> 0 Then
+            I03_GetVentaLineAmount = importeVal
+            Exit Function
+        End If
+    End If
+
+    If colVMonto > 0 Then
+        montoVal = I03_ParseNumber(ws.Cells(rowNum, colVMonto).Value)
+        If montoVal <> 0 Then
+            I03_GetVentaLineAmount = montoVal
+            Exit Function
+        End If
+    End If
+
+    If colVPrecio > 0 Then
+        precioVal = I03_ParseNumber(ws.Cells(rowNum, colVPrecio).Value)
+
+        If colVCantidad > 0 Then
+            cantidadVal = I03_ParseNumber(ws.Cells(rowNum, colVCantidad).Value)
+            If cantidadVal = 0 Then cantidadVal = 1
+            I03_GetVentaLineAmount = precioVal * cantidadVal
+        Else
+            I03_GetVentaLineAmount = precioVal
+        End If
+    End If
+End Function
+
+
+Private Function I03_ProcesarHojaBanco( _
+    ByVal ws As Worksheet, _
+    ByVal wsVentas As Worksheet, _
+    ByVal dictSalesByAmount As Object, _
+    ByVal dictGroupRows As Object, _
+    ByVal dictGroupUUIDList As Object, _
+    ByVal dictGroupCuenta As Object, _
+    ByVal dictGroupIdList As Object, _
+    ByVal colVCuenta As Long, _
+    ByVal wsCFDIPUE As Worksheet, _
+    ByVal dictPUE As Object, _
+    ByVal colPUECuenta As Long, _
+    ByVal colPUEId As Long, _
+    ByVal wsCFDIPPD As Worksheet, _
+    ByVal dictPPD As Object, _
+    ByVal colPPDCuenta As Long, _
+    ByVal colPPDId As Long, _
+    ByVal wsPagosI As Worksheet, _
+    ByVal dictPagosUUID As Object, _
+    ByVal dictPagosMother As Object, _
+    ByVal colPagCuenta As Long, _
+    ByVal colPagId As Long) As Long
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colAbono As Long, colCargo As Long, colObs As Long, colIdVenta As Long
+    Dim lastRow As Long, r As Long
+
+    Dim abonoVal As Double, cargoVal As Double
+    Dim cents As Long, tol As Long
+    Dim groupKey As String
+    Dim uuidList As String, idList As String
+    Dim obsTxt As String, idTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Function
+
+    hdrRow = hdrDia.Row
+
+    Set hdrCargo = I03_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = I03_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Function
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colObs = I03_EnsureHeaderCol(ws, hdrRow, "OBS")
+    colIdVenta = I03_EnsureHeaderColMulti(ws, hdrRow, Array("ID_venta", "id_venta"), "ID_venta")
+
+    lastRow = I03_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Function
+
+    For r = hdrRow + 1 To lastRow
+
+        abonoVal = I03_ParseNumber(ws.Cells(r, colAbono).Value)
+        cargoVal = I03_ParseNumber(ws.Cells(r, colCargo).Value)
+
+        If abonoVal <= 0 Then GoTo SiguienteR
+        If cargoVal <> 0 Then GoTo SiguienteR
+
+        obsTxt = Trim$(CStr(ws.Cells(r, colObs).Value))
+        idTxt = Trim$(CStr(ws.Cells(r, colIdVenta).Value))
+
+        If obsTxt <> "" Then GoTo SiguienteR
+        If idTxt <> "" Then GoTo SiguienteR
+
+        cents = I03_ToCents(abonoVal)
+        tol = I03_ToleranceCents(cents)
+
+        If I03_TryPopVentaGroupMatch(dictSalesByAmount, cents, tol, groupKey) Then
+
+            uuidList = Trim$(CStr(dictGroupUUIDList(groupKey)))
+            idList = Trim$(CStr(dictGroupIdList(groupKey)))
+
+            ws.Cells(r, colIdVenta).Value = idList
+            ws.Cells(r, colObs).Value = uuidList
+
+            I03_UpdateVentasGroupCuenta wsVentas, dictGroupRows(groupKey), colVCuenta, ws.Name
+
+            If Not wsCFDIPUE Is Nothing Then
+                I03_UpdateMultipleUUIDs wsCFDIPUE, dictPUE, uuidList, colPUECuenta, colPUEId, ws.Name, idList
+            End If
+
+            If Not wsCFDIPPD Is Nothing Then
+                I03_UpdateMultipleUUIDs wsCFDIPPD, dictPPD, uuidList, colPPDCuenta, colPPDId, ws.Name, idList
+            End If
+
+            If Not wsPagosI Is Nothing Then
+                I03_UpdatePagosIMultipleUUIDs wsPagosI, dictPagosUUID, dictPagosMother, uuidList, colPagCuenta, colPagId, ws.Name, idList
+            End If
+
+            I03_ProcesarHojaBanco = I03_ProcesarHojaBanco + 1
+        End If
+
+SiguienteR:
+    Next r
+
+    ws.Columns(colObs).NumberFormat = "@"
+    ws.Columns(colIdVenta).NumberFormat = "@"
+End Function
+
+
+Private Sub I03_UpdateVentasGroupCuenta( _
+    ByVal wsVentas As Worksheet, _
+    ByVal rowsColl As Collection, _
+    ByVal colVCuenta As Long, _
+    ByVal cuentaBancaria As String)
+
+    Dim i As Long
+    Dim rr As Long
+
+    For i = 1 To rowsColl.Count
+        rr = CLng(rowsColl(i))
+        wsVentas.Cells(rr, colVCuenta).Value = cuentaBancaria
+    Next i
+End Sub
+
+
+Private Sub I03_UpdateMultipleUUIDs( _
+    ByVal ws As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal uuidList As String, _
+    ByVal colCuenta As Long, _
+    ByVal colIdVenta As Long, _
+    ByVal cuentaBancaria As String, _
+    ByVal idVenta As String)
+
+    Dim arr As Variant
+    Dim i As Long
+    Dim oneUUID As String
+
+    If Trim$(uuidList) = "" Then Exit Sub
+    If dictUUIDRows Is Nothing Then Exit Sub
+
+    arr = Split(uuidList, " | ")
+
+    For i = LBound(arr) To UBound(arr)
+        oneUUID = Trim$(CStr(arr(i)))
+        If oneUUID <> "" Then
+            I03_UpdateCFDIByUUID ws, dictUUIDRows, oneUUID, colCuenta, colIdVenta, cuentaBancaria, idVenta
+        End If
+    Next i
+End Sub
+
+
+Private Sub I03_UpdateCFDIByUUID( _
+    ByVal ws As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal uuidValue As String, _
+    ByVal colCuenta As Long, _
+    ByVal colIdVenta As Long, _
+    ByVal cuentaBancaria As String, _
+    ByVal idVenta As String)
+
+    Dim k As String
+    Dim coll As Collection
+    Dim i As Long, rr As Long
+
+    If dictUUIDRows Is Nothing Then Exit Sub
+
+    k = I03_NormKey(uuidValue)
+    If k = "" Then Exit Sub
+    If Not dictUUIDRows.Exists(k) Then Exit Sub
+
+    Set coll = dictUUIDRows(k)
+
+    For i = 1 To coll.Count
+        rr = CLng(coll(i))
+        ws.Cells(rr, colCuenta).Value = cuentaBancaria
+        ws.Cells(rr, colIdVenta).Value = idVenta
+    Next i
+End Sub
+
+
+Private Sub I03_UpdatePagosIMultipleUUIDs( _
+    ByVal ws As Worksheet, _
+    ByVal dictUUIDRows As Object, _
+    ByVal dictMotherRows As Object, _
+    ByVal uuidList As String, _
+    ByVal colCuenta As Long, _
+    ByVal colIdVenta As Long, _
+    ByVal cuentaBancaria As String, _
+    ByVal idVenta As String)
+
+    Dim arr As Variant
+    Dim i As Long
+    Dim oneUUID As String
+
+    If Trim$(uuidList) = "" Then Exit Sub
+
+    arr = Split(uuidList, " | ")
+
+    For i = LBound(arr) To UBound(arr)
+        oneUUID = Trim$(CStr(arr(i)))
+        If oneUUID <> "" Then
+            I03_UpdateCFDIByUUID ws, dictUUIDRows, oneUUID, colCuenta, colIdVenta, cuentaBancaria, idVenta
+            I03_UpdateCFDIByUUID ws, dictMotherRows, oneUUID, colCuenta, colIdVenta, cuentaBancaria, idVenta
+        End If
+    Next i
+End Sub
+
+
+Private Sub I03_BuildUUIDIndex( _
+    ByVal ws As Worksheet, _
+    ByVal hdrRow As Long, _
+    ByVal colUUID As Long, _
+    ByVal dictUUIDRows As Object)
+
+    Dim lastRow As Long, r As Long
+    Dim k As String
+    Dim coll As Collection
+
+    lastRow = I03_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+    If colUUID <= 0 Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        k = I03_NormKey(ws.Cells(r, colUUID).Value)
+        If k <> "" Then
+            If Not dictUUIDRows.Exists(k) Then
+                Set coll = New Collection
+                dictUUIDRows.Add k, coll
+            End If
+            Set coll = dictUUIDRows(k)
+            coll.Add r
+        End If
+    Next r
+End Sub
+
+
+Private Function I03_TryPopVentaGroupMatch( _
+    ByVal dictSalesByAmount As Object, _
+    ByVal centsBase As Long, _
+    ByVal tolCents As Long, _
+    ByRef groupKey As String) As Boolean
+
+    Dim d As Long
+    Dim k As String
+    Dim coll As Collection
+
+    For d = 0 To tolCents
+
+        k = CStr(centsBase + d)
+        If dictSalesByAmount.Exists(k) Then
+            Set coll = dictSalesByAmount(k)
+            If coll.Count > 0 Then
+                groupKey = CStr(coll(1))
+                coll.Remove 1
+                If coll.Count = 0 Then dictSalesByAmount.Remove k
+                I03_TryPopVentaGroupMatch = True
+                Exit Function
+            End If
+        End If
+
+        If d > 0 Then
+            k = CStr(centsBase - d)
+            If dictSalesByAmount.Exists(k) Then
+                Set coll = dictSalesByAmount(k)
+                If coll.Count > 0 Then
+                    groupKey = CStr(coll(1))
+                    coll.Remove 1
+                    If coll.Count = 0 Then dictSalesByAmount.Remove k
+                    I03_TryPopVentaGroupMatch = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next d
+End Function
+
+
+Private Function I03_AppendUniqueToken(ByVal existingList As String, ByVal token As String) As String
+    Dim arr As Variant
+    Dim i As Long
+    Dim cleanToken As String
+
+    cleanToken = Trim$(token)
+    If cleanToken = "" Then
+        I03_AppendUniqueToken = existingList
+        Exit Function
+    End If
+
+    If Trim$(existingList) = "" Then
+        I03_AppendUniqueToken = cleanToken
+        Exit Function
+    End If
+
+    arr = Split(existingList, " | ")
+    For i = LBound(arr) To UBound(arr)
+        If StrComp(Trim$(CStr(arr(i))), cleanToken, vbTextCompare) = 0 Then
+            I03_AppendUniqueToken = existingList
+            Exit Function
+        End If
+    Next i
+
+    I03_AppendUniqueToken = existingList & " | " & cleanToken
+End Function
+
+
+Private Function I03_GetCellText(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal colNum As Long) As String
+    If ws Is Nothing Then Exit Function
+    If colNum <= 0 Then Exit Function
+    I03_GetCellText = Trim$(CStr(ws.Cells(rowNum, colNum).Value))
+End Function
+
+
+Private Function I03_FindPagosISheet() As Worksheet
+    Dim arr, i As Long
+    arr = Array("PAGOS I", "COMPL. I", "COMPL I", "PAGOS_I", "COMPL_I")
+
+    For i = LBound(arr) To UBound(arr)
+        Set I03_FindPagosISheet = I03_GetSheet(CStr(arr(i)))
+        If Not I03_FindPagosISheet Is Nothing Then Exit Function
+    Next i
+End Function
+
+
+Private Function I03_FindHeaderRowPagosI(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 15
+        If I03_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Or _
+           I03_FindHeaderCol(ws, r, Array("UUID Madre", "UUID MADRE", "UUID_MADRE")) > 0 Then
+            I03_FindHeaderRowPagosI = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function I03_FindHeaderRowVentas(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If I03_FindHeaderCol(ws, r, Array("ID_venta", "id_venta")) > 0 And _
+           I03_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Then
+            I03_FindHeaderRowVentas = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function I03_FindHeaderRowUUID(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If I03_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Then
+            I03_FindHeaderRowUUID = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function I03_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set I03_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function I03_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = I03_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = I03_NormHeader(CStr(headers(i))) Then
+                Set I03_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function I03_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = I03_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = I03_NormHeader(CStr(headerNames(i))) Then
+                I03_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function I03_EnsureHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerText As String) As Long
+    Dim col As Long
+
+    col = I03_FindHeaderCol(ws, hdrRow, Array(headerText))
+
+    If col > 0 Then
+        I03_EnsureHeaderCol = col
+    Else
+        I03_EnsureHeaderCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, I03_EnsureHeaderCol).Value = headerText
+        ws.Cells(hdrRow, I03_EnsureHeaderCol).Font.Bold = True
+    End If
+End Function
+
+
+Private Function I03_EnsureHeaderColMulti(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant, ByVal newHeader As String) As Long
+    Dim col As Long
+
+    col = I03_FindHeaderCol(ws, hdrRow, headers)
+
+    If col > 0 Then
+        I03_EnsureHeaderColMulti = col
+    Else
+        I03_EnsureHeaderColMulti = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(hdrRow, I03_EnsureHeaderColMulti).Value = newHeader
+        ws.Cells(hdrRow, I03_EnsureHeaderColMulti).Font.Bold = True
+    End If
+End Function
+
+
+Private Function I03_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    I03_NormHeader = s
+End Function
+
+
+Private Function I03_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        I03_LastUsedRow = 0
+    Else
+        I03_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function I03_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        I03_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        I03_ParseNumber = CDbl(s)
+        If neg Then I03_ParseNumber = -I03_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    I03_ParseNumber = 0
+End Function
+
+
+Private Function I03_ToCents(ByVal v As Variant) As Long
+    I03_ToCents = CLng(Round(I03_ParseNumber(v) * 100, 0))
+End Function
+
+
+Private Function I03_ToleranceCents(ByVal centsAmount As Long) As Long
+    If Abs(centsAmount) < 5000000 Then
+        I03_ToleranceCents = 10
+    Else
+        I03_ToleranceCents = 50
+    End If
+End Function
+
+
+Private Function I03_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    I03_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function I03_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    I03_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function I03_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    I03_NormKey = s
+End Function
+
+
+Public Sub I00_EJECUTAR_TODO_I01_A_I03()
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+    Dim prevAlerts As Boolean
+    Dim paso As String
+
+    On Error GoTo ErrHandler
+
+    If Not I00_ValidarHojasMinimas() Then Exit Sub
+
+    I00_MODO_MAESTRO = True
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+    prevAlerts = Application.DisplayAlerts
+
+    Application.StatusBar = "Iniciando proceso completo..."
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+
+    paso = "I01_CONCILIAR_VENTAS_BBVA_VS_BANCOS"
+    Application.StatusBar = "Paso 1/3 - Conciliando VENTAS_BBVA..."
+    Call I01_CONCILIAR_VENTAS_BBVA_VS_BANCOS
+
+    paso = "I02_CONCILIAR_VENTAS_SCOOTERZONE_VS_BANCOS"
+    Application.StatusBar = "Paso 2/3 - Conciliando VENTAS_SCOOTERZONE..."
+    Call I02_CONCILIAR_VENTAS_SCOOTERZONE_VS_BANCOS
+
+    paso = "I03_CONCILIAR_VENTAS_SIN_BANCO_VS_BANCOS"
+    Application.StatusBar = "Paso 3/3 - Conciliando VENTAS_SIN_BANCO..."
+    Call I03_CONCILIAR_VENTAS_SIN_BANCO_VS_BANCOS
+
+SalidaOk:
+    I00_MODO_MAESTRO = False
+    Application.StatusBar = False
+    Application.Calculation = prevCalc
+    Application.ScreenUpdating = prevScreen
+    Application.EnableEvents = prevEvents
+    Application.DisplayAlerts = prevAlerts
+
+    MsgBox "Proceso completo terminado correctamente." & vbCrLf & vbCrLf & _
+           "Se ejecutaron:" & vbCrLf & _
+           "1. I01_CONCILIAR_VENTAS_BBVA_VS_BANCOS" & vbCrLf & _
+           "2. I02_CONCILIAR_VENTAS_SCOOTERZONE_VS_BANCOS" & vbCrLf & _
+           "3. I03_CONCILIAR_VENTAS_SIN_BANCO_VS_BANCOS", vbInformation
+    Exit Sub
+
+ErrHandler:
+    I00_MODO_MAESTRO = False
+    Application.StatusBar = False
+    Application.Calculation = prevCalc
+    Application.ScreenUpdating = prevScreen
+    Application.EnableEvents = prevEvents
+    Application.DisplayAlerts = prevAlerts
+
+    MsgBox "Se detuvo el proceso en: " & paso & vbCrLf & _
+           "Detalle: " & Err.Description, vbCritical
+End Sub
+
+
+Private Function I00_ValidarHojasMinimas() As Boolean
+    Dim faltantes As String
+
+    If Not I00_HojaExiste("VENTAS_BBVA") Then faltantes = faltantes & "- VENTAS_BBVA" & vbCrLf
+    If Not I00_HojaExiste("VENTAS_SCOOTERZONE") Then faltantes = faltantes & "- VENTAS_SCOOTERZONE" & vbCrLf
+    If Not I00_HojaExiste("VENTAS_SIN_BANCO") Then faltantes = faltantes & "- VENTAS_SIN_BANCO" & vbCrLf
+
+    If faltantes <> "" Then
+        MsgBox "No se puede ejecutar el proceso completo. Faltan estas hojas:" & vbCrLf & vbCrLf & faltantes, vbExclamation
+        Exit Function
+    End If
+
+    I00_ValidarHojasMinimas = True
+End Function
+
+
+Private Function I00_HojaExiste(ByVal sheetName As String) As Boolean
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    I00_HojaExiste = Not ws Is Nothing
+    Set ws = Nothing
+    On Error GoTo 0
+End Function

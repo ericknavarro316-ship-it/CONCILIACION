@@ -1,0 +1,826 @@
+Option Explicit
+
+Public Sub V05_VERIFICAR_VENTAS_SCOOTERZONE_VS_BANCOS()
+
+    Const SH_SRC As String = "VENTAS_SCOOTERZONE"
+    Const SH_OUT As String = "V05_VERIF_VTAS_SCOOTER"
+
+    Dim wsOut As Worksheet
+    Dim wsVentas As Worksheet, ws As Worksheet
+    Dim wsPUE As Worksheet, wsPPD As Worksheet, wsPagosI As Worksheet
+
+    Dim outRow As Long
+
+    Dim vTotal As Long, vConCuenta As Long, vSinCuenta As Long
+    Dim bTotal As Long, bConId As Long, bSinId As Long
+    Dim pueTotal As Long, pueConCuenta As Long, pueSinCuenta As Long, pueConId As Long, pueSinId As Long
+    Dim ppdTotal As Long, ppdConCuenta As Long, ppdSinCuenta As Long, ppdConId As Long, ppdSinId As Long
+    Dim pagTotal As Long, pagConCuenta As Long, pagSinCuenta As Long, pagConId As Long, pagSinId As Long
+
+    Dim prevCalc As XlCalculation
+    Dim prevScreen As Boolean
+    Dim prevEvents As Boolean
+
+    On Error GoTo ErrHandler
+
+    prevCalc = Application.Calculation
+    prevScreen = Application.ScreenUpdating
+    prevEvents = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    V05_DeleteSheetIfExists SH_OUT
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsOut.Name = SH_OUT
+
+    ' =====================================================
+    ' TABLA 1 - VENTAS_SCOOTERZONE
+    ' =====================================================
+    Set wsVentas = V05_GetSheet(SH_SRC)
+    V05_ContarVentasAgrupadas wsVentas, vTotal, vConCuenta, vSinCuenta
+
+    wsOut.Range("A1").Value = "TABLA 1 - VERIFICACIÓN VENTAS_SCOOTERZONE"
+    wsOut.Range("A1").Font.Bold = True
+    wsOut.Range("A3:D3").Value = Array("Concepto", "Total", "Con cuenta bancaria", "Sin cuenta bancaria")
+    wsOut.Rows(3).Font.Bold = True
+    wsOut.Range("A4:D4").Value = Array("Grupos (numero_transaccion o ID_venta)", vTotal, vConCuenta, vSinCuenta)
+
+    ' =====================================================
+    ' TABLA 2 - BANCOS NUMÉRICOS
+    ' =====================================================
+    For Each ws In ThisWorkbook.Worksheets
+        If V05_EsHojaNumerica(ws.Name) Then
+            If Not V05_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                V05_ContarAbonosBanco ws, bTotal, bConId, bSinId
+            End If
+        End If
+    Next ws
+
+    wsOut.Range("A7").Value = "TABLA 2 - VERIFICACIÓN BANCOS"
+    wsOut.Range("A7").Font.Bold = True
+    wsOut.Range("A9:D9").Value = Array("Concepto", "Total", "Con ID_venta", "Sin ID_venta")
+    wsOut.Rows(9).Font.Bold = True
+    wsOut.Range("A10:D10").Value = Array("Abonos bancarios", bTotal, bConId, bSinId)
+
+    ' =====================================================
+    ' TABLA 3 - CFDI_I_PUE
+    ' =====================================================
+    Set wsPUE = V05_GetSheet("CFDI_I_PUE")
+    V05_ContarCFDI wsPUE, pueTotal, pueConCuenta, pueSinCuenta, pueConId, pueSinId
+
+    wsOut.Range("A13").Value = "TABLA 3 - VERIFICACIÓN CFDI_I_PUE"
+    wsOut.Range("A13").Font.Bold = True
+    wsOut.Range("A15:F15").Value = Array("Concepto", "Total UUID", "Con cuenta bancaria", "Sin cuenta bancaria", "Con ID_venta", "Sin ID_venta")
+    wsOut.Rows(15).Font.Bold = True
+    wsOut.Range("A16:F16").Value = Array("CFDI_I_PUE", pueTotal, pueConCuenta, pueSinCuenta, pueConId, pueSinId)
+
+    ' =====================================================
+    ' TABLA 4 - CFDI_I_PPD
+    ' =====================================================
+    Set wsPPD = V05_GetSheet("CFDI_I_PPD")
+    V05_ContarCFDI wsPPD, ppdTotal, ppdConCuenta, ppdSinCuenta, ppdConId, ppdSinId
+
+    wsOut.Range("A19").Value = "TABLA 4 - VERIFICACIÓN CFDI_I_PPD"
+    wsOut.Range("A19").Font.Bold = True
+    wsOut.Range("A21:F21").Value = Array("Concepto", "Total UUID", "Con cuenta bancaria", "Sin cuenta bancaria", "Con ID_venta", "Sin ID_venta")
+    wsOut.Rows(21).Font.Bold = True
+    wsOut.Range("A22:F22").Value = Array("CFDI_I_PPD", ppdTotal, ppdConCuenta, ppdSinCuenta, ppdConId, ppdSinId)
+
+    ' =====================================================
+    ' TABLA 5 - PAGOS I / COMPL. I
+    ' =====================================================
+    Set wsPagosI = V05_FindPagosISheet()
+    V05_ContarPagosI wsPagosI, pagTotal, pagConCuenta, pagSinCuenta, pagConId, pagSinId
+
+    wsOut.Range("A25").Value = "TABLA 5 - VERIFICACIÓN PAGOS I / COMPL. I"
+    wsOut.Range("A25").Font.Bold = True
+    wsOut.Range("A27:F27").Value = Array("Concepto", "Total registros", "Con cuenta bancaria", "Sin cuenta bancaria", "Con ID_venta", "Sin ID_venta")
+    wsOut.Rows(27).Font.Bold = True
+    wsOut.Range("A28:F28").Value = Array(IIf(wsPagosI Is Nothing, "PAGOS I / COMPL. I", wsPagosI.Name), pagTotal, pagConCuenta, pagSinCuenta, pagConId, pagSinId)
+
+    ' =====================================================
+    ' TABLA 6 - DETALLE DE GRUPOS PENDIENTES
+    ' =====================================================
+    outRow = 31
+    wsOut.Cells(outRow, 1).Value = "TABLA 6 - DETALLE DE GRUPOS SIN CUENTA BANCARIA"
+    wsOut.Cells(outRow, 1).Font.Bold = True
+    wsOut.Range("A" & outRow + 2 & ":H" & outRow + 2).Value = Array( _
+        "Tipo grupo", _
+        "Clave grupo", _
+        "numero_transaccion", _
+        "ID_venta(s)", _
+        "UUID(s)", _
+        "Monto agrupado", _
+        "Cuenta bancaria", _
+        "Motivo")
+    wsOut.Rows(outRow + 2).Font.Bold = True
+
+    outRow = outRow + 3
+    V05_AgregarDetalleVentasPendientes wsVentas, wsOut, outRow
+
+    If Trim$(CStr(wsOut.Cells(outRow, 1).Value)) = "" Then
+        wsOut.Cells(outRow, 1).Value = "SIN GRUPOS PENDIENTES"
+        outRow = outRow + 1
+    End If
+
+    outRow = outRow + 2
+
+    ' =====================================================
+    ' TABLA 7 - DETALLE DE ABONOS SIN MATCH
+    ' =====================================================
+    wsOut.Cells(outRow, 1).Value = "TABLA 7 - DETALLE DE ABONOS BANCARIOS SIN ID_VENTA"
+    wsOut.Cells(outRow, 1).Font.Bold = True
+    wsOut.Range("A" & outRow + 2 & ":H" & outRow + 2).Value = Array("Cuenta", "Fila", "Día", "Concepto", "Abono", "ID_venta", "OBS", "Motivo")
+    wsOut.Rows(outRow + 2).Font.Bold = True
+
+    outRow = outRow + 3
+
+    For Each ws In ThisWorkbook.Worksheets
+        If V05_EsHojaNumerica(ws.Name) Then
+            If Not V05_SheetHasText(ws, "SIN MOVIMIENTOS") Then
+                V05_AgregarDetalleAbonosPendientes ws, wsOut, outRow
+            End If
+        End If
+    Next ws
+
+    If Trim$(CStr(wsOut.Cells(outRow, 1).Value)) = "" Then
+        wsOut.Cells(outRow, 1).Value = "SIN ABONOS PENDIENTES"
+        outRow = outRow + 1
+    End If
+
+    wsOut.Columns("A:H").EntireColumn.AutoFit
+
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Verificación V05 generada correctamente.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = prevCalc
+    Application.EnableEvents = prevEvents
+    Application.ScreenUpdating = prevScreen
+
+    MsgBox "Error en V05_VERIFICAR_VENTAS_SCOOTERZONE_VS_BANCOS: " & Err.Description, vbExclamation
+End Sub
+
+
+Private Sub V05_ContarVentasAgrupadas( _
+    ByVal ws As Worksheet, _
+    ByRef total As Long, _
+    ByRef conCuenta As Long, _
+    ByRef sinCuenta As Long)
+
+    Dim dictTipo As Object, dictTrans As Object, dictIds As Object, dictUUIDs As Object, dictMonto As Object, dictCuenta As Object
+
+    Set dictTipo = CreateObject("Scripting.Dictionary")
+    Set dictTrans = CreateObject("Scripting.Dictionary")
+    Set dictIds = CreateObject("Scripting.Dictionary")
+    Set dictUUIDs = CreateObject("Scripting.Dictionary")
+    Set dictMonto = CreateObject("Scripting.Dictionary")
+    Set dictCuenta = CreateObject("Scripting.Dictionary")
+
+    V05_BuildVentasGroupingData ws, dictTipo, dictTrans, dictIds, dictUUIDs, dictMonto, dictCuenta
+
+    Dim k As Variant
+    For Each k In dictTipo.Keys
+        total = total + 1
+        If Trim$(CStr(dictCuenta(k))) <> "" Then
+            conCuenta = conCuenta + 1
+        Else
+            sinCuenta = sinCuenta + 1
+        End If
+    Next k
+End Sub
+
+
+Private Sub V05_BuildVentasGroupingData( _
+    ByVal ws As Worksheet, _
+    ByVal dictTipo As Object, _
+    ByVal dictTrans As Object, _
+    ByVal dictIds As Object, _
+    ByVal dictUUIDs As Object, _
+    ByVal dictMonto As Object, _
+    ByVal dictCuenta As Object)
+
+    Dim hdrRow As Long
+    Dim colId As Long, colUUID As Long, colCuenta As Long, colTrans As Long
+    Dim colTotal As Long, colImporte As Long, colMonto As Long, colPrecio As Long, colCantidad As Long
+    Dim lastRow As Long, r As Long
+
+    Dim idv As String, uuidTxt As String, cuentaTxt As String, transTxt As String
+    Dim groupKey As String, tipoGrupo As String
+    Dim montoLinea As Double
+
+    If ws Is Nothing Then Exit Sub
+
+    hdrRow = V05_FindHeaderRowVentas(ws)
+    If hdrRow = 0 Then Exit Sub
+
+    colId = V05_FindHeaderCol(ws, hdrRow, Array("ID_venta", "id_venta"))
+    colUUID = V05_FindHeaderCol(ws, hdrRow, Array("UUID", "uuid"))
+    colCuenta = V05_FindHeaderCol(ws, hdrRow, Array("Cuenta bancaria"))
+    colTrans = V05_FindHeaderCol(ws, hdrRow, Array("numero_transaccion", "Número de transacción", "Numero de transaccion", "numero transaccion", "Numero transaccion", "Operacion relacionada"))
+
+    colTotal = V05_FindHeaderCol(ws, hdrRow, Array("Total", "total"))
+    colImporte = V05_FindHeaderCol(ws, hdrRow, Array("Importe", "importe"))
+    colMonto = V05_FindHeaderCol(ws, hdrRow, Array("Monto", "monto", "Monto total", "monto total", "Total venta", "total venta", "Valor de la operación", "Valor de la operacion"))
+    colPrecio = V05_FindHeaderCol(ws, hdrRow, Array("precio_unitario", "precio unitario", "Precio_Unitario", "Precio Unitario"))
+    colCantidad = V05_FindHeaderCol(ws, hdrRow, Array("Cantidad", "cantidad", "Qty", "qty", "Cant", "cant"))
+
+    If colId = 0 Then Exit Sub
+
+    lastRow = V05_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        idv = Trim$(CStr(ws.Cells(r, colId).Value))
+        If idv <> "" Then
+
+            uuidTxt = V05_GetCellText(ws, r, colUUID)
+            cuentaTxt = V05_GetCellText(ws, r, colCuenta)
+            transTxt = V05_GetCellText(ws, r, colTrans)
+            montoLinea = V05_GetVentaLineAmount(ws, r, colTotal, colImporte, colMonto, colPrecio, colCantidad)
+
+            If transTxt <> "" Then
+                groupKey = "T|" & V05_NormKey(transTxt)
+                tipoGrupo = "NUMERO_TRANSACCION"
+            Else
+                groupKey = "I|" & V05_NormKey(idv)
+                tipoGrupo = "ID_VENTA"
+            End If
+
+            If groupKey <> "" Then
+                If Not dictTipo.Exists(groupKey) Then
+                    dictTipo.Add groupKey, tipoGrupo
+                    dictTrans.Add groupKey, transTxt
+                    dictIds.Add groupKey, idv
+                    dictUUIDs.Add groupKey, uuidTxt
+                    dictMonto.Add groupKey, CDbl(0)
+                    dictCuenta.Add groupKey, cuentaTxt
+                Else
+                    dictIds(groupKey) = V05_AppendUniqueToken(CStr(dictIds(groupKey)), idv)
+                    dictUUIDs(groupKey) = V05_AppendUniqueToken(CStr(dictUUIDs(groupKey)), uuidTxt)
+
+                    If Trim$(CStr(dictCuenta(groupKey))) = "" And cuentaTxt <> "" Then
+                        dictCuenta(groupKey) = cuentaTxt
+                    End If
+                End If
+
+                dictMonto(groupKey) = CDbl(dictMonto(groupKey)) + montoLinea
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V05_ContarAbonosBanco( _
+    ByVal ws As Worksheet, _
+    ByRef total As Long, _
+    ByRef conId As Long, _
+    ByRef sinId As Long)
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range
+    Dim hdrRow As Long
+    Dim colCargo As Long, colAbono As Long, colId As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim idTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Sub
+
+    hdrRow = hdrDia.Row
+
+    Set hdrCargo = V05_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = V05_FindHeader(ws, hdrRow, Array("Abono"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Sub
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    colId = V05_FindHeaderCol(ws, hdrRow, Array("ID_venta", "id_venta"))
+
+    lastRow = V05_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        cargoVal = V05_ParseNumber(ws.Cells(r, colCargo).Value)
+        abonoVal = V05_ParseNumber(ws.Cells(r, colAbono).Value)
+
+        If abonoVal > 0 And cargoVal = 0 Then
+            total = total + 1
+            idTxt = V05_GetCellText(ws, r, colId)
+
+            If idTxt <> "" Then
+                conId = conId + 1
+            Else
+                sinId = sinId + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V05_ContarCFDI( _
+    ByVal ws As Worksheet, _
+    ByRef total As Long, _
+    ByRef conCuenta As Long, _
+    ByRef sinCuenta As Long, _
+    ByRef conId As Long, _
+    ByRef sinId As Long)
+
+    Dim hdrRow As Long
+    Dim colUUID As Long, colCuenta As Long, colId As Long
+    Dim lastRow As Long, r As Long
+    Dim uuidTxt As String, cuentaTxt As String, idTxt As String
+
+    If ws Is Nothing Then Exit Sub
+
+    hdrRow = V05_FindHeaderRowUUID(ws)
+    If hdrRow = 0 Then Exit Sub
+
+    colUUID = V05_FindHeaderCol(ws, hdrRow, Array("UUID", "uuid"))
+    colCuenta = V05_FindHeaderCol(ws, hdrRow, Array("Cuenta bancaria"))
+    colId = V05_FindHeaderCol(ws, hdrRow, Array("ID_venta", "id_venta"))
+
+    If colUUID = 0 Then Exit Sub
+
+    lastRow = V05_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        uuidTxt = V05_GetCellText(ws, r, colUUID)
+        If uuidTxt <> "" Then
+            total = total + 1
+
+            cuentaTxt = V05_GetCellText(ws, r, colCuenta)
+            idTxt = V05_GetCellText(ws, r, colId)
+
+            If cuentaTxt <> "" Then
+                conCuenta = conCuenta + 1
+            Else
+                sinCuenta = sinCuenta + 1
+            End If
+
+            If idTxt <> "" Then
+                conId = conId + 1
+            Else
+                sinId = sinId + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V05_ContarPagosI( _
+    ByVal ws As Worksheet, _
+    ByRef total As Long, _
+    ByRef conCuenta As Long, _
+    ByRef sinCuenta As Long, _
+    ByRef conId As Long, _
+    ByRef sinId As Long)
+
+    Dim hdrRow As Long
+    Dim colUUID As Long, colMother As Long, colCuenta As Long, colId As Long
+    Dim lastRow As Long, r As Long
+    Dim baseTxt As String, cuentaTxt As String, idTxt As String
+
+    If ws Is Nothing Then Exit Sub
+
+    hdrRow = V05_FindHeaderRowPagosI(ws)
+    If hdrRow = 0 Then Exit Sub
+
+    colUUID = V05_FindHeaderCol(ws, hdrRow, Array("UUID", "uuid"))
+    colMother = V05_FindHeaderCol(ws, hdrRow, Array("UUID Madre", "UUID MADRE", "UUID_MADRE"))
+    colCuenta = V05_FindHeaderCol(ws, hdrRow, Array("Cuenta bancaria"))
+    colId = V05_FindHeaderCol(ws, hdrRow, Array("ID_venta", "id_venta"))
+
+    lastRow = V05_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        baseTxt = ""
+        If colUUID > 0 Then baseTxt = V05_GetCellText(ws, r, colUUID)
+        If baseTxt = "" And colMother > 0 Then baseTxt = V05_GetCellText(ws, r, colMother)
+
+        If baseTxt <> "" Then
+            total = total + 1
+
+            cuentaTxt = V05_GetCellText(ws, r, colCuenta)
+            idTxt = V05_GetCellText(ws, r, colId)
+
+            If cuentaTxt <> "" Then
+                conCuenta = conCuenta + 1
+            Else
+                sinCuenta = sinCuenta + 1
+            End If
+
+            If idTxt <> "" Then
+                conId = conId + 1
+            Else
+                sinId = sinId + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Sub V05_AgregarDetalleVentasPendientes( _
+    ByVal ws As Worksheet, _
+    ByVal wsOut As Worksheet, _
+    ByRef outRow As Long)
+
+    Dim dictTipo As Object, dictTrans As Object, dictIds As Object, dictUUIDs As Object, dictMonto As Object, dictCuenta As Object
+    Dim k As Variant
+
+    Set dictTipo = CreateObject("Scripting.Dictionary")
+    Set dictTrans = CreateObject("Scripting.Dictionary")
+    Set dictIds = CreateObject("Scripting.Dictionary")
+    Set dictUUIDs = CreateObject("Scripting.Dictionary")
+    Set dictMonto = CreateObject("Scripting.Dictionary")
+    Set dictCuenta = CreateObject("Scripting.Dictionary")
+
+    V05_BuildVentasGroupingData ws, dictTipo, dictTrans, dictIds, dictUUIDs, dictMonto, dictCuenta
+
+    For Each k In dictTipo.Keys
+        If Trim$(CStr(dictCuenta(k))) = "" Then
+            wsOut.Cells(outRow, 1).Value = dictTipo(k)
+            wsOut.Cells(outRow, 2).Value = k
+            wsOut.Cells(outRow, 3).Value = dictTrans(k)
+            wsOut.Cells(outRow, 4).Value = dictIds(k)
+            wsOut.Cells(outRow, 5).Value = dictUUIDs(k)
+            wsOut.Cells(outRow, 6).Value = dictMonto(k)
+            wsOut.Cells(outRow, 7).Value = dictCuenta(k)
+            wsOut.Cells(outRow, 8).Value = "GRUPO SIN CUENTA BANCARIA"
+            outRow = outRow + 1
+        End If
+    Next k
+End Sub
+
+
+Private Sub V05_AgregarDetalleAbonosPendientes( _
+    ByVal ws As Worksheet, _
+    ByVal wsOut As Worksheet, _
+    ByRef outRow As Long)
+
+    Dim hdrDia As Range, hdrCargo As Range, hdrAbono As Range, hdrConcepto As Range
+    Dim hdrRow As Long
+    Dim colDia As Long, colCargo As Long, colAbono As Long, colConcepto As Long
+    Dim colId As Long, colObs As Long
+    Dim lastRow As Long, r As Long
+    Dim cargoVal As Double, abonoVal As Double
+    Dim idTxt As String, obsTxt As String
+
+    Set hdrDia = ws.Cells.Find(What:="Día", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    If hdrDia Is Nothing Then
+        Set hdrDia = ws.Cells.Find(What:="Dia", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=False)
+    End If
+    If hdrDia Is Nothing Then Exit Sub
+
+    hdrRow = hdrDia.Row
+    colDia = hdrDia.Column
+
+    Set hdrCargo = V05_FindHeader(ws, hdrRow, Array("Cargo"))
+    Set hdrAbono = V05_FindHeader(ws, hdrRow, Array("Abono"))
+    Set hdrConcepto = V05_FindHeader(ws, hdrRow, Array("Concepto / Referencia", "Concepto", "Referencia", "Concepto/Referencia"))
+
+    If hdrCargo Is Nothing Or hdrAbono Is Nothing Then Exit Sub
+
+    colCargo = hdrCargo.Column
+    colAbono = hdrAbono.Column
+    If Not hdrConcepto Is Nothing Then colConcepto = hdrConcepto.Column
+    colId = V05_FindHeaderCol(ws, hdrRow, Array("ID_venta", "id_venta"))
+    colObs = V05_FindHeaderCol(ws, hdrRow, Array("OBS"))
+
+    lastRow = V05_LastUsedRow(ws)
+    If lastRow <= hdrRow Then Exit Sub
+
+    For r = hdrRow + 1 To lastRow
+        cargoVal = V05_ParseNumber(ws.Cells(r, colCargo).Value)
+        abonoVal = V05_ParseNumber(ws.Cells(r, colAbono).Value)
+
+        If abonoVal > 0 And cargoVal = 0 Then
+            idTxt = V05_GetCellText(ws, r, colId)
+            obsTxt = V05_GetCellText(ws, r, colObs)
+
+            If idTxt = "" Then
+                wsOut.Cells(outRow, 1).Value = ws.Name
+                wsOut.Cells(outRow, 2).Value = r
+                wsOut.Cells(outRow, 3).Value = ws.Cells(r, colDia).Value
+                If colConcepto > 0 Then wsOut.Cells(outRow, 4).Value = ws.Cells(r, colConcepto).Value
+                wsOut.Cells(outRow, 5).Value = abonoVal
+                wsOut.Cells(outRow, 6).Value = idTxt
+                wsOut.Cells(outRow, 7).Value = obsTxt
+                wsOut.Cells(outRow, 8).Value = "ABONO SIN MATCH EN VENTAS_SCOOTERZONE"
+                outRow = outRow + 1
+            End If
+        End If
+    Next r
+End Sub
+
+
+Private Function V05_GetVentaLineAmount( _
+    ByVal ws As Worksheet, _
+    ByVal rowNum As Long, _
+    ByVal colVTotal As Long, _
+    ByVal colVImporte As Long, _
+    ByVal colVMonto As Long, _
+    ByVal colVPrecio As Long, _
+    ByVal colVCantidad As Long) As Double
+
+    Dim totalVal As Double
+    Dim importeVal As Double
+    Dim montoVal As Double
+    Dim precioVal As Double
+    Dim cantidadVal As Double
+
+    If colVTotal > 0 Then
+        totalVal = V05_ParseNumber(ws.Cells(rowNum, colVTotal).Value)
+        If totalVal <> 0 Then
+            V05_GetVentaLineAmount = totalVal
+            Exit Function
+        End If
+    End If
+
+    If colVImporte > 0 Then
+        importeVal = V05_ParseNumber(ws.Cells(rowNum, colVImporte).Value)
+        If importeVal <> 0 Then
+            V05_GetVentaLineAmount = importeVal
+            Exit Function
+        End If
+    End If
+
+    If colVMonto > 0 Then
+        montoVal = V05_ParseNumber(ws.Cells(rowNum, colVMonto).Value)
+        If montoVal <> 0 Then
+            V05_GetVentaLineAmount = montoVal
+            Exit Function
+        End If
+    End If
+
+    If colVPrecio > 0 Then
+        precioVal = V05_ParseNumber(ws.Cells(rowNum, colVPrecio).Value)
+
+        If colVCantidad > 0 Then
+            cantidadVal = V05_ParseNumber(ws.Cells(rowNum, colVCantidad).Value)
+            If cantidadVal = 0 Then cantidadVal = 1
+            V05_GetVentaLineAmount = precioVal * cantidadVal
+        Else
+            V05_GetVentaLineAmount = precioVal
+        End If
+    End If
+End Function
+
+
+Private Function V05_AppendUniqueToken(ByVal existingList As String, ByVal token As String) As String
+    Dim arr As Variant
+    Dim i As Long
+    Dim cleanToken As String
+
+    cleanToken = Trim$(token)
+    If cleanToken = "" Then
+        V05_AppendUniqueToken = existingList
+        Exit Function
+    End If
+
+    If Trim$(existingList) = "" Then
+        V05_AppendUniqueToken = cleanToken
+        Exit Function
+    End If
+
+    arr = Split(existingList, " | ")
+    For i = LBound(arr) To UBound(arr)
+        If StrComp(Trim$(CStr(arr(i))), cleanToken, vbTextCompare) = 0 Then
+            V05_AppendUniqueToken = existingList
+            Exit Function
+        End If
+    Next i
+
+    V05_AppendUniqueToken = existingList & " | " & cleanToken
+End Function
+
+
+Private Function V05_GetCellText(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal colNum As Long) As String
+    If ws Is Nothing Then Exit Function
+    If colNum <= 0 Then Exit Function
+    V05_GetCellText = Trim$(CStr(ws.Cells(rowNum, colNum).Value))
+End Function
+
+
+Private Function V05_FindPagosISheet() As Worksheet
+    Dim arr, i As Long
+    arr = Array("PAGOS I", "COMPL. I", "COMPL I", "PAGOS_I", "COMPL_I")
+
+    For i = LBound(arr) To UBound(arr)
+        Set V05_FindPagosISheet = V05_GetSheet(CStr(arr(i)))
+        If Not V05_FindPagosISheet Is Nothing Then Exit Function
+    Next i
+End Function
+
+
+Private Function V05_FindHeaderRowPagosI(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 15
+        If V05_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Or _
+           V05_FindHeaderCol(ws, r, Array("UUID Madre", "UUID MADRE", "UUID_MADRE")) > 0 Then
+            V05_FindHeaderRowPagosI = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function V05_FindHeaderRowVentas(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If V05_FindHeaderCol(ws, r, Array("ID_venta", "id_venta")) > 0 And _
+           V05_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Then
+            V05_FindHeaderRowVentas = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function V05_FindHeaderRowUUID(ByVal ws As Worksheet) As Long
+    Dim r As Long
+
+    For r = 1 To 10
+        If V05_FindHeaderCol(ws, r, Array("UUID", "uuid")) > 0 Then
+            V05_FindHeaderRowUUID = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+Private Function V05_GetSheet(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set V05_GetSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+
+Private Function V05_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headers As Variant) As Range
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim txt As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        txt = V05_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headers) To UBound(headers)
+            If txt = V05_NormHeader(CStr(headers(i))) Then
+                Set V05_FindHeader = ws.Cells(hdrRow, c)
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function V05_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal headerNames As Variant) As Long
+    Dim c As Long, i As Long
+    Dim lastCol As Long
+    Dim cellText As String
+
+    lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        cellText = V05_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
+        For i = LBound(headerNames) To UBound(headerNames)
+            If cellText = V05_NormHeader(CStr(headerNames(i))) Then
+                V05_FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+End Function
+
+
+Private Function V05_NormHeader(ByVal s As String) As String
+    s = UCase$(Trim$(s))
+    s = Replace(s, "Á", "A")
+    s = Replace(s, "É", "E")
+    s = Replace(s, "Í", "I")
+    s = Replace(s, "Ó", "O")
+    s = Replace(s, "Ú", "U")
+    s = Replace(s, "Ü", "U")
+    s = Replace(s, ".", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, "/", "")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    V05_NormHeader = s
+End Function
+
+
+Private Function V05_LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+
+    Set c = ws.Cells.Find(What:="*", _
+                          After:=ws.Range("A1"), _
+                          LookIn:=xlFormulas, _
+                          LookAt:=xlPart, _
+                          SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious, _
+                          MatchCase:=False)
+
+    If c Is Nothing Then
+        V05_LastUsedRow = 0
+    Else
+        V05_LastUsedRow = c.Row
+    End If
+End Function
+
+
+Private Function V05_ParseNumber(ByVal v As Variant) As Double
+    Dim s As String
+    Dim neg As Boolean
+
+    On Error GoTo ErrHandler
+
+    If IsNumeric(v) Then
+        V05_ParseNumber = CDbl(v)
+        Exit Function
+    End If
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, "$", "")
+    s = Replace(s, ",", "")
+    s = Replace(s, " ", "")
+
+    If Left$(s, 1) = "(" And Right$(s, 1) = ")" Then
+        neg = True
+        s = Replace(s, "(", "")
+        s = Replace(s, ")", "")
+    End If
+
+    If IsNumeric(s) Then
+        V05_ParseNumber = CDbl(s)
+        If neg Then V05_ParseNumber = -V05_ParseNumber
+    End If
+    Exit Function
+
+ErrHandler:
+    V05_ParseNumber = 0
+End Function
+
+
+Private Function V05_EsHojaNumerica(ByVal nombreHoja As String) As Boolean
+    V05_EsHojaNumerica = IsNumeric(nombreHoja)
+End Function
+
+
+Private Function V05_SheetHasText(ByVal ws As Worksheet, ByVal pattern As String) As Boolean
+    Dim f As Range
+    Set f = ws.Cells.Find(What:=pattern, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    V05_SheetHasText = Not (f Is Nothing)
+End Function
+
+
+Private Function V05_NormKey(ByVal v As Variant) As String
+    Dim s As String
+
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    s = UCase$(s)
+    s = Replace(s, Chr(160), "")
+    s = Replace(s, " ", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "_", "")
+    s = Replace(s, ".", "")
+
+    V05_NormKey = s
+End Function
+
+
+Private Sub V05_DeleteSheetIfExists(ByVal sheetName As String)
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+
