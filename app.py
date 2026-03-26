@@ -268,14 +268,20 @@ elif eleccion == "🏦 BANCOS":
                      saldo_final = ultimo_saldo.iloc[0]
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🔴 Total Cargos", f"${tot_cargo:,.2f}")
-            m2.metric("🟢 Total Abonos", f"${tot_abono:,.2f}")
+            m1.metric("🟢 Total Abonos", f"${tot_abono:,.2f}")
+            m2.metric("🔴 Total Cargos", f"${tot_cargo:,.2f}")
             m3.metric("💰 Saldo Final", f"${saldo_final:,.2f}")
             m4.metric("📝 Movimientos", len(df_filtrado))
 
             # --- UI: TABLA DE DATOS ---
             # Quitar columna auxiliar FECHA_DT
             df_mostrar = df_filtrado.drop(columns=['FECHA_DT']) if 'FECHA_DT' in df_filtrado.columns else df_filtrado
+
+            # Reordenar columnas a 10 columnas estándar si existen
+            columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
+            cols_existentes = [c for c in columnas_orden if c in df_mostrar.columns]
+            otras_cols = [c for c in df_mostrar.columns if c not in cols_existentes]
+            df_mostrar = df_mostrar[cols_existentes + otras_cols]
 
             # Asegurar que las fechas se vean bonitas
             if 'FECHA' in df_mostrar.columns:

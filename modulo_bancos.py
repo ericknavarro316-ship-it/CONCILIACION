@@ -67,6 +67,35 @@ def limpiar_modulo_bancos(ruta_archivo):
         if fila_encabezado_est != -1:
             df_est_mp = pd.read_excel(xls, sheet_name=hoja_est_mp, header=fila_encabezado_est)
             df_est_mp = df_est_mp.dropna(subset=['RELEASE_DATE'])
+
+            # Map columns to standard
+            cols_map_mp_est = {
+                'RELEASE_DATE': 'FECHA',
+                'DESCRIPTION': 'CONCEPTO',
+                'REFERENCE_ID': 'REFERENCE',
+                'TRANSACTION_NET_AMOUNT': 'MONTO', # Will be split to CARGO/ABONO later if needed
+                'PARTIAL_BALANCE': 'SALDO'
+            }
+            # Fallbacks for variations
+            for col in df_est_mp.columns:
+                col_upper = str(col).upper()
+                if 'DATE' in col_upper and 'RELEASE' not in col_upper and 'FECHA' not in cols_map_mp_est.values():
+                    cols_map_mp_est[col] = 'FECHA'
+
+            df_est_mp = df_est_mp.rename(columns=cols_map_mp_est)
+
+            if 'MONTO' in df_est_mp.columns:
+                df_est_mp['MONTO'] = pd.to_numeric(df_est_mp['MONTO'], errors='coerce')
+                df_est_mp['ABONO'] = df_est_mp['MONTO'].apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
+                df_est_mp['CARGO'] = df_est_mp['MONTO'].apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
+
+            for col_req in ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
+                if col_req not in df_est_mp.columns:
+                    df_est_mp[col_req] = None
+
+            columnas_finales = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
+            df_est_mp = df_est_mp[columnas_finales]
+
             resultados_bancos['MP_ESTADO_CUENTA'] = df_est_mp
             print(f"  ✅ EST MP limpio: {len(df_est_mp)} movimientos.")
             hojas_procesadas.append(hoja_est_mp)
@@ -104,11 +133,34 @@ def limpiar_modulo_bancos(ruta_archivo):
                 df_mp = df_mp.dropna(subset=[col_id])
                 despues = len(df_mp)
                 print(f"  ✅ MP detalle limpio: Usando columna '{col_id}'. Eliminados {antes-despues} duplicados. Quedan {despues}.")
-                resultados_bancos['MP_DETALLE'] = df_mp
             else:
                  print(f"  ⚠️ No se encontró columna ID válida para quitar duplicados. Columnas son: {df_mp.columns.tolist()}")
-                 # Guardar de todos modos
-                 resultados_bancos['MP_DETALLE'] = df_mp
+
+            # Map columns to standard for MP DETALLE
+            cols_map_mp_det = {
+                'Fecha de creación': 'FECHA',
+                'Detalle': 'CONCEPTO',
+                'Operación relacionada': 'REFERENCE', # O Número del movimiento
+                'Monto (MXN)': 'MONTO',
+            }
+            if 'Número de la operación' in df_mp.columns and 'REFERENCE' not in cols_map_mp_det.values():
+                cols_map_mp_det['Número de la operación'] = 'REFERENCE'
+
+            df_mp = df_mp.rename(columns=cols_map_mp_det)
+
+            if 'MONTO' in df_mp.columns:
+                df_mp['MONTO'] = pd.to_numeric(df_mp['MONTO'], errors='coerce')
+                df_mp['ABONO'] = df_mp['MONTO'].apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
+                df_mp['CARGO'] = df_mp['MONTO'].apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
+
+            for col_req in ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
+                if col_req not in df_mp.columns:
+                    df_mp[col_req] = None
+
+            columnas_finales = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
+            df_mp = df_mp[columnas_finales]
+
+            resultados_bancos['MP_DETALLE'] = df_mp
             hojas_procesadas.append(hoja_mp_detalle)
         else:
             print(f"  ⚠️ No se encontraron encabezados válidos en la hoja MP. Omitiendo.")
@@ -170,9 +222,18 @@ def limpiar_modulo_bancos(ruta_archivo):
 
             df_banco = df_banco.rename(columns=cols_map)
 
+            if 'DESCRIPCION' in df_banco.columns and 'CONCEPTO' not in df_banco.columns:
+                df_banco = df_banco.rename(columns={'DESCRIPCION': 'CONCEPTO'})
+
+            # Asegurar las 10 columnas obligatorias
+            for col_req in ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
+                if col_req not in df_banco.columns:
+                    df_banco[col_req] = None
+
             # Dejar solo las columnas estandarizadas (y eliminar filas totalmente vacías)
-            columnas_finales = [c for c in ['FECHA', 'DESCRIPCION', 'CARGO', 'ABONO', 'SALDO'] if c in df_banco.columns]
-            df_banco = df_banco[columnas_finales].dropna(how='all')
+            columnas_finales = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
+            df_banco = df_banco.dropna(how='all', subset=['FECHA', 'CONCEPTO', 'CARGO', 'ABONO', 'SALDO'])
+            df_banco = df_banco[columnas_finales]
 
             # Obtener el nombre de la cuenta usando la función auxiliar dinámica
             nombre_cuenta = identificar_banco(hoja, nombre_archivo)
