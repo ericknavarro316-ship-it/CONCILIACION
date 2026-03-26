@@ -162,48 +162,43 @@ elif eleccion == "🏦 BANCOS":
     if not tablas:
         st.warning("La BD está vacía o no hay bancos procesados.")
     else:
-        # Clasificar tablas por banco
-        tablas_bbva = [t for t in tablas if "BBVA" in t.upper()]
-        tablas_mp = [t for t in tablas if "MP" in t.upper() or "MERCADO PAGO" in t.upper() or "MERCADOPAGO" in t.upper()]
-        tablas_santander = [t for t in tablas if "SANTANDER" in t.upper()]
+        # Agrupar dinámicamente las tablas por el nombre del banco
+        bancos_dict = {}
+        for tabla in tablas:
+            # Formato esperado: BANCO_NOMBREBANCO_CUENTA o BANCO_NOMBREBANCO
+            partes = tabla.split('_')
 
-        # Cualquier otra tabla que no sea de los 3 anteriores
-        tablas_otros = [t for t in tablas if t not in tablas_bbva and t not in tablas_mp and t not in tablas_santander]
-
-        # Crear pestañas para cada banco
-        tabs = st.tabs(["BBVA", "Mercado Pago", "Santander", "Otros"])
-
-        with tabs[0]:
-            st.subheader("Cuentas BBVA")
-            if tablas_bbva:
-                cuenta_bbva = st.selectbox("Selecciona cuenta BBVA:", tablas_bbva, key="sel_bbva")
-                st.dataframe(get_df_from_sql(cuenta_bbva), use_container_width=True)
+            # Normalizar nombres comunes si es necesario
+            if "MP" in tabla.upper() or "MERCADO PAGO" in tabla.upper() or "MERCADOPAGO" in tabla.upper():
+                banco_key = "Mercado Pago"
+            elif len(partes) >= 2:
+                # Extraer la segunda parte (el nombre del banco), por ejemplo "BBVA" de "BANCO_BBVA_123"
+                banco_key = partes[1].upper()
             else:
-                st.info("No hay datos de BBVA cargados.")
+                banco_key = "Otros"
 
-        with tabs[1]:
-            st.subheader("Cuentas Mercado Pago")
-            if tablas_mp:
-                cuenta_mp = st.selectbox("Selecciona cuenta Mercado Pago:", tablas_mp, key="sel_mp")
-                st.dataframe(get_df_from_sql(cuenta_mp), use_container_width=True)
-            else:
-                st.info("No hay datos de Mercado Pago cargados.")
+            if banco_key not in bancos_dict:
+                bancos_dict[banco_key] = []
+            bancos_dict[banco_key].append(tabla)
 
-        with tabs[2]:
-            st.subheader("Cuentas Santander")
-            if tablas_santander:
-                cuenta_santander = st.selectbox("Selecciona cuenta Santander:", tablas_santander, key="sel_santander")
-                st.dataframe(get_df_from_sql(cuenta_santander), use_container_width=True)
-            else:
-                st.info("No hay datos de Santander cargados.")
+        # Ordenar las llaves para que se vea mejor (opcional: poner "Otros" al final si existiera)
+        nombres_bancos = sorted(list(bancos_dict.keys()))
+        if "Otros" in nombres_bancos:
+            nombres_bancos.remove("Otros")
+            nombres_bancos.append("Otros")
 
-        with tabs[3]:
-            st.subheader("Otras Cuentas")
-            if tablas_otros:
-                cuenta_otros = st.selectbox("Selecciona otra cuenta:", tablas_otros, key="sel_otros")
-                st.dataframe(get_df_from_sql(cuenta_otros), use_container_width=True)
-            else:
-                st.info("No hay otras cuentas cargadas.")
+        # Crear pestañas dinámicas
+        tabs = st.tabs(nombres_bancos)
+
+        # Llenar cada pestaña dinámicamente
+        for i, nombre_banco in enumerate(nombres_bancos):
+            with tabs[i]:
+                st.subheader(f"Cuentas {nombre_banco}")
+                tablas_banco = bancos_dict[nombre_banco]
+
+                # Usar selectbox para elegir la tabla específica de ese banco
+                cuenta_sel = st.selectbox(f"Selecciona cuenta:", tablas_banco, key=f"sel_{nombre_banco}")
+                st.dataframe(get_df_from_sql(cuenta_sel), use_container_width=True)
 
 elif eleccion == "📄 CFDI (Facturas)":
     st.title("📄 Módulo CFDI")
