@@ -204,13 +204,30 @@ Private Function B02_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByV
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim txt As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headers) To UBound(headers))
+    For i = LBound(headers) To UBound(headers)
+        normHeaders(i) = B02_NormalizeHeader(CStr(headers(i)))
+    Next i
 
     For c = 1 To lastCol
-        txt = B02_NormalizeHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headers) To UBound(headers)
-            If txt = B02_NormalizeHeader(CStr(headers(i))) Then
+        txt = B02_NormalizeHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If txt = normHeaders(i) Then
                 Set B02_FindHeader = ws.Cells(hdrRow, c)
                 Exit Function
             End If
@@ -547,13 +564,30 @@ Private Function O02_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, 
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim cellText As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headerNames) To UBound(headerNames))
+    For i = LBound(headerNames) To UBound(headerNames)
+        normHeaders(i) = O02_NormHeader(CStr(headerNames(i)))
+    Next i
 
     For c = 1 To lastCol
-        cellText = O02_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headerNames) To UBound(headerNames)
-            If cellText = O02_NormHeader(CStr(headerNames(i))) Then
+        cellText = O02_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If cellText = normHeaders(i) Then
                 O02_FindHeaderCol = c
                 Exit Function
             End If
@@ -826,13 +860,30 @@ Private Function O03_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, 
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim cellText As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headerNames) To UBound(headerNames))
+    For i = LBound(headerNames) To UBound(headerNames)
+        normHeaders(i) = O03_NormHeader(CStr(headerNames(i)))
+    Next i
 
     For c = 1 To lastCol
-        cellText = O03_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headerNames) To UBound(headerNames)
-            If cellText = O03_NormHeader(CStr(headerNames(i))) Then
+        cellText = O03_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If cellText = normHeaders(i) Then
                 O03_FindHeaderCol = c
                 Exit Function
             End If
@@ -1137,13 +1188,30 @@ Private Function O04_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, 
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim cellText As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headerNames) To UBound(headerNames))
+    For i = LBound(headerNames) To UBound(headerNames)
+        normHeaders(i) = O04_NormHeader(CStr(headerNames(i)))
+    Next i
 
     For c = 1 To lastCol
-        cellText = O04_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headerNames) To UBound(headerNames)
-            If cellText = O04_NormHeader(CStr(headerNames(i))) Then
+        cellText = O04_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If cellText = normHeaders(i) Then
                 O04_FindHeaderCol = c
                 Exit Function
             End If
@@ -1605,13 +1673,30 @@ Private Function O06_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByV
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim txt As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headers) To UBound(headers))
+    For i = LBound(headers) To UBound(headers)
+        normHeaders(i) = O06_NormHeader(CStr(headers(i)))
+    Next i
 
     For c = 1 To lastCol
-        txt = O06_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headers) To UBound(headers)
-            If txt = O06_NormHeader(CStr(headers(i))) Then
+        txt = O06_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If txt = normHeaders(i) Then
                 Set O06_FindHeader = ws.Cells(hdrRow, c)
                 Exit Function
             End If
@@ -1624,13 +1709,30 @@ Private Function O06_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, 
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim cellText As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headerNames) To UBound(headerNames))
+    For i = LBound(headerNames) To UBound(headerNames)
+        normHeaders(i) = O06_NormHeader(CStr(headerNames(i)))
+    Next i
 
     For c = 1 To lastCol
-        cellText = O06_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headerNames) To UBound(headerNames)
-            If cellText = O06_NormHeader(CStr(headerNames(i))) Then
+        cellText = O06_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If cellText = normHeaders(i) Then
                 O06_FindHeaderCol = c
                 Exit Function
             End If
@@ -2251,13 +2353,30 @@ Private Function O08_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByV
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim txt As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headers) To UBound(headers))
+    For i = LBound(headers) To UBound(headers)
+        normHeaders(i) = O08_NormHeader(CStr(headers(i)))
+    Next i
 
     For c = 1 To lastCol
-        txt = O08_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headers) To UBound(headers)
-            If txt = O08_NormHeader(CStr(headers(i))) Then
+        txt = O08_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If txt = normHeaders(i) Then
                 Set O08_FindHeader = ws.Cells(hdrRow, c)
                 Exit Function
             End If
@@ -2270,13 +2389,30 @@ Private Function O08_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, 
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim cellText As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headerNames) To UBound(headerNames))
+    For i = LBound(headerNames) To UBound(headerNames)
+        normHeaders(i) = O08_NormHeader(CStr(headerNames(i)))
+    Next i
 
     For c = 1 To lastCol
-        cellText = O08_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headerNames) To UBound(headerNames)
-            If cellText = O08_NormHeader(CStr(headerNames(i))) Then
+        cellText = O08_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If cellText = normHeaders(i) Then
                 O08_FindHeaderCol = c
                 Exit Function
             End If
@@ -2979,13 +3115,30 @@ Private Function O09_FindHeader(ByVal ws As Worksheet, ByVal hdrRow As Long, ByV
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim txt As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headers) To UBound(headers))
+    For i = LBound(headers) To UBound(headers)
+        normHeaders(i) = O09_NormHeader(CStr(headers(i)))
+    Next i
 
     For c = 1 To lastCol
-        txt = O09_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headers) To UBound(headers)
-            If txt = O09_NormHeader(CStr(headers(i))) Then
+        txt = O09_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If txt = normHeaders(i) Then
                 Set O09_FindHeader = ws.Cells(hdrRow, c)
                 Exit Function
             End If
@@ -2998,13 +3151,30 @@ Private Function O09_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, 
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim cellText As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headerNames) To UBound(headerNames))
+    For i = LBound(headerNames) To UBound(headerNames)
+        normHeaders(i) = O09_NormHeader(CStr(headerNames(i)))
+    Next i
 
     For c = 1 To lastCol
-        cellText = O09_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headerNames) To UBound(headerNames)
-            If cellText = O09_NormHeader(CStr(headerNames(i))) Then
+        cellText = O09_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If cellText = normHeaders(i) Then
                 O09_FindHeaderCol = c
                 Exit Function
             End If

@@ -201,13 +201,30 @@ Private Function O02_FindHeaderCol(ByVal ws As Worksheet, ByVal hdrRow As Long, 
     Dim c As Long, i As Long
     Dim lastCol As Long
     Dim cellText As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
 
     lastCol = ws.Cells(hdrRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastCol = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(hdrRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(hdrRow, 1), ws.Cells(hdrRow, lastCol)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headerNames) To UBound(headerNames))
+    For i = LBound(headerNames) To UBound(headerNames)
+        normHeaders(i) = O02_NormHeader(CStr(headerNames(i)))
+    Next i
 
     For c = 1 To lastCol
-        cellText = O02_NormHeader(CStr(ws.Cells(hdrRow, c).Value))
-        For i = LBound(headerNames) To UBound(headerNames)
-            If cellText = O02_NormHeader(CStr(headerNames(i))) Then
+        cellText = O02_NormHeader(CStr(headerValues(1, c)))
+        For i = LBound(normHeaders) To UBound(normHeaders)
+            If cellText = normHeaders(i) Then
                 O02_FindHeaderCol = c
                 Exit Function
             End If
@@ -268,4 +285,3 @@ Private Function O02_NormKey(ByVal v As Variant) As String
 
     O02_NormKey = s
 End Function
-
