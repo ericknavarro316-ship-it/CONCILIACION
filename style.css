@@ -23,6 +23,12 @@ h1, h2, h3 {
 [data-testid="stMetricValue"] {
     color: #27ae60 !important; /* Verde profesional para métricas */
     font-weight: 700;
+    font-size: 1.8rem !important; /* Ajuste para evitar que se corte el texto en pantallas pequeñas */
+}
+
+/* Reducir el tamaño de la etiqueta superior en las métricas */
+[data-testid="stMetricLabel"] {
+    font-size: 0.9rem !important;
 }
 
 .stButton > button {

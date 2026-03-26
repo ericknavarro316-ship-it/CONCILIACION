@@ -21,7 +21,7 @@ from export_excel import generate_final_report
 from engine_egresos import run_egresos_crosscheck
 from pdf_reader import parse_bank_pdf
 
-st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon="🏢")
+st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon="🏢", initial_sidebar_state="collapsed")
 
 # 1. AUTENTICACIÓN
 with open("style.css") as f:
@@ -220,15 +220,26 @@ elif eleccion == "🏦 BANCOS":
                 max_date = df['FECHA_DT'].max() if not pd.isna(df['FECHA_DT'].max()) else None
 
                 if min_date and max_date:
-                    rango_fechas = st.date_input(
-                        "Rango de Fechas (opcional):",
-                        value=(),
-                        min_value=min_date.date(),
-                        max_value=max_date.date(),
-                        key=f"rango_{key_prefix}"
-                    )
+                    col2_1, col2_2 = st.columns(2)
+                    with col2_1:
+                        fecha_desde = st.date_input(
+                            "Desde:",
+                            value=None,
+                            min_value=min_date.date(),
+                            max_value=max_date.date(),
+                            key=f"desde_{key_prefix}"
+                        )
+                    with col2_2:
+                        fecha_hasta = st.date_input(
+                            "Hasta:",
+                            value=None,
+                            min_value=min_date.date(),
+                            max_value=max_date.date(),
+                            key=f"hasta_{key_prefix}"
+                        )
                 else:
-                    rango_fechas = ()
+                    fecha_desde = None
+                    fecha_hasta = None
                     st.write("Sin fechas válidas")
 
             with col3:
@@ -241,11 +252,11 @@ elif eleccion == "🏦 BANCOS":
             if mes_sel != "Todos":
                 df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.strftime('%Y-%m') == mes_sel]
 
-            # Filtro por Rango (si el usuario seleccionó dos fechas)
-            if len(rango_fechas) == 2:
-                start_date, end_date = rango_fechas
-                mask = (df_filtrado['FECHA_DT'].dt.date >= start_date) & (df_filtrado['FECHA_DT'].dt.date <= end_date)
-                df_filtrado = df_filtrado.loc[mask]
+            # Filtro Rango Fechas
+            if fecha_desde is not None:
+                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.date >= fecha_desde]
+            if fecha_hasta is not None:
+                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.date <= fecha_hasta]
 
             # Filtro por Búsqueda (Texto Libre)
             if busqueda:
@@ -283,6 +294,10 @@ elif eleccion == "🏦 BANCOS":
             otras_cols = [c for c in df_mostrar.columns if c not in cols_existentes]
             df_mostrar = df_mostrar[cols_existentes + otras_cols]
 
+            # Reemplazar explícitamente "None" y nulls con cadena vacía para limpiar la UI
+            df_mostrar = df_mostrar.fillna("")
+            df_mostrar = df_mostrar.replace("None", "")
+
             # Asegurar que las fechas se vean bonitas
             if 'FECHA' in df_mostrar.columns:
                 df_mostrar['FECHA'] = pd.to_datetime(df_mostrar['FECHA'], errors='coerce').dt.strftime('%d/%m/%Y')
@@ -292,6 +307,9 @@ elif eleccion == "🏦 BANCOS":
                 if col_moneda in df_mostrar.columns:
                     # Convertir a float y luego a string formateado
                     df_mostrar[col_moneda] = pd.to_numeric(df_mostrar[col_moneda], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+
+            # Reemplazar el literal 'NaT' por cadena vacía
+            df_mostrar = df_mostrar.replace("NaT", "")
 
             # Mostrar dataframe estilizado
             st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
