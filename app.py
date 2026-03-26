@@ -75,10 +75,12 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                 with st.spinner("Procesando Bancos..."):
                     bancos = limpiar_modulo_bancos(archivo_subido)
                     for nombre_cuenta, df_banco in bancos.items():
-                        # We are standardizing names now to either BBVA_{something} or MP...
-                        # By saving directly as BANCO_{nombre_cuenta}, we get unified names
-                        # across both consolidated and individual bank uploads.
-                        save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
+                        # MP_DETALLE is an auxiliary detail table, not a standard bank statement.
+                        # We save it without the BANCO_ prefix to isolate it from the "BANCOS" UI.
+                        if nombre_cuenta == "MP_DETALLE":
+                            save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                        else:
+                            save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
 
                 with st.spinner("Procesando CFDI..."):
                     cfdis = limpiar_modulo_cfdi(archivo_subido)
@@ -107,7 +109,10 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                     with st.spinner(f"Procesando {archivo.name}..."):
                         bancos = limpiar_modulo_bancos(archivo)
                         for nombre_cuenta, df_banco in bancos.items():
-                            save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
+                            if nombre_cuenta == "MP_DETALLE":
+                                save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                            else:
+                                save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
                 procesados = True
 
             if archivo_banco_pdf:

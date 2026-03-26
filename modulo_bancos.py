@@ -42,10 +42,24 @@ def limpiar_modulo_bancos(ruta_archivo):
         if 'bbva' in nombre_archivo_lower:
              return f"BBVA_{hoja_upper}"
 
-        # Fallback genérico: Usamos la primera palabra del archivo como "banco" si no sabemos qué es
-        palabras_archivo = nombre_archivo_lower.replace('.xlsx', '').replace('.xls', '').replace('.csv', '').split('_')
-        primer_palabra = palabras_archivo[0].upper() if palabras_archivo else "DESCONOCIDO"
-        return f"{primer_palabra}_{hoja_upper}"
+        # REGLA ESTRICTA SUGERIDA POR EL USUARIO:
+        # Si la hoja empieza con "BANCO " o "BANCO_", la procesamos directamente.
+        # Ej: "BANCO BANAMEX 1234" -> "BANAMEX_1234"
+        if hoja_upper.startswith('BANCO '):
+             partes = hoja_upper.replace('BANCO ', '').split(' ', 1)
+             if len(partes) == 2:
+                  return f"{partes[0]}_{partes[1]}"
+             return f"OTROS_{hoja_upper.replace('BANCO ', '')}"
+
+        if hoja_upper.startswith('BANCO_'):
+             partes = hoja_upper.replace('BANCO_', '').split('_', 1)
+             if len(partes) == 2:
+                  return f"{partes[0]}_{partes[1]}"
+             return f"OTROS_{hoja_upper.replace('BANCO_', '')}"
+
+        # FALLBACK: En lugar de usar el nombre de archivo (que genera pestañas gigantes/feas),
+        # lo marcamos como OTROS_NombreHoja si no coincide con los patrones esperados.
+        return f"OTROS_{hoja_upper}"
 
     # ==========================================
     # 1. MERCADO PAGO (EST MP y MP) - Procesar primero por ser formato único
@@ -71,20 +85,31 @@ def limpiar_modulo_bancos(ruta_archivo):
             # Map columns to standard
             cols_map_mp_est = {
                 'RELEASE_DATE': 'FECHA',
-                'DESCRIPTION': 'CONCEPTO',
                 'REFERENCE_ID': 'REFERENCE',
                 'TRANSACTION_NET_AMOUNT': 'MONTO', # Will be split to CARGO/ABONO later if needed
                 'PARTIAL_BALANCE': 'SALDO'
             }
+
+            # Map CONCEPTO based on available columns to avoid duplicates
+            if 'TRANSACTION_TYPE' in df_est_mp.columns:
+                cols_map_mp_est['TRANSACTION_TYPE'] = 'CONCEPTO'
+            elif 'DESCRIPTION' in df_est_mp.columns:
+                cols_map_mp_est['DESCRIPTION'] = 'CONCEPTO'
+
             # Fallbacks for variations
             for col in df_est_mp.columns:
                 col_upper = str(col).upper()
                 if 'DATE' in col_upper and 'RELEASE' not in col_upper and 'FECHA' not in cols_map_mp_est.values():
                     cols_map_mp_est[col] = 'FECHA'
 
+            # Use dictionary renaming, resolving mapping carefully
             df_est_mp = df_est_mp.rename(columns=cols_map_mp_est)
 
             if 'MONTO' in df_est_mp.columns:
+                # The user noted MONTO (TRANSACTION_NET_AMOUNT) might come as text with commas like '-115,000.00'
+                if df_est_mp['MONTO'].dtype == object:
+                    df_est_mp['MONTO'] = df_est_mp['MONTO'].astype(str).str.replace(',', '', regex=False)
+
                 df_est_mp['MONTO'] = pd.to_numeric(df_est_mp['MONTO'], errors='coerce')
                 df_est_mp['ABONO'] = df_est_mp['MONTO'].apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
                 df_est_mp['CARGO'] = df_est_mp['MONTO'].apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
@@ -140,10 +165,13 @@ def limpiar_modulo_bancos(ruta_archivo):
             cols_map_mp_det = {
                 'Fecha de creación': 'FECHA',
                 'Detalle': 'CONCEPTO',
-                'Operación relacionada': 'REFERENCE', # O Número del movimiento
                 'Monto (MXN)': 'MONTO',
             }
-            if 'Número de la operación' in df_mp.columns and 'REFERENCE' not in cols_map_mp_det.values():
+
+            # Map REFERENCE based on available columns to avoid duplicates
+            if 'Operación relacionada' in df_mp.columns:
+                cols_map_mp_det['Operación relacionada'] = 'REFERENCE'
+            elif 'Número de la operación' in df_mp.columns:
                 cols_map_mp_det['Número de la operación'] = 'REFERENCE'
 
             df_mp = df_mp.rename(columns=cols_map_mp_det)
@@ -211,8 +239,10 @@ def limpiar_modulo_bancos(ruta_archivo):
                 col_str = str(col).strip().lower()
                 if 'día' in col_str or 'dia' in col_str or 'fecha' in col_str:
                     cols_map[col] = 'FECHA'
-                elif 'concepto' in col_str or 'referencia' in col_str or 'descripción' in col_str or 'descripcion' in col_str:
-                    cols_map[col] = 'DESCRIPCION'
+                elif 'referencia' in col_str:
+                    cols_map[col] = 'REFERENCE'
+                elif 'concepto' in col_str or 'descripción' in col_str or 'descripcion' in col_str:
+                    cols_map[col] = 'CONCEPTO'
                 elif 'cargo' in col_str or 'retiro' in col_str:
                     cols_map[col] = 'CARGO'
                 elif 'abono' in col_str or 'deposito' in col_str or 'depósito' in col_str:
@@ -221,9 +251,6 @@ def limpiar_modulo_bancos(ruta_archivo):
                     cols_map[col] = 'SALDO'
 
             df_banco = df_banco.rename(columns=cols_map)
-
-            if 'DESCRIPCION' in df_banco.columns and 'CONCEPTO' not in df_banco.columns:
-                df_banco = df_banco.rename(columns={'DESCRIPCION': 'CONCEPTO'})
 
             # Asegurar las 10 columnas obligatorias
             for col_req in ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
