@@ -83,16 +83,23 @@ def limpiar_modulo_bancos(ruta_archivo):
         df_raw = pd.read_excel(xls, sheet_name='MP', header=None)
         fila_encabezado_mp = -1
         for i, fila in df_raw.iterrows():
-            # Buscar el nombre exacto del encabezado de MercadoPago (las distintas variantes que existen)
-            if fila.astype(str).str.contains('Número de la operación', case=False, na=False).any() or \
-               fila.astype(str).str.contains('Operación relacionada', case=False, na=False).any() or \
-               fila.astype(str).str.contains('Número del movimiento', case=False, na=False).any() or \
-               fila.astype(str).str.contains('cargo', case=False, na=False).any():
+            # Buscar explícitamente los nombres COMPLETOS de las columnas de Mercado Pago
+            # y asegurarse de que estamos en una fila de encabezados real (varias columnas)
+            # Evitar caer en textos informativos (ej. "Trabajamos para brindarte más detalle sobre los cargos...")
+            fila_str = fila.astype(str)
+            if (fila_str.str.contains('Número de la operación', case=False, na=False).any() or \
+               fila_str.str.contains('Operación relacionada', case=False, na=False).any() or \
+               fila_str.str.contains('Número del movimiento', case=False, na=False).any() or \
+               fila_str.str.contains('Número del cargo', case=False, na=False).any()) and \
+               not fila_str.str.contains('Trabajamos para brindarte', case=False, na=False).any():
                 fila_encabezado_mp = i
                 break
 
         if fila_encabezado_mp != -1:
             df_mp = pd.read_excel(xls, sheet_name='MP', header=fila_encabezado_mp)
+
+            # Limpiar nombres de columnas eliminando saltos de línea y espacios raros
+            df_mp.columns = df_mp.columns.str.replace('\n', ' ').str.strip()
 
             # Opciones comunes para ID único de Mercado Pago en exportaciones:
             col_id = next((col for col in ['Número del cargo', 'Número de la operación', 'Número del movimiento', 'N° de factura fiscal'] if col in df_mp.columns), None)
@@ -106,7 +113,12 @@ def limpiar_modulo_bancos(ruta_archivo):
                 resultados_bancos['MP_DETALLE'] = df_mp
             else:
                  print(f"  ⚠️ No se encontró columna ID válida para quitar duplicados. Columnas son: {df_mp.columns.tolist()}")
-                 # Guardar de todos modos para no dejar la tabla en blanco en SQL
+                 # Guardar de todos modos
                  resultados_bancos['MP_DETALLE'] = df_mp
+        else:
+            print(f"  ⚠️ No se encontraron encabezados válidos en la hoja MP. Omitiendo.")
 
     return resultados_bancos
+
+if __name__ == '__main__':
+    bancos_limpios = limpiar_modulo_bancos('CONCILIACION FEBRERO OK - copia.xlsm')
