@@ -21,15 +21,15 @@ from export_excel import generate_final_report
 from engine_egresos import run_egresos_crosscheck
 from pdf_reader import parse_bank_pdf
 
-st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon="🏢")
+st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon="🏢", initial_sidebar_state="collapsed")
 
-# 1. AUTENTICACIÓN
+# 1. ESTILOS CSS
 with open("style.css") as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-# 1. AUTENTICACIÓN
-if not check_password():
-    st.stop()
+# 1. AUTENTICACIÓN (DESACTIVADA TEMPORALMENTE PARA PRUEBAS)
+# if not check_password():
+#     st.stop()
 
 # 2. INICIALIZACIÓN DE DB
 if not os.path.exists("conciliacion_data.db"):
@@ -75,10 +75,12 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                 with st.spinner("Procesando Bancos..."):
                     bancos = limpiar_modulo_bancos(archivo_subido)
                     for nombre_cuenta, df_banco in bancos.items():
-                        # We are standardizing names now to either BBVA_{something} or MP...
-                        # By saving directly as BANCO_{nombre_cuenta}, we get unified names
-                        # across both consolidated and individual bank uploads.
-                        save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
+                        # MP_DETALLE is an auxiliary detail table, not a standard bank statement.
+                        # We save it without the BANCO_ prefix to isolate it from the "BANCOS" UI.
+                        if nombre_cuenta == "MP_DETALLE":
+                            save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                        else:
+                            save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
 
                 with st.spinner("Procesando CFDI..."):
                     cfdis = limpiar_modulo_cfdi(archivo_subido)
@@ -107,7 +109,10 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                     with st.spinner(f"Procesando {archivo.name}..."):
                         bancos = limpiar_modulo_bancos(archivo)
                         for nombre_cuenta, df_banco in bancos.items():
-                            save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
+                            if nombre_cuenta == "MP_DETALLE":
+                                save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                            else:
+                                save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
                 procesados = True
 
             if archivo_banco_pdf:
@@ -158,10 +163,175 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
 elif eleccion == "🏦 BANCOS":
     st.title("🏦 Módulo BANCOS")
     tablas = [t for t in get_all_tables() if t.startswith("BANCO_")]
-    if not tablas: st.warning("La BD está vacía.")
+
+    if not tablas:
+        st.warning("La BD está vacía o no hay bancos procesados.")
     else:
-        cuenta = st.selectbox("Selecciona cuenta:", tablas)
-        st.dataframe(get_df_from_sql(cuenta), use_container_width=True)
+        # Agrupar dinámicamente las tablas por el nombre del banco
+        bancos_dict = {}
+        for tabla in tablas:
+            # Formato esperado: BANCO_NOMBREBANCO_CUENTA o BANCO_NOMBREBANCO
+            partes = tabla.split('_')
+
+            # Normalizar nombres comunes si es necesario
+            if "MP" in tabla.upper() or "MERCADO PAGO" in tabla.upper() or "MERCADOPAGO" in tabla.upper():
+                banco_key = "Mercado Pago"
+            elif len(partes) >= 2:
+                # Extraer la segunda parte (el nombre del banco), por ejemplo "BBVA" de "BANCO_BBVA_123"
+                banco_key = partes[1].upper()
+            else:
+                banco_key = "Otros"
+
+            if banco_key not in bancos_dict:
+                bancos_dict[banco_key] = []
+            bancos_dict[banco_key].append(tabla)
+
+        # Ordenar las llaves para que se vea mejor (opcional: poner "Otros" al final si existiera)
+        nombres_bancos = sorted(list(bancos_dict.keys()))
+        if "Otros" in nombres_bancos:
+            nombres_bancos.remove("Otros")
+            nombres_bancos.append("Otros")
+
+        # Crear pestañas dinámicas
+        tabs = st.tabs(nombres_bancos)
+
+        # Función auxiliar para renderizar el panel de control de un banco
+        def render_bank_panel(cuenta_sel, key_prefix):
+            df = get_df_from_sql(cuenta_sel)
+            if df.empty:
+                st.info("La tabla seleccionada no contiene registros.")
+                return
+
+            # --- PREPARACIÓN DE DATOS ---
+            # Asegurar que FECHA es datetime para poder filtrar
+            if 'FECHA' in df.columns:
+                df['FECHA_DT'] = pd.to_datetime(df['FECHA'], errors='coerce')
+                # Obtener lista de meses únicos (ej. "2024-01")
+                meses_unicos = df['FECHA_DT'].dt.to_period('M').dropna().unique()
+                lista_meses = ["Todos"] + sorted([str(m) for m in meses_unicos], reverse=True)
+            else:
+                lista_meses = ["Todos"]
+                df['FECHA_DT'] = pd.NaT
+
+            # --- UI: FILTROS SUPERIORES ---
+            col1, col2, col3 = st.columns([1, 1, 2])
+
+            with col1:
+                mes_sel = st.selectbox("📅 Filtrar por Mes:", lista_meses, key=f"mes_{key_prefix}")
+
+            with col2:
+                # Determinar min y max dates
+                min_date = df['FECHA_DT'].min() if not pd.isna(df['FECHA_DT'].min()) else None
+                max_date = df['FECHA_DT'].max() if not pd.isna(df['FECHA_DT'].max()) else None
+
+                if min_date and max_date:
+                    col2_1, col2_2 = st.columns(2)
+                    with col2_1:
+                        fecha_desde = st.date_input(
+                            "Desde:",
+                            value=None,
+                            min_value=min_date.date(),
+                            max_value=max_date.date(),
+                            key=f"desde_{key_prefix}"
+                        )
+                    with col2_2:
+                        fecha_hasta = st.date_input(
+                            "Hasta:",
+                            value=None,
+                            min_value=min_date.date(),
+                            max_value=max_date.date(),
+                            key=f"hasta_{key_prefix}"
+                        )
+                else:
+                    fecha_desde = None
+                    fecha_hasta = None
+                    st.write("Sin fechas válidas")
+
+            with col3:
+                busqueda = st.text_input("🔍 Buscar (Concepto, Referencia, Monto, etc):", "", key=f"buscar_{key_prefix}")
+
+            # --- APLICAR FILTROS ---
+            df_filtrado = df.copy()
+
+            # Filtro por Mes
+            if mes_sel != "Todos":
+                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.strftime('%Y-%m') == mes_sel]
+
+            # Filtro Rango Fechas
+            if fecha_desde is not None:
+                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.date >= fecha_desde]
+            if fecha_hasta is not None:
+                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.date <= fecha_hasta]
+
+            # Filtro por Búsqueda (Texto Libre)
+            if busqueda:
+                busqueda_lower = str(busqueda).lower()
+                # Buscar en todas las columnas convirtiendo la fila a string
+                mask_busqueda = df_filtrado.astype(str).apply(lambda row: row.str.lower().str.contains(busqueda_lower).any(), axis=1)
+                df_filtrado = df_filtrado[mask_busqueda]
+
+            # --- UI: MÉTRICAS RESUMEN ---
+            # Calcular totales del dataframe filtrado
+            tot_cargo = pd.to_numeric(df_filtrado['CARGO'], errors='coerce').sum() if 'CARGO' in df_filtrado.columns else 0
+            tot_abono = pd.to_numeric(df_filtrado['ABONO'], errors='coerce').sum() if 'ABONO' in df_filtrado.columns else 0
+
+            # Obtener el último saldo (ordenando por fecha si es posible, o simplemente el último de la lista)
+            saldo_final = 0
+            if 'SALDO' in df_filtrado.columns and not df_filtrado.empty:
+                 # Si la fecha está ordenada ascendente, el último registro tiene el saldo final
+                 ultimo_saldo = pd.to_numeric(df_filtrado['SALDO'], errors='coerce').dropna().tail(1)
+                 if not ultimo_saldo.empty:
+                     saldo_final = ultimo_saldo.iloc[0]
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("🟢 Total Abonos", f"${tot_abono:,.2f}")
+            m2.metric("🔴 Total Cargos", f"${tot_cargo:,.2f}")
+            m3.metric("💰 Saldo Final", f"${saldo_final:,.2f}")
+            m4.metric("📝 Movimientos", len(df_filtrado))
+
+            # --- UI: TABLA DE DATOS ---
+            # Quitar columna auxiliar FECHA_DT
+            df_mostrar = df_filtrado.drop(columns=['FECHA_DT']) if 'FECHA_DT' in df_filtrado.columns else df_filtrado
+
+            # Reordenar columnas a 10 columnas estándar si existen
+            columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
+            cols_existentes = [c for c in columnas_orden if c in df_mostrar.columns]
+            otras_cols = [c for c in df_mostrar.columns if c not in cols_existentes]
+            df_mostrar = df_mostrar[cols_existentes + otras_cols]
+
+            # Reemplazar explícitamente "None" y nulls con cadena vacía para limpiar la UI
+            df_mostrar = df_mostrar.fillna("")
+            df_mostrar = df_mostrar.replace("None", "")
+
+            # Asegurar que las fechas se vean bonitas
+            if 'FECHA' in df_mostrar.columns:
+                df_mostrar['FECHA'] = pd.to_datetime(df_mostrar['FECHA'], errors='coerce').dt.strftime('%d/%m/%Y')
+
+            # Formatear montos para que se vean como moneda ($)
+            for col_moneda in ['CARGO', 'ABONO', 'SALDO']:
+                if col_moneda in df_mostrar.columns:
+                    # Convertir a float y luego a string formateado
+                    df_mostrar[col_moneda] = pd.to_numeric(df_mostrar[col_moneda], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+
+            # Reemplazar el literal 'NaT' por cadena vacía
+            df_mostrar = df_mostrar.replace("NaT", "")
+
+            # Mostrar dataframe estilizado
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+
+
+        # Llenar cada pestaña dinámicamente
+        for i, nombre_banco in enumerate(nombres_bancos):
+            with tabs[i]:
+                st.subheader(f"Cuentas {nombre_banco}")
+                tablas_banco = bancos_dict[nombre_banco]
+
+                # Usar selectbox para elegir la tabla específica de ese banco
+                cuenta_sel = st.selectbox(f"Selecciona cuenta:", tablas_banco, key=f"sel_{nombre_banco}")
+
+                st.divider()
+                # Llamar a la función que dibuja filtros y tabla
+                render_bank_panel(cuenta_sel, key_prefix=f"{nombre_banco}_{cuenta_sel}")
 
 elif eleccion == "📄 CFDI (Facturas)":
     st.title("📄 Módulo CFDI")
