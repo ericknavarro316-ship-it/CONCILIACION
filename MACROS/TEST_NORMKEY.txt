@@ -1,0 +1,88 @@
+Option Explicit
+
+'===========================================================
+'  TEST SUITE FOR NormKey
+'===========================================================
+' This module contains unit tests for the NormKey function.
+' Ensure that NormKey in 'MP VS VENTAS' (or equivalent module) is Public.
+
+Public Sub RunTests_NormKey()
+    Dim passCount As Long
+    Dim failCount As Long
+
+    Debug.Print "--- Starting NormKey Tests ---"
+
+    ' Test Case 1: Standard string with dashes
+    Assert_NormKey "ABC-123", "ABC123", passCount, failCount
+
+    ' Test Case 2: String with spaces
+    Assert_NormKey "  A B C  ", "ABC", passCount, failCount
+
+    ' Test Case 3: Lowercase string (should be normalized to uppercase per rationale)
+    Assert_NormKey "abc-123", "ABC123", passCount, failCount
+
+    ' Test Case 4: Numeric value (Integer)
+    Assert_NormKey 12345, "12345", passCount, failCount
+
+    ' Test Case 5: Numeric value (Large number, avoid scientific notation)
+    Assert_NormKey 123456789012345#, "123456789012345", passCount, failCount
+
+    ' Test Case 6: Null value
+    Assert_NormKey Null, "", passCount, failCount
+
+    ' Test Case 7: Error value
+    Assert_NormKey CVErr(2015), "", passCount, failCount ' 2015 is xlErrValue
+
+    ' Test Case 8: Empty variant
+    Dim vEmpty As Variant
+    Assert_NormKey vEmpty, "", passCount, failCount
+
+    ' Test Case 9: Non-breaking space (Chr(160))
+    Assert_NormKey "A" & Chr(160) & "B", "AB", passCount, failCount
+
+    ' Test Case 10: Mixed delimiters and case
+    Assert_NormKey " a - " & Chr(160) & " b ", "AB", passCount, failCount
+
+    Debug.Print "--- NormKey Tests Completed ---"
+    Debug.Print "Passed: " & passCount
+    Debug.Print "Failed: " & failCount
+
+    If failCount > 0 Then
+        Debug.Print "RESULT: SOME TESTS FAILED"
+    Else
+        Debug.Print "RESULT: ALL TESTS PASSED"
+    End If
+End Sub
+
+Private Sub Assert_NormKey(val As Variant, expected As String, ByRef passCount As Long, ByRef failCount As Long)
+    Dim actual As String
+    On Error Resume Next
+    actual = NormKey(val)
+    If Err.Number <> 0 Then
+        Debug.Print "FAIL [Error " & Err.Number & "]: Input=[" & GetValDesc(val) & "] -> Expected=[" & expected & "], Actual=[ERROR: " & Err.Description & "]"
+        failCount = failCount + 1
+        Err.Clear
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    If actual = expected Then
+        Debug.Print "PASS: Input=[" & GetValDesc(val) & "] -> Actual=[" & actual & "]"
+        passCount = passCount + 1
+    Else
+        Debug.Print "FAIL: Input=[" & GetValDesc(val) & "] -> Expected=[" & expected & "], Actual=[" & actual & "]"
+        failCount = failCount + 1
+    End If
+End Sub
+
+Private Function GetValDesc(v As Variant) As String
+    If IsError(v) Then
+        GetValDesc = "Error"
+    ElseIf IsNull(v) Then
+        GetValDesc = "Null"
+    ElseIf IsEmpty(v) Then
+        GetValDesc = "Empty"
+    Else
+        GetValDesc = TypeName(v) & " '" & v & "'"
+    End If
+End Function

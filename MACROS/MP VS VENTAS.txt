@@ -936,7 +936,7 @@ EH:
     SafeStr = ""
 End Function
 
-Private Function NormKey(v As Variant) As String
+Public Function NormKey(v As Variant) As String
     If IsError(v) Or IsNull(v) Then
         NormKey = ""
         Exit Function
@@ -950,6 +950,7 @@ Private Function NormKey(v As Variant) As String
     End If
 
     s = Trim$(s)
+    s = UCase$(s)
     s = Replace(s, Chr(160), " ")
     s = Replace(s, " ", "")
     s = Replace(s, "-", "")
