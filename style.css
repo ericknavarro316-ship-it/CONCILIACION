@@ -1,0 +1,43 @@
+<style>
+/* Estilo Temático Zelda: Ocarina of Time para Streamlit */
+[data-testid="stAppViewContainer"] {
+    background-color: #0b1a0d; /* Bosque Kokiri Oscuro */
+    color: #e5d8b0; /* Pergamino claro */
+}
+
+[data-testid="stSidebar"] {
+    background-color: #1a2a16; /* Madera oscura / Escudo Deku */
+    border-right: 2px solid #b8912e; /* Borde Trifuerza Dorado */
+}
+
+h1, h2, h3 {
+    color: #ffd700 !important; /* Oro Trifuerza */
+    font-family: 'Georgia', serif;
+    text-shadow: 1px 1px 2px #000000;
+}
+
+[data-testid="stMetricValue"] {
+    color: #4ade80 !important; /* Verde Rupia / Magia */
+    font-weight: bold;
+}
+
+.stButton > button {
+    background-color: #486a34; /* Túnica Verde Link */
+    color: #ffd700; /* Texto dorado */
+    border: 2px solid #b8912e;
+    border-radius: 8px;
+    font-family: 'Georgia', serif;
+    transition: all 0.2s ease-in-out;
+}
+
+.stButton > button:hover {
+    background-color: #638c4b; /* Túnica más clara al pasar el mouse */
+    border-color: #ffd700;
+    box-shadow: 0 0 10px #b8912e;
+    color: #ffffff;
+}
+
+[data-testid="stHeader"] {
+    background: rgba(0,0,0,0);
+}
+</style>

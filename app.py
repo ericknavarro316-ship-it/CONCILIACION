@@ -24,6 +24,10 @@ from pdf_reader import parse_bank_pdf
 st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon="🏢")
 
 # 1. AUTENTICACIÓN
+with open("style.css") as f:
+    st.markdown(f.read(), unsafe_allow_html=True)
+
+# 1. AUTENTICACIÓN
 if not check_password():
     st.stop()
 
