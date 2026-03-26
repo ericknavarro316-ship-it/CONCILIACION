@@ -190,6 +190,107 @@ elif eleccion == "🏦 BANCOS":
         # Crear pestañas dinámicas
         tabs = st.tabs(nombres_bancos)
 
+        # Función auxiliar para renderizar el panel de control de un banco
+        def render_bank_panel(cuenta_sel, key_prefix):
+            df = get_df_from_sql(cuenta_sel)
+            if df.empty:
+                st.info("La tabla seleccionada no contiene registros.")
+                return
+
+            # --- PREPARACIÓN DE DATOS ---
+            # Asegurar que FECHA es datetime para poder filtrar
+            if 'FECHA' in df.columns:
+                df['FECHA_DT'] = pd.to_datetime(df['FECHA'], errors='coerce')
+                # Obtener lista de meses únicos (ej. "2024-01")
+                meses_unicos = df['FECHA_DT'].dt.to_period('M').dropna().unique()
+                lista_meses = ["Todos"] + sorted([str(m) for m in meses_unicos], reverse=True)
+            else:
+                lista_meses = ["Todos"]
+                df['FECHA_DT'] = pd.NaT
+
+            # --- UI: FILTROS SUPERIORES ---
+            col1, col2, col3 = st.columns([1, 1, 2])
+
+            with col1:
+                mes_sel = st.selectbox("📅 Filtrar por Mes:", lista_meses, key=f"mes_{key_prefix}")
+
+            with col2:
+                # Determinar min y max dates
+                min_date = df['FECHA_DT'].min() if not pd.isna(df['FECHA_DT'].min()) else None
+                max_date = df['FECHA_DT'].max() if not pd.isna(df['FECHA_DT'].max()) else None
+
+                if min_date and max_date:
+                    rango_fechas = st.date_input(
+                        "Rango de Fechas (opcional):",
+                        value=(),
+                        min_value=min_date.date(),
+                        max_value=max_date.date(),
+                        key=f"rango_{key_prefix}"
+                    )
+                else:
+                    rango_fechas = ()
+                    st.write("Sin fechas válidas")
+
+            with col3:
+                busqueda = st.text_input("🔍 Buscar (Concepto, Referencia, Monto, etc):", "", key=f"buscar_{key_prefix}")
+
+            # --- APLICAR FILTROS ---
+            df_filtrado = df.copy()
+
+            # Filtro por Mes
+            if mes_sel != "Todos":
+                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.strftime('%Y-%m') == mes_sel]
+
+            # Filtro por Rango (si el usuario seleccionó dos fechas)
+            if len(rango_fechas) == 2:
+                start_date, end_date = rango_fechas
+                mask = (df_filtrado['FECHA_DT'].dt.date >= start_date) & (df_filtrado['FECHA_DT'].dt.date <= end_date)
+                df_filtrado = df_filtrado.loc[mask]
+
+            # Filtro por Búsqueda (Texto Libre)
+            if busqueda:
+                busqueda_lower = str(busqueda).lower()
+                # Buscar en todas las columnas convirtiendo la fila a string
+                mask_busqueda = df_filtrado.astype(str).apply(lambda row: row.str.lower().str.contains(busqueda_lower).any(), axis=1)
+                df_filtrado = df_filtrado[mask_busqueda]
+
+            # --- UI: MÉTRICAS RESUMEN ---
+            # Calcular totales del dataframe filtrado
+            tot_cargo = pd.to_numeric(df_filtrado['CARGO'], errors='coerce').sum() if 'CARGO' in df_filtrado.columns else 0
+            tot_abono = pd.to_numeric(df_filtrado['ABONO'], errors='coerce').sum() if 'ABONO' in df_filtrado.columns else 0
+
+            # Obtener el último saldo (ordenando por fecha si es posible, o simplemente el último de la lista)
+            saldo_final = 0
+            if 'SALDO' in df_filtrado.columns and not df_filtrado.empty:
+                 # Si la fecha está ordenada ascendente, el último registro tiene el saldo final
+                 ultimo_saldo = pd.to_numeric(df_filtrado['SALDO'], errors='coerce').dropna().tail(1)
+                 if not ultimo_saldo.empty:
+                     saldo_final = ultimo_saldo.iloc[0]
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("🔴 Total Cargos", f"${tot_cargo:,.2f}")
+            m2.metric("🟢 Total Abonos", f"${tot_abono:,.2f}")
+            m3.metric("💰 Saldo Final", f"${saldo_final:,.2f}")
+            m4.metric("📝 Movimientos", len(df_filtrado))
+
+            # --- UI: TABLA DE DATOS ---
+            # Quitar columna auxiliar FECHA_DT
+            df_mostrar = df_filtrado.drop(columns=['FECHA_DT']) if 'FECHA_DT' in df_filtrado.columns else df_filtrado
+
+            # Asegurar que las fechas se vean bonitas
+            if 'FECHA' in df_mostrar.columns:
+                df_mostrar['FECHA'] = pd.to_datetime(df_mostrar['FECHA'], errors='coerce').dt.strftime('%d/%m/%Y')
+
+            # Formatear montos para que se vean como moneda ($)
+            for col_moneda in ['CARGO', 'ABONO', 'SALDO']:
+                if col_moneda in df_mostrar.columns:
+                    # Convertir a float y luego a string formateado
+                    df_mostrar[col_moneda] = pd.to_numeric(df_mostrar[col_moneda], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+
+            # Mostrar dataframe estilizado
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+
+
         # Llenar cada pestaña dinámicamente
         for i, nombre_banco in enumerate(nombres_bancos):
             with tabs[i]:
@@ -198,7 +299,10 @@ elif eleccion == "🏦 BANCOS":
 
                 # Usar selectbox para elegir la tabla específica de ese banco
                 cuenta_sel = st.selectbox(f"Selecciona cuenta:", tablas_banco, key=f"sel_{nombre_banco}")
-                st.dataframe(get_df_from_sql(cuenta_sel), use_container_width=True)
+
+                st.divider()
+                # Llamar a la función que dibuja filtros y tabla
+                render_bank_panel(cuenta_sel, key_prefix=f"{nombre_banco}_{cuenta_sel}")
 
 elif eleccion == "📄 CFDI (Facturas)":
     st.title("📄 Módulo CFDI")
