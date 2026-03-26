@@ -158,10 +158,52 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
 elif eleccion == "🏦 BANCOS":
     st.title("🏦 Módulo BANCOS")
     tablas = [t for t in get_all_tables() if t.startswith("BANCO_")]
-    if not tablas: st.warning("La BD está vacía.")
+
+    if not tablas:
+        st.warning("La BD está vacía o no hay bancos procesados.")
     else:
-        cuenta = st.selectbox("Selecciona cuenta:", tablas)
-        st.dataframe(get_df_from_sql(cuenta), use_container_width=True)
+        # Clasificar tablas por banco
+        tablas_bbva = [t for t in tablas if "BBVA" in t.upper()]
+        tablas_mp = [t for t in tablas if "MP" in t.upper() or "MERCADO PAGO" in t.upper() or "MERCADOPAGO" in t.upper()]
+        tablas_santander = [t for t in tablas if "SANTANDER" in t.upper()]
+
+        # Cualquier otra tabla que no sea de los 3 anteriores
+        tablas_otros = [t for t in tablas if t not in tablas_bbva and t not in tablas_mp and t not in tablas_santander]
+
+        # Crear pestañas para cada banco
+        tabs = st.tabs(["BBVA", "Mercado Pago", "Santander", "Otros"])
+
+        with tabs[0]:
+            st.subheader("Cuentas BBVA")
+            if tablas_bbva:
+                cuenta_bbva = st.selectbox("Selecciona cuenta BBVA:", tablas_bbva, key="sel_bbva")
+                st.dataframe(get_df_from_sql(cuenta_bbva), use_container_width=True)
+            else:
+                st.info("No hay datos de BBVA cargados.")
+
+        with tabs[1]:
+            st.subheader("Cuentas Mercado Pago")
+            if tablas_mp:
+                cuenta_mp = st.selectbox("Selecciona cuenta Mercado Pago:", tablas_mp, key="sel_mp")
+                st.dataframe(get_df_from_sql(cuenta_mp), use_container_width=True)
+            else:
+                st.info("No hay datos de Mercado Pago cargados.")
+
+        with tabs[2]:
+            st.subheader("Cuentas Santander")
+            if tablas_santander:
+                cuenta_santander = st.selectbox("Selecciona cuenta Santander:", tablas_santander, key="sel_santander")
+                st.dataframe(get_df_from_sql(cuenta_santander), use_container_width=True)
+            else:
+                st.info("No hay datos de Santander cargados.")
+
+        with tabs[3]:
+            st.subheader("Otras Cuentas")
+            if tablas_otros:
+                cuenta_otros = st.selectbox("Selecciona otra cuenta:", tablas_otros, key="sel_otros")
+                st.dataframe(get_df_from_sql(cuenta_otros), use_container_width=True)
+            else:
+                st.info("No hay otras cuentas cargadas.")
 
 elif eleccion == "📄 CFDI (Facturas)":
     st.title("📄 Módulo CFDI")
