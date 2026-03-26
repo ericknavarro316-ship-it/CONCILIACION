@@ -97,7 +97,7 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
     with tab2:
         st.markdown("### Carga de Bancos (Individual)")
         st.markdown("Sube archivos de estados de cuenta (Excel o PDF).")
-        archivo_banco_excel = st.file_uploader("📂 Cargar Banco (Excel)", type=['xlsx', 'xls', 'csv'], accept_multiple_files=True, key="banco_excel")
+        archivo_banco_excel = st.file_uploader("📂 Cargar Banco (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="banco_excel")
         archivo_banco_pdf = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'], accept_multiple_files=True, key="banco_pdf")
 
         if st.button("Procesar Bancos", type="primary", key="btn_bancos"):
@@ -123,7 +123,7 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
     with tab3:
         st.markdown("### Carga de Notas de Venta (Individual)")
         st.markdown("Sube los archivos que contengan las ventas registradas.")
-        archivo_ventas = st.file_uploader("📂 Cargar Ventas (Excel)", type=['xlsx', 'xls', 'csv'], accept_multiple_files=True, key="ventas")
+        archivo_ventas = st.file_uploader("📂 Cargar Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
 
         if st.button("Procesar Ventas", type="primary", key="btn_ventas"):
             if archivo_ventas:
@@ -139,7 +139,7 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
     with tab4:
         st.markdown("### Carga de CFDI (Individual)")
         st.markdown("Sube los reportes del SAT (Ingresos/Egresos).")
-        archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls', 'csv'], accept_multiple_files=True, key="cfdi")
+        archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="cfdi")
 
         if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
             if archivo_cfdi:

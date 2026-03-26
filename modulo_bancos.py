@@ -24,8 +24,10 @@ def limpiar_modulo_bancos(ruta_archivo):
     # Extraemos nombres de hoja o el nombre del archivo si es de 1 sola hoja.
     hojas_numericas = [h for h in hojas_disponibles if h.isdigit() or h.lower().startswith('bbva')]
 
+    nombre_archivo = getattr(ruta_archivo, 'name', str(ruta_archivo)).lower()
+
     # Si no hay hojas identificables pero hay datos, intentar procesar la primera hoja como BBVA si cumple la estructura
-    if not hojas_numericas and len(hojas_disponibles) > 0 and 'mp' not in str(ruta_archivo).lower():
+    if not hojas_numericas and len(hojas_disponibles) > 0 and 'mp' not in nombre_archivo:
          hojas_numericas = [hojas_disponibles[0]]
 
     for hoja in hojas_numericas:
@@ -84,7 +86,7 @@ def limpiar_modulo_bancos(ruta_archivo):
     # 2. MERCADO PAGO (EST MP y MP)
     # ==========================================
     # Si suben el archivo individual de MP, puede que las hojas no se llamen "EST MP" o "MP"
-    hoja_est_mp = next((h for h in hojas_disponibles if 'EST MP' in h.upper() or 'ESTADO' in h.upper() and 'MP' in str(ruta_archivo).upper()), None)
+    hoja_est_mp = next((h for h in hojas_disponibles if 'EST MP' in h.upper() or ('ESTADO' in h.upper() and 'MP' in nombre_archivo.upper())), None)
     if hoja_est_mp:
         print(f"Procesando Mercado Pago Estado de Cuenta ({hoja_est_mp})...")
         df_raw = pd.read_excel(xls, sheet_name=hoja_est_mp, header=None)
@@ -100,7 +102,7 @@ def limpiar_modulo_bancos(ruta_archivo):
             resultados_bancos['MP_ESTADO_CUENTA'] = df_est_mp
             print(f"  ✅ EST MP limpio: {len(df_est_mp)} movimientos.")
 
-    hoja_mp_detalle = next((h for h in hojas_disponibles if h.upper() == 'MP' or ('DETALLE' in h.upper() and 'MP' in str(ruta_archivo).upper())), None)
+    hoja_mp_detalle = next((h for h in hojas_disponibles if h.upper() == 'MP' or ('DETALLE' in h.upper() and 'MP' in nombre_archivo.upper())), None)
     if hoja_mp_detalle:
         print(f"Procesando Detalle Mercado Pago ({hoja_mp_detalle})...")
         df_raw = pd.read_excel(xls, sheet_name=hoja_mp_detalle, header=None)
