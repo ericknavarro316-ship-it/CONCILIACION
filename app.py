@@ -9,6 +9,8 @@ from modulo_cfdi import limpiar_modulo_cfdi
 from modulo_ventas_ajustado import limpiar_modulo_ventas_v2
 from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables
 from engine_bbva import run_bbva_crosscheck
+from engine_mp import run_mp_crosscheck
+from engine_cfdi import run_cfdi_crosscheck
 
 st.set_page_config(page_title="ERP Conciliación", layout="wide", page_icon="🏦")
 
@@ -109,22 +111,72 @@ elif eleccion == "🛒 VENTAS":
 # ==========================================================
 elif eleccion == "📊 ANÁLISIS (Cruces)":
     st.title("📊 Análisis y Conciliación Automática")
-    st.markdown("Ejecuta los motores de conciliación para cruzar las ventas operativas contra los estados de cuenta bancarios (SQL).")
+    st.markdown("Ejecuta los motores de conciliación para cruzar las ventas operativas contra los estados de cuenta bancarios, y luego propagar al SAT (CFDI).")
+
+    col1, col2, col3 = st.columns(3)
 
     # BOTÓN PARA BBVA
-    if st.button("🚀 Ejecutar Cruce BBVA", type="primary"):
-        with st.spinner("Conciliando Ventas BBVA vs Abonos (Agrupando por ID_VENTA con tolerancias)..."):
-            res = run_bbva_crosscheck()
-            if "error" in res:
-                st.error(res["error"])
-            else:
-                st.success(f"✅ ¡Cruce Finalizado! Se encontraron {res['matches']} abonos BBVA perfectamente conciliados.")
-                st.info("Los resultados se han guardado en las tablas SQL: 'VENTAS_BBVA_CRUZADO' y 'BANCO_XXXXX_CRUZADO'")
-                st.subheader("Vista previa de Ventas BBVA cruzadas exitosamente:")
-                st.dataframe(res['sample'][['id_venta', 'precio_real', 'origen_split', 'estado_cruce', 'cuenta_bancaria_cruce']])
+    with col1:
+        if st.button("🚀 Ejecutar Cruce BBVA", type="primary", use_container_width=True):
+            with st.spinner("Conciliando BBVA..."):
+                res = run_bbva_crosscheck()
+                if "error" in res:
+                    st.error(res["error"])
+                else:
+                    st.success(f"✅ BBVA: {res['matches']} abonos conciliados.")
 
-    # ESPACIO PARA MP (Siguiente iteración)
-    st.button("⚙️ Ejecutar Cruce Mercado Pago (Próximamente)", disabled=True)
+    # BOTÓN PARA MERCADO PAGO
+    with col2:
+        if st.button("⚙️ Ejecutar Cruce Mercado Pago", type="primary", use_container_width=True):
+            with st.spinner("Conciliando Mercado Pago..."):
+                res = run_mp_crosscheck()
+                if "error" in res:
+                    st.error(res["error"])
+                else:
+                    st.success(f"✅ Mercado Pago: {res['matches']} tickets conciliados.")
+
+    # BOTÓN PARA CFDI
+    with col3:
+        if st.button("📄 Propagar a CFDI", type="primary", use_container_width=True):
+            with st.spinner("Buscando UUIDs cruzados en CFDI PUE y PPD..."):
+                res = run_cfdi_crosscheck()
+                if "error" in res:
+                    st.error(res["error"])
+                else:
+                    st.success(f"✅ CFDI: {res.get('matches_pue', 0)} PUE y {res.get('matches_ppd', 0)} PPD Completados.")
+
+    st.divider()
+
+    # ==========================================
+    # ALERTAS Y DIFERENCIAS (DASHBOARD OPERATIVO)
+    # ==========================================
+    st.subheader("⚠️ Alertas de Diferencias (Pendientes Operativos)")
+
+    tablas = get_all_tables()
+    df_alertas_bbva = pd.DataFrame()
+    df_alertas_mp = pd.DataFrame()
+
+    if "VENTAS_BBVA_CRUZADO" in tablas:
+        df_bbva = get_df_from_sql("VENTAS_BBVA_CRUZADO")
+        if not df_bbva.empty and 'estado_cruce' in df_bbva.columns:
+            df_alertas_bbva = df_bbva[df_bbva['estado_cruce'] == 'PENDIENTE']
+
+    if "VENTAS_MP_CRUZADO" in tablas:
+        df_mp = get_df_from_sql("VENTAS_MP_CRUZADO")
+        if not df_mp.empty and 'estado_cruce' in df_mp.columns:
+            df_alertas_mp = df_mp[df_mp['estado_cruce'] == 'PENDIENTE']
+
+    if df_alertas_bbva.empty and df_alertas_mp.empty:
+        st.info("No hay tablas cruzadas aún o no hay ventas pendientes. (Ejecuta los cruces primero).")
+    else:
+        tab1, tab2 = st.tabs(["Faltantes en Banco BBVA", "Faltantes en Mercado Pago"])
+        with tab1:
+            st.metric("Ventas BBVA No Encontradas en Banco", len(df_alertas_bbva))
+            st.dataframe(df_alertas_bbva[['id_venta', 'precio_real', 'fecha', 'origen_split', 'estado_cruce']], use_container_width=True)
+        with tab2:
+            st.metric("Transacciones Mercado Pago No Encontradas en Banco", len(df_alertas_mp))
+            st.dataframe(df_alertas_mp[['id_venta', 'numero_transaccion', 'precio_real', 'fecha', 'origen_split', 'estado_cruce']], use_container_width=True)
+
 
 # ==========================================================
 # 📈 DASHBOARD
@@ -165,7 +217,7 @@ elif eleccion == "📈 DASHBOARD":
         col3.metric("Avance Conciliación BBVA (Por Tickets)", avance)
 
         st.divider()
-        st.subheader("Visualización Gráfica")
+        st.subheader("Visualización Operativa")
 
         # Gráfica simple de bloques de venta (volumen)
         datos_ventas = []
