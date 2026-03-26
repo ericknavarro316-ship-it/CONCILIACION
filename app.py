@@ -1,157 +1,126 @@
 import streamlit as st
 import pandas as pd
-import io
+import os
 
-def preparar_datos_crudos(file_upload):
-    """
-    Módulo P00: Limpieza y separación de hojas crudas.
-    Recibe el archivo subido, extrae Notas de Venta, Bancos y separa CFDI I en PUE y PPD.
-    """
-    xls = pd.ExcelFile(file_upload)
-    hojas_disponibles = xls.sheet_names
+# Importamos nuestros scripts que creamos paso a paso
+from modulo_bancos_fix import limpiar_mp
+from modulo_bancos import limpiar_modulo_bancos
+from modulo_cfdi import limpiar_modulo_cfdi
+from modulo_ventas_ajustado import limpiar_modulo_ventas_v2
+from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables
 
-    datos = {}
+st.set_page_config(page_title="ERP Conciliación", layout="wide", page_icon="🏦")
 
-    # 1. Extraer y limpiar Ventas (NOTA DE VENTA)
-    if 'NOTA DE VENTA' in hojas_disponibles:
-        df_ventas = pd.read_excel(xls, sheet_name='NOTA DE VENTA')
-        # Limpiar columnas
-        df_ventas.columns = df_ventas.columns.str.lower().str.strip()
-        datos['VENTAS'] = df_ventas
-    else:
-        st.error("❌ El archivo crudo no tiene la hoja 'NOTA DE VENTA'.")
-        return None
-
-    # 2. Extraer y separar CFDI I
-    if 'CFDI I' in hojas_disponibles:
-        # Los reportes del SAT suelen tener el encabezado en la fila 3 (index 2)
-        try:
-            df_cfdi_i = pd.read_excel(xls, sheet_name='CFDI I', header=2)
-            df_cfdi_i.columns = df_cfdi_i.columns.str.strip()
-
-            # Identificar Método de Pago
-            col_metodo = next((col for col in ['Método de Pago', 'Metodo de Pago'] if col in df_cfdi_i.columns), None)
-
-            if col_metodo:
-                df_pue = df_cfdi_i[df_cfdi_i[col_metodo].astype(str).str.contains('PUE', na=False, case=False)].copy()
-                df_ppd = df_cfdi_i[df_cfdi_i[col_metodo].astype(str).str.contains('PPD', na=False, case=False)].copy()
-
-                # Limpiar columnas para que coincidan con la lógica de I00
-                df_pue.columns = df_pue.columns.str.lower().str.strip()
-                df_ppd.columns = df_ppd.columns.str.lower().str.strip()
-
-                datos['CFDI_I_PUE'] = df_pue
-                datos['CFDI_I_PPD'] = df_ppd
-            else:
-                st.warning("⚠️ No se encontró la columna 'Método de Pago' en 'CFDI I'. No se pudo separar PUE/PPD.")
-                return None
-        except Exception as e:
-            st.error(f"Error procesando 'CFDI I': {e}")
-            return None
-    else:
-        st.error("❌ El archivo crudo no tiene la hoja 'CFDI I'.")
-        return None
-
-    return datos
-
-
-def conciliar_ventas_vs_cfdi(datos):
-    """
-    Módulo I00: Lógica de conciliación.
-    Toma los DataFrames ya limpios y separados (Ventas, PUE, PPD) y los cruza.
-    """
-    df_ventas = datos['VENTAS']
-    df_pue = datos['CFDI_I_PUE']
-    df_ppd = datos['CFDI_I_PPD']
-
-    # Columnas clave en Ventas
-    col_uuid_ventas = 'uuid' if 'uuid' in df_ventas.columns else None
-    posibles_nombres_monto = ['precio_real', 'total', 'importe', 'monto']
-    col_monto_ventas = next((col for col in posibles_nombres_monto if col in df_ventas.columns), None)
-
-    if not col_uuid_ventas or not col_monto_ventas:
-        st.error(f"No se encontraron columnas clave (UUID o Monto/Precio Real) en Ventas. Columnas: {df_ventas.columns.tolist()}")
-        return None
-
-    df_ventas['estado_conciliacion'] = 'PENDIENTE'
-    df_ventas['origen_conciliacion'] = ''
-
-    resumen = {"PUE (UUID)": 0, "PPD (UUID)": 0, "PUE (Monto)": 0}
-
-    # PASO 1: CONCILIAR POR UUID (PUE)
-    if 'uuid' in df_pue.columns:
-        uuids_pue = df_pue['uuid'].dropna().unique()
-        mask_pue = df_ventas[col_uuid_ventas].isin(uuids_pue) & (df_ventas['estado_conciliacion'] == 'PENDIENTE')
-        df_ventas.loc[mask_pue, 'estado_conciliacion'] = 'CONCILIADO OK'
-        df_ventas.loc[mask_pue, 'origen_conciliacion'] = 'CFDI PUE (UUID)'
-        resumen["PUE (UUID)"] = int(mask_pue.sum())
-
-    # PASO 2: CONCILIAR POR UUID (PPD)
-    if 'uuid' in df_ppd.columns:
-        uuids_ppd = df_ppd['uuid'].dropna().unique()
-        mask_ppd = df_ventas[col_uuid_ventas].isin(uuids_ppd) & (df_ventas['estado_conciliacion'] == 'PENDIENTE')
-        df_ventas.loc[mask_ppd, 'estado_conciliacion'] = 'CONCILIADO OK'
-        df_ventas.loc[mask_ppd, 'origen_conciliacion'] = 'CFDI PPD (UUID)'
-        resumen["PPD (UUID)"] = int(mask_ppd.sum())
-
-    # PASO 3: CONCILIAR POR MONTO (PUE)
-    col_monto_pue = next((col for col in ['total', 'importe'] if col in df_pue.columns), None)
-    if col_monto_pue:
-        montos_pue = df_pue[col_monto_pue].dropna().unique()
-        mask_monto = df_ventas[col_monto_ventas].isin(montos_pue) & (df_ventas['estado_conciliacion'] == 'PENDIENTE')
-        df_ventas.loc[mask_monto, 'estado_conciliacion'] = 'REVISIÓN MONTO'
-        df_ventas.loc[mask_monto, 'origen_conciliacion'] = 'CFDI PUE (Monto)'
-        resumen["PUE (Monto)"] = int(mask_monto.sum())
-
-    # Crear Excel en memoria
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_ventas.to_excel(writer, sheet_name='VENTAS_PROCESADAS', index=False)
-        df_pue.to_excel(writer, sheet_name='CFDI_I_PUE', index=False)
-        df_ppd.to_excel(writer, sheet_name='CFDI_I_PPD', index=False)
-        pd.DataFrame(list(resumen.items()), columns=['Criterio', 'Cantidad Conciliada']).to_excel(writer, sheet_name='RESUMEN', index=False)
-
-    return output.getvalue(), resumen
+# Inicializamos la base de datos SQL local si no existe
+if not os.path.exists("conciliacion_data.db"):
+    import database_sqlite
+    database_sqlite.init_db()
 
 # ==========================================================
-# INTERFAZ GRÁFICA (FRONTEND) CON STREAMLIT
+# MENÚ LATERAL (SIDEBAR)
 # ==========================================================
-st.set_page_config(page_title="App de Conciliación Completa", page_icon="💰", layout="wide")
+st.sidebar.title("🗂️ Módulos")
+opciones = ["🏠 Inicio e Ingesta", "🏦 BANCOS", "📄 CFDI", "🛒 VENTAS", "📊 ANÁLISIS (Cruces)", "📈 DASHBOARD"]
+eleccion = st.sidebar.radio("Ir a:", opciones)
 
-st.title("💰 Sistema de Conciliación: Extracción y Limpieza (P00) + Conciliación (I00)")
-st.markdown("""
-Sube tu archivo de Excel **crudo** (con las hojas **NOTA DE VENTA** y **CFDI I**).
-La aplicación se encargará de separar automáticamente los CFDI en PUE y PPD, limpiar los datos y hacer el cruce.
-""")
+# ==========================================================
+# 🏠 INICIO E INGESTA
+# ==========================================================
+if eleccion == "🏠 Inicio e Ingesta":
+    st.title("Sistema Integral de Conciliación")
+    st.markdown("Sube tu archivo crudo (Excel mensual). La aplicación procesará la información, la limpiará y la guardará de forma permanente en tu base de datos **SQL Local**, sin depender de descargar Excels intermedios.")
 
-uploaded_file = st.file_uploader("Sube tu archivo crudo de Excel (.xlsx o .xlsm)", type=["xlsx", "xlsm"])
+    archivo_subido = st.file_uploader("📂 Cargar Excel Crudo (ej. CONCILIACION FEBRERO OK)", type=['xlsx', 'xlsm'])
 
-if uploaded_file is not None:
-    st.info("Archivo cargado. Haz clic en ejecutar.")
+    if st.button("Procesar Archivo y Guardar en SQL", type="primary"):
+        if archivo_subido is not None:
+            with st.spinner("Procesando Módulo Bancos..."):
+                bancos = limpiar_modulo_bancos(archivo_subido)
+                for nombre_cuenta, df_banco in bancos.items():
+                    save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
 
-    if st.button("🚀 Extraer, Limpiar y Conciliar", type="primary"):
-        with st.spinner("1. Extrayendo y limpiando (Módulo P00)..."):
-            datos_limpios = preparar_datos_crudos(uploaded_file)
+            with st.spinner("Procesando Módulo CFDI..."):
+                cfdis = limpiar_modulo_cfdi(archivo_subido)
+                for nombre_cfdi, df_cfdi in cfdis.items():
+                    save_df_to_sql(df_cfdi, f"CFDI_{nombre_cfdi}")
 
-        if datos_limpios is not None:
-            with st.spinner("2. Cruzando información (Módulo I00)..."):
-                resultado = conciliar_ventas_vs_cfdi(datos_limpios)
+            with st.spinner("Procesando Módulo Ventas..."):
+                ventas = limpiar_modulo_ventas_v2(archivo_subido)
+                for nombre_venta, df_venta in ventas.items():
+                    save_df_to_sql(df_venta, nombre_venta)
 
-            if resultado is not None:
-                excel_bytes, resumen = resultado
-                st.success("¡Conciliación completada con éxito!")
+            st.success("✅ ¡Datos procesados, limpios y guardados en la Base de Datos SQL exitosamente!")
+            st.info("Ahora puedes navegar por los demás módulos en el menú lateral para ver la información almacenada.")
+        else:
+            st.warning("⚠️ Primero sube un archivo.")
 
-                st.subheader("📊 Resumen del Cruce (Ventas vs CFDI)")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Conciliados UUID (PUE)", resumen["PUE (UUID)"])
-                col2.metric("Conciliados UUID (PPD)", resumen["PPD (UUID)"])
-                col3.metric("Revisión Monto (PUE)", resumen["PUE (Monto)"])
+# ==========================================================
+# 🏦 MÓDULO BANCOS
+# ==========================================================
+elif eleccion == "🏦 BANCOS":
+    st.title("🏦 Módulo BANCOS")
+    tablas = get_all_tables()
+    tablas_bancos = [t for t in tablas if t.startswith("BANCO_")]
 
-                st.markdown("---")
-                st.markdown("### Descarga tu archivo procesado:")
-                st.download_button(
-                    label="📥 Descargar Excel Listo",
-                    data=excel_bytes,
-                    file_name="CONCILIACION_COMPLETA_RESULTADO.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+    if not tablas_bancos:
+         st.warning("La base de datos está vacía. Sube un archivo en 'Inicio' primero.")
+    else:
+         cuenta_seleccionada = st.selectbox("Selecciona una cuenta bancaria a visualizar:", tablas_bancos)
+         df = get_df_from_sql(cuenta_seleccionada)
+
+         col1, col2 = st.columns(2)
+         col1.metric(f"Registros en {cuenta_seleccionada}", len(df))
+         if 'ABONO' in df.columns:
+              col2.metric("Total Ingresado (Abonos)", f"${df['ABONO'].sum():,.2f}")
+
+         st.dataframe(df, use_container_width=True)
+
+# ==========================================================
+# 📄 MÓDULO CFDI
+# ==========================================================
+elif eleccion == "📄 CFDI":
+    st.title("📄 Módulo CFDI (Facturación SAT)")
+    tablas = get_all_tables()
+    tablas_cfdi = [t for t in tablas if t.startswith("CFDI_")]
+
+    if not tablas_cfdi:
+         st.warning("La base de datos está vacía. Sube un archivo en 'Inicio' primero.")
+    else:
+         cfdi_seleccionado = st.selectbox("Selecciona un bloque de facturación:", tablas_cfdi)
+         df = get_df_from_sql(cfdi_seleccionado)
+         st.metric(f"Comprobantes en {cfdi_seleccionado}", len(df))
+         st.dataframe(df, use_container_width=True)
+
+# ==========================================================
+# 🛒 MÓDULO VENTAS
+# ==========================================================
+elif eleccion == "🛒 VENTAS":
+    st.title("🛒 Módulo VENTAS")
+    tablas = get_all_tables()
+    tablas_ventas = [t for t in tablas if t.startswith("VENTAS_")]
+
+    if not tablas_ventas:
+         st.warning("La base de datos está vacía. Sube un archivo en 'Inicio' primero.")
+    else:
+         bloque_seleccionado = st.selectbox("Selecciona un bloque operativo:", tablas_ventas)
+         df = get_df_from_sql(bloque_seleccionado)
+         st.metric(f"Ventas totales en bloque {bloque_seleccionado}", len(df))
+         st.dataframe(df, use_container_width=True)
+
+# ==========================================================
+# 📊 ANÁLISIS (Cruces)
+# ==========================================================
+elif eleccion == "📊 ANÁLISIS (Cruces)":
+    st.title("📊 Análisis y Conciliación")
+    st.markdown("En este módulo cruzaremos la base de datos SQL para encontrar los empates operativos vs bancarios vs SAT. *(El motor completo se irá construyendo paso a paso)*.")
+
+    # Aquí irá el motor completo de BBVA, luego el de Mercado Pago
+    st.info("Actualmente estamos validando BBVA. ¡En la siguiente fase conectaremos el motor completo de cruce BBVA y Mercado Pago a este botón!")
+
+# ==========================================================
+# 📈 DASHBOARD
+# ==========================================================
+elif eleccion == "📈 DASHBOARD":
+    st.title("📈 Tablero Ejecutivo")
+    st.markdown("Este será el resumen global de la salud de tu negocio, con gráficas, totales pendientes de facturar, y alertas de cruces fallidos.")
+    # Aquí haremos métricas globales
