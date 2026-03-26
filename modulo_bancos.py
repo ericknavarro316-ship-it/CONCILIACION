@@ -15,13 +15,26 @@ def limpiar_modulo_bancos(ruta_archivo):
     resultados_bancos = {}
 
     # ==========================================
-    # 1. BBVA (Hojas numéricas)
+    # 1. BBVA (Hojas numéricas o identificadas por nombre de archivo)
     # ==========================================
-    hojas_numericas = [h for h in hojas_disponibles if h.isdigit()]
+    # Si la hoja es numérica, asumimos que es BBVA (terminación de cuenta).
+    # Si subieron un Excel individual de BBVA, puede que la hoja no sea numérica.
+    # En ese caso, si la hoja contiene 'día' en la primera fila (u otra validación), la trataremos como BBVA.
+
+    # Extraemos nombres de hoja o el nombre del archivo si es de 1 sola hoja.
+    hojas_numericas = [h for h in hojas_disponibles if h.isdigit() or h.lower().startswith('bbva')]
+
+    # Si no hay hojas identificables pero hay datos, intentar procesar la primera hoja como BBVA si cumple la estructura
+    if not hojas_numericas and len(hojas_disponibles) > 0 and 'mp' not in str(ruta_archivo).lower():
+         hojas_numericas = [hojas_disponibles[0]]
 
     for hoja in hojas_numericas:
-        print(f"Procesando cuenta BBVA: {hoja}...")
-        df_raw = pd.read_excel(xls, sheet_name=hoja, header=None)
+        print(f"Procesando posible cuenta BBVA: {hoja}...")
+        try:
+            df_raw = pd.read_excel(xls, sheet_name=hoja, header=None)
+        except Exception as e:
+            print(f"No se pudo leer la hoja {hoja}: {e}")
+            continue
 
         # Buscar la fila que contiene la palabra "Día" o "Dia"
         fila_encabezado = -1
@@ -55,17 +68,26 @@ def limpiar_modulo_bancos(ruta_archivo):
             columnas_finales = [c for c in ['FECHA', 'DESCRIPCION', 'CARGO', 'ABONO', 'SALDO'] if c in df_banco.columns]
             df_banco = df_banco[columnas_finales].dropna(how='all')
 
-            resultados_bancos[f"BBVA_{hoja}"] = df_banco
-            print(f"  ✅ BBVA {hoja} limpio: {len(df_banco)} movimientos.")
+            # Nombre seguro para la cuenta
+            nombre_cuenta = str(hoja).replace('BBVA_', '')
+            if not nombre_cuenta.isdigit():
+                 nombre_cuenta = "BBVA_GENERAL" # Fallback
+            else:
+                 nombre_cuenta = f"BBVA_{nombre_cuenta}"
+
+            resultados_bancos[nombre_cuenta] = df_banco
+            print(f"  ✅ BBVA {nombre_cuenta} limpio: {len(df_banco)} movimientos.")
         else:
             print(f"  ⚠️ No se encontró la fila 'Día' en la hoja {hoja}. Omitiendo.")
 
     # ==========================================
     # 2. MERCADO PAGO (EST MP y MP)
     # ==========================================
-    if 'EST MP' in hojas_disponibles:
-        print("Procesando Mercado Pago (EST MP)...")
-        df_raw = pd.read_excel(xls, sheet_name='EST MP', header=None)
+    # Si suben el archivo individual de MP, puede que las hojas no se llamen "EST MP" o "MP"
+    hoja_est_mp = next((h for h in hojas_disponibles if 'EST MP' in h.upper() or 'ESTADO' in h.upper() and 'MP' in str(ruta_archivo).upper()), None)
+    if hoja_est_mp:
+        print(f"Procesando Mercado Pago Estado de Cuenta ({hoja_est_mp})...")
+        df_raw = pd.read_excel(xls, sheet_name=hoja_est_mp, header=None)
         fila_encabezado_est = -1
         for i, fila in df_raw.iterrows():
             if fila.astype(str).str.contains('RELEASE_DATE', case=False, na=False).any():
@@ -73,14 +95,15 @@ def limpiar_modulo_bancos(ruta_archivo):
                 break
 
         if fila_encabezado_est != -1:
-            df_est_mp = pd.read_excel(xls, sheet_name='EST MP', header=fila_encabezado_est)
+            df_est_mp = pd.read_excel(xls, sheet_name=hoja_est_mp, header=fila_encabezado_est)
             df_est_mp = df_est_mp.dropna(subset=['RELEASE_DATE'])
             resultados_bancos['MP_ESTADO_CUENTA'] = df_est_mp
             print(f"  ✅ EST MP limpio: {len(df_est_mp)} movimientos.")
 
-    if 'MP' in hojas_disponibles:
-        print("Procesando Detalle Mercado Pago (MP)...")
-        df_raw = pd.read_excel(xls, sheet_name='MP', header=None)
+    hoja_mp_detalle = next((h for h in hojas_disponibles if h.upper() == 'MP' or ('DETALLE' in h.upper() and 'MP' in str(ruta_archivo).upper())), None)
+    if hoja_mp_detalle:
+        print(f"Procesando Detalle Mercado Pago ({hoja_mp_detalle})...")
+        df_raw = pd.read_excel(xls, sheet_name=hoja_mp_detalle, header=None)
         fila_encabezado_mp = -1
         for i, fila in df_raw.iterrows():
             # Buscar explícitamente los nombres COMPLETOS de las columnas de Mercado Pago
@@ -96,7 +119,7 @@ def limpiar_modulo_bancos(ruta_archivo):
                 break
 
         if fila_encabezado_mp != -1:
-            df_mp = pd.read_excel(xls, sheet_name='MP', header=fila_encabezado_mp)
+            df_mp = pd.read_excel(xls, sheet_name=hoja_mp_detalle, header=fila_encabezado_mp)
 
             # Limpiar nombres de columnas eliminando saltos de línea y espacios raros
             df_mp.columns = df_mp.columns.str.replace('\n', ' ').str.strip()

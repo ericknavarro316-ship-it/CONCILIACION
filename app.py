@@ -25,7 +25,7 @@ st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon=
 
 # 1. AUTENTICACIÓN
 with open("style.css") as f:
-    st.markdown(f.read(), unsafe_allow_html=True)
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 # 1. AUTENTICACIÓN
 if not check_password():
@@ -55,19 +55,30 @@ if st.sidebar.button("🔒 Cerrar Sesión"):
 if eleccion == "🏠 Ingesta (Excel / PDF)":
     st.title("Procesamiento de Archivos (ETL)")
 
+    st.markdown("Carga tus archivos de forma individual o un archivo consolidado.")
+
     # Pestañas para subir Excel o PDF
-    tab1, tab2 = st.tabs(["Subir Archivo Crudo (Excel)", "Subir Estado de Cuenta (PDF)"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Carga Consolidada (Mega Excel)",
+        "Carga de Bancos",
+        "Carga de Ventas",
+        "Carga de CFDI"
+    ])
 
     with tab1:
-        st.markdown("El sistema limpiará automáticamente Bancos, Ventas y separará los CFDI (PUE/PPD).")
-        archivo_subido = st.file_uploader("📂 Cargar Excel", type=['xlsx', 'xlsm'])
+        st.markdown("### Carga de Archivo Consolidado")
+        st.markdown("Sube un solo archivo Excel con todas las hojas (Bancos, Ventas, CFDI).")
+        archivo_subido = st.file_uploader("📂 Cargar Mega Excel", type=['xlsx', 'xlsm'], key="consolidado")
 
-        if st.button("Procesar Archivo y Guardar en BD", type="primary"):
+        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado"):
             if archivo_subido is not None:
                 with st.spinner("Procesando Bancos..."):
                     bancos = limpiar_modulo_bancos(archivo_subido)
                     for nombre_cuenta, df_banco in bancos.items():
-                        save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta.replace('BBVA_', '')}")
+                        # We are standardizing names now to either BBVA_{something} or MP...
+                        # By saving directly as BANCO_{nombre_cuenta}, we get unified names
+                        # across both consolidated and individual bank uploads.
+                        save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
 
                 with st.spinner("Procesando CFDI..."):
                     cfdis = limpiar_modulo_cfdi(archivo_subido)
@@ -79,18 +90,67 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                     for nombre_venta, df_venta in ventas.items():
                         save_df_to_sql(df_venta, nombre_venta)
 
-                st.success("✅ ¡Datos guardados en la Base de Datos SQL!")
+                st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
             else:
-                st.warning("⚠️ Sube un archivo primero.")
+                st.warning("⚠️ Sube un archivo consolidado primero.")
 
     with tab2:
-        st.subheader("Lector Inteligente de PDFs Bancarios")
-        pdf_subido = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'])
-        if st.button("Procesar PDF"):
-            if pdf_subido:
-                parse_bank_pdf(pdf_subido)
+        st.markdown("### Carga de Bancos (Individual)")
+        st.markdown("Sube archivos de estados de cuenta (Excel o PDF).")
+        archivo_banco_excel = st.file_uploader("📂 Cargar Banco (Excel)", type=['xlsx', 'xls', 'csv'], accept_multiple_files=True, key="banco_excel")
+        archivo_banco_pdf = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'], accept_multiple_files=True, key="banco_pdf")
+
+        if st.button("Procesar Bancos", type="primary", key="btn_bancos"):
+            procesados = False
+            if archivo_banco_excel:
+                for archivo in archivo_banco_excel:
+                    with st.spinner(f"Procesando {archivo.name}..."):
+                        bancos = limpiar_modulo_bancos(archivo)
+                        for nombre_cuenta, df_banco in bancos.items():
+                            save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
+                procesados = True
+
+            if archivo_banco_pdf:
+                for pdf in archivo_banco_pdf:
+                    parse_bank_pdf(pdf)
+                procesados = True
+
+            if procesados:
+                st.success("✅ ¡Bancos guardados en la Base de Datos SQL!")
             else:
-                 st.warning("Sube un PDF primero.")
+                 st.warning("Sube un archivo de banco primero.")
+
+    with tab3:
+        st.markdown("### Carga de Notas de Venta (Individual)")
+        st.markdown("Sube los archivos que contengan las ventas registradas.")
+        archivo_ventas = st.file_uploader("📂 Cargar Ventas (Excel)", type=['xlsx', 'xls', 'csv'], accept_multiple_files=True, key="ventas")
+
+        if st.button("Procesar Ventas", type="primary", key="btn_ventas"):
+            if archivo_ventas:
+                for archivo in archivo_ventas:
+                    with st.spinner(f"Procesando {archivo.name}..."):
+                        ventas = limpiar_modulo_ventas_v2(archivo)
+                        for nombre_venta, df_venta in ventas.items():
+                            save_df_to_sql(df_venta, nombre_venta)
+                st.success("✅ ¡Ventas guardadas en la Base de Datos SQL!")
+            else:
+                st.warning("⚠️ Sube un archivo de ventas primero.")
+
+    with tab4:
+        st.markdown("### Carga de CFDI (Individual)")
+        st.markdown("Sube los reportes del SAT (Ingresos/Egresos).")
+        archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls', 'csv'], accept_multiple_files=True, key="cfdi")
+
+        if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
+            if archivo_cfdi:
+                for archivo in archivo_cfdi:
+                    with st.spinner(f"Procesando {archivo.name}..."):
+                        cfdis = limpiar_modulo_cfdi(archivo)
+                        for nombre_cfdi, df_cfdi in cfdis.items():
+                            save_df_to_sql(df_cfdi, f"CFDI_{nombre_cfdi}")
+                st.success("✅ ¡CFDI guardados en la Base de Datos SQL!")
+            else:
+                st.warning("⚠️ Sube un archivo CFDI primero.")
 
 # ==========================================================
 # MÓDULOS DE VISUALIZACIÓN BÁSICA

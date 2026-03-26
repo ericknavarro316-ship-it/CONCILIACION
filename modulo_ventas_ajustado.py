@@ -11,8 +11,27 @@ def limpiar_modulo_ventas_v2(ruta_archivo):
     Si está literalmente VACÍA, es SIN BANCO.
     """
     xls = pd.ExcelFile(ruta_archivo)
-    df_ventas = pd.read_excel(xls, sheet_name='NOTA DE VENTA')
+    hojas_disponibles = xls.sheet_names
+
+    # Buscar la hoja de ventas o tomar la primera si es archivo individual
+    hoja_ventas = next((h for h in hojas_disponibles if 'VENTA' in h.upper() or 'NOTA' in h.upper()), None)
+    if not hoja_ventas and len(hojas_disponibles) > 0:
+         hoja_ventas = hojas_disponibles[0]
+
+    if not hoja_ventas:
+         return {}
+
+    df_ventas = pd.read_excel(xls, sheet_name=hoja_ventas)
     df_ventas.columns = df_ventas.columns.str.lower().str.strip()
+
+    # Asegurar que la columna 'bancos_cobro' exista
+    if 'bancos_cobro' not in df_ventas.columns:
+         # Intentar buscar alguna columna similar
+         col_alternativa = next((c for c in df_ventas.columns if 'banco' in c or 'cobro' in c or 'metodo' in c), None)
+         if col_alternativa:
+              df_ventas = df_ventas.rename(columns={col_alternativa: 'bancos_cobro'})
+         else:
+              df_ventas['bancos_cobro'] = 'SIN_ESPECIFICAR'
 
     # Rellenar vacíos con palabra clave
     df_ventas['bancos_cobro'] = df_ventas['bancos_cobro'].fillna('SIN_ESPECIFICAR')

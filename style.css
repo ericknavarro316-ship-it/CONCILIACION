@@ -1,43 +1,52 @@
-<style>
-/* Estilo Temático Zelda: Ocarina of Time para Streamlit */
+/* Estilo Profesional / Corporativo para ERP Conciliación */
 [data-testid="stAppViewContainer"] {
-    background-color: #0b1a0d; /* Bosque Kokiri Oscuro */
-    color: #e5d8b0; /* Pergamino claro */
+    background-color: #f4f6f9; /* Fondo gris claro, tipo dashboard */
+    color: #333333; /* Texto oscuro para buena lectura */
 }
 
 [data-testid="stSidebar"] {
-    background-color: #1a2a16; /* Madera oscura / Escudo Deku */
-    border-right: 2px solid #b8912e; /* Borde Trifuerza Dorado */
+    background-color: #2c3e50; /* Azul oscuro corporativo */
+    border-right: 1px solid #1a252f;
+}
+
+[data-testid="stSidebar"] * {
+    color: #ecf0f1 !important; /* Texto claro en sidebar */
 }
 
 h1, h2, h3 {
-    color: #ffd700 !important; /* Oro Trifuerza */
-    font-family: 'Georgia', serif;
-    text-shadow: 1px 1px 2px #000000;
+    color: #2c3e50 !important; /* Títulos azules oscuros */
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    text-shadow: none;
+    font-weight: 600;
 }
 
 [data-testid="stMetricValue"] {
-    color: #4ade80 !important; /* Verde Rupia / Magia */
-    font-weight: bold;
+    color: #27ae60 !important; /* Verde profesional para métricas */
+    font-weight: 700;
 }
 
 .stButton > button {
-    background-color: #486a34; /* Túnica Verde Link */
-    color: #ffd700; /* Texto dorado */
-    border: 2px solid #b8912e;
-    border-radius: 8px;
-    font-family: 'Georgia', serif;
+    background-color: #3498db; /* Azul corporativo primario */
+    color: #ffffff !important; /* Texto blanco en botones */
+    border: none;
+    border-radius: 4px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-weight: 500;
     transition: all 0.2s ease-in-out;
+    padding: 0.5rem 1rem;
 }
 
 .stButton > button:hover {
-    background-color: #638c4b; /* Túnica más clara al pasar el mouse */
-    border-color: #ffd700;
-    box-shadow: 0 0 10px #b8912e;
-    color: #ffffff;
+    background-color: #2980b9; /* Azul más oscuro al pasar el mouse */
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
 }
 
 [data-testid="stHeader"] {
     background: rgba(0,0,0,0);
 }
-</style>
+
+/* Tablas y dataframes */
+.stDataFrame {
+    border-radius: 4px;
+    border: 1px solid #e0e0e0;
+}

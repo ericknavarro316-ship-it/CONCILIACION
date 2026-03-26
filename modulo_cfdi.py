@@ -67,11 +67,24 @@ def limpiar_modulo_cfdi(ruta_archivo):
         else:
             print(f"  ⚠️ La hoja {nombre_hoja} no existe en el archivo.")
 
+    # Identificar hojas si se suben individualmente o con nombres ligeramente distintos
+    hoja_cfdi_i = next((h for h in hojas_disponibles if 'CFDI I' in h.upper() or ('INGRESO' in h.upper() and 'CFDI' in h.upper())), None)
+    hoja_cfdi_e = next((h for h in hojas_disponibles if 'CFDI E' in h.upper() or ('EGRESO' in h.upper() and 'CFDI' in h.upper())), None)
+    hoja_pagos_i = next((h for h in hojas_disponibles if 'PAGOS I' in h.upper() or ('PAGO' in h.upper() and 'I' in h.upper())), None)
+    hoja_pagos_e = next((h for h in hojas_disponibles if 'PAGOS E' in h.upper() or ('PAGO' in h.upper() and 'E' in h.upper())), None)
+
+    # Fallback para archivos individuales de 1 hoja (si no es pago, asumimos CFDI I por defecto)
+    if len(hojas_disponibles) == 1 and not (hoja_cfdi_i or hoja_cfdi_e or hoja_pagos_i or hoja_pagos_e):
+         if 'PAGO' in hojas_disponibles[0].upper():
+              hoja_pagos_e = hojas_disponibles[0] # Asumimos Pagos E por seguridad
+         else:
+              hoja_cfdi_i = hojas_disponibles[0] # Asumimos Ingresos por seguridad
+
     # Ejecutar procesamiento
-    procesar_cfdi('CFDI I', 'CFDI_I')
-    procesar_cfdi('CFDI E', 'CFDI_E')
-    procesar_pagos('PAGOS I', 'PAGOS_I')
-    procesar_pagos('PAGOS E', 'PAGOS_E')
+    if hoja_cfdi_i: procesar_cfdi(hoja_cfdi_i, 'CFDI_I')
+    if hoja_cfdi_e: procesar_cfdi(hoja_cfdi_e, 'CFDI_E')
+    if hoja_pagos_i: procesar_pagos(hoja_pagos_i, 'PAGOS_I')
+    if hoja_pagos_e: procesar_pagos(hoja_pagos_e, 'PAGOS_E')
 
     return resultados_cfdi
 
