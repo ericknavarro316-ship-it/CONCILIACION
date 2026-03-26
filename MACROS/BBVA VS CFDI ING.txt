@@ -796,18 +796,36 @@ End Function
 
 Private Function ING_FindHeaderCol(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headers As Variant) As Long
     Dim c As Long, lastC As Long, h As Variant, v As String
+    Dim headerValues As Variant
+    Dim normHeaders() As String
+    Dim i As Long
+
     lastC = ING_LastCol(ws)
-    If lastC = 0 Then Exit Function
+    If lastC < 1 Then Exit Function
+
+    ' Read entire row into array to minimize COM calls
+    If lastC = 1 Then
+        ReDim headerValues(1 To 1, 1 To 1)
+        headerValues(1, 1) = ws.Cells(headerRow, 1).Value
+    Else
+        headerValues = ws.Range(ws.Cells(headerRow, 1), ws.Cells(headerRow, lastC)).Value
+    End If
+
+    ' Pre-normalize target headers
+    ReDim normHeaders(LBound(headers) To UBound(headers))
+    For i = LBound(headers) To UBound(headers)
+        normHeaders(i) = UCase$(Trim$(CStr(headers(i))))
+    Next i
 
     For c = 1 To lastC
-        v = UCase$(Trim$(CStr(ws.Cells(headerRow, c).Value)))
+        v = UCase$(Trim$(CStr(headerValues(1, c))))
         If v <> "" Then
-            For Each h In headers
-                If v = UCase$(Trim$(CStr(h))) Then
+            For i = LBound(normHeaders) To UBound(normHeaders)
+                If v = normHeaders(i) Then
                     ING_FindHeaderCol = c
                     Exit Function
                 End If
-            Next h
+            Next i
         End If
     Next c
 End Function
