@@ -13,6 +13,7 @@ from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables
 from engine_bbva import run_bbva_crosscheck
 from engine_mp import run_mp_crosscheck
 from engine_cfdi import run_cfdi_crosscheck
+from engine_o00 import run_o01_preclasificar_bancos, run_o07_conciliar_pagos_e
 
 # Nuevas características avanzadas
 from security import check_password
@@ -24,7 +25,7 @@ st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon=
 
 # 1. AUTENTICACIÓN
 if not check_password():
-    st.stop()  # Detiene la carga del resto de la página hasta que la contraseña sea correcta.
+    st.stop()
 
 # 2. INICIALIZACIÓN DE DB
 if not os.path.exists("conciliacion_data.db"):
@@ -35,7 +36,7 @@ if not os.path.exists("conciliacion_data.db"):
 # MENÚ LATERAL
 # ==========================================================
 st.sidebar.title("🏢 Módulos Avanzados")
-opciones = ["🏠 Ingesta (Excel / PDF)", "🏦 BANCOS", "📄 CFDI (Facturas)", "🛒 VENTAS", "📊 ANÁLISIS (Ingresos)", "💸 ANÁLISIS (Egresos)", "📈 DASHBOARD & REPORTES"]
+opciones = ["🏠 Ingesta (Excel / PDF)", "🏦 BANCOS", "📄 CFDI (Facturas)", "🛒 VENTAS", "📊 O00: PRE-CLÁSICOS FISCALES", "📈 I00: CRUCE INGRESOS (Ventas)", "💸 CRUCE EGRESOS", "📈 DASHBOARD & REPORTES"]
 eleccion = st.sidebar.radio("Navegar:", opciones)
 
 # Logout en Sidebar
@@ -115,10 +116,42 @@ elif eleccion == "🛒 VENTAS":
         st.dataframe(get_df_from_sql(bloque), use_container_width=True)
 
 # ==========================================================
-# 📊 ANÁLISIS INGRESOS
+# 📊 O00: PRE-CLÁSICOS FISCALES (NUEVO)
 # ==========================================================
-elif eleccion == "📊 ANÁLISIS (Ingresos)":
-    st.title("📊 Motores de Conciliación de Ingresos")
+elif eleccion == "📊 O00: PRE-CLÁSICOS FISCALES":
+    st.title("📊 Módulo O00: Reglas Fiscales y Pre-clasificación")
+    st.markdown("Este módulo aplica las reglas iniciales sobre los bancos y CFDI antes de conciliar ventas. **(Recomendado ejecutar primero)**.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("1. Preclasificación Bancos")
+        st.markdown("Busca patrones (ej. 'Comisión', 'Nómina') en el concepto y auto-asigna categoría.")
+        if st.button("🔍 O01 - Ejecutar Preclasificación", type="primary"):
+            with st.spinner("Analizando conceptos bancarios..."):
+                res = run_o01_preclasificar_bancos()
+                if "success" in res:
+                    st.success(f"✅ {res['matches']} movimientos auto-clasificados por concepto.")
+                else:
+                    st.error(res.get("error", "Error desconocido."))
+
+    with col2:
+        st.subheader("2. Conciliación Complementos (PAGOS E)")
+        st.markdown("Cruza las salidas bancarias directamente contra los Pagos de Egresos emitidos.")
+        if st.button("🧾 O07 - Conciliar PAGOS E", type="primary"):
+            with st.spinner("Buscando cargos para PAGOS E..."):
+                res = run_o07_conciliar_pagos_e()
+                if "success" in res:
+                    st.success(f"✅ {res['matches']} complementos PAGOS E conciliados con banco.")
+                else:
+                    st.error(res.get("error", "Error desconocido."))
+
+
+# ==========================================================
+# 📈 I00: CRUCE INGRESOS
+# ==========================================================
+elif eleccion == "📈 I00: CRUCE INGRESOS (Ventas)":
+    st.title("📈 Módulo I00: Cruce de Ventas vs Bancos")
 
     col1, col2, col3 = st.columns(3)
     if col1.button("🚀 Cruce BBVA", type="primary"):
@@ -157,11 +190,11 @@ elif eleccion == "📊 ANÁLISIS (Ingresos)":
 # ==========================================================
 # 💸 ANÁLISIS EGRESOS
 # ==========================================================
-elif eleccion == "💸 ANÁLISIS (Egresos)":
+elif eleccion == "💸 CRUCE EGRESOS":
     st.title("💸 Motor de Conciliación de Egresos")
     st.markdown("Cruza las **Facturas de Gastos (CFDI E PUE)** contra los **Cargos (Salidas)** del banco BBVA.")
 
-    if st.button("💳 Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary"):
+    if st.button("💳 O06 - Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary"):
         with st.spinner("Buscando cargos en cuentas BBVA..."):
             res = run_egresos_crosscheck()
             if "error" in res: st.error(res["error"])
@@ -182,7 +215,6 @@ elif eleccion == "💸 ANÁLISIS (Egresos)":
 elif eleccion == "📈 DASHBOARD & REPORTES":
     st.title("📈 Tablero Ejecutivo y Generador de Reportes")
 
-    # 1. Botón de Exportación Excel (Nuevo)
     st.subheader("📦 Descargar Consolidado Gerencial")
     st.markdown("Genera un libro de Excel con múltiples pestañas (Ventas OK, Faltantes, Fiscal) usando la información procesada.")
 
@@ -196,8 +228,6 @@ elif eleccion == "📈 DASHBOARD & REPORTES":
     )
 
     st.divider()
-
-    # 2. Métricas (Igual que antes)
     col1, col2, col3 = st.columns(3)
     tablas = get_all_tables()
 
