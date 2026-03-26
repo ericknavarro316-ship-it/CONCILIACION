@@ -48,7 +48,12 @@ def parse_bank_pdf(file_obj):
             return pd.DataFrame()
 
         # Asignar encabezados y recortar las filas superiores
-        df = pd.DataFrame(all_rows[fila_encabezado+1:], columns=all_rows[fila_encabezado])
+        # Usamos df_raw para evitar errores de longitud dispar en las listas (pandas lo rellena con None)
+        df = df_raw.iloc[fila_encabezado+1:].copy()
+
+        # El encabezado será la fila que encontramos (convertido a strings limpios)
+        encabezados = [str(col).strip() if pd.notna(col) else f"COL_{i}" for i, col in enumerate(df_raw.iloc[fila_encabezado])]
+        df.columns = encabezados
 
         # Limpiar y mapear columnas
         cols_map = {}
