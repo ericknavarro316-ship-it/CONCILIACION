@@ -105,6 +105,14 @@ def limpiar_modulo_bancos(ruta_archivo):
             # Use dictionary renaming, resolving mapping carefully
             df_est_mp = df_est_mp.rename(columns=cols_map_mp_est)
 
+            # Limpiar Fechas (para que Pandas entienda DD/MM/YYYY correctamente y no como MM/DD/YYYY)
+            if 'FECHA' in df_est_mp.columns:
+                # Mercado Pago suele mandar fechas como string. Forzamos formato día primero.
+                df_est_mp['FECHA'] = pd.to_datetime(df_est_mp['FECHA'], dayfirst=True, errors='coerce')
+                # Opcional: convertirlo a formato string estándar si así se espera en SQLite, o dejar como datetime.
+                # Lo dejamos como datetime y SQLite/Pandas lo manejarán bien.
+
+            # Limpiar Montos (Quitar comas si es texto, convertir a float)
             if 'MONTO' in df_est_mp.columns:
                 # The user noted MONTO (TRANSACTION_NET_AMOUNT) might come as text with commas like '-115,000.00'
                 if df_est_mp['MONTO'].dtype == object:
@@ -113,6 +121,12 @@ def limpiar_modulo_bancos(ruta_archivo):
                 df_est_mp['MONTO'] = pd.to_numeric(df_est_mp['MONTO'], errors='coerce')
                 df_est_mp['ABONO'] = df_est_mp['MONTO'].apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
                 df_est_mp['CARGO'] = df_est_mp['MONTO'].apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
+
+            # Limpiar Saldos (Mismo problema potencial de texto y comas)
+            if 'SALDO' in df_est_mp.columns:
+                if df_est_mp['SALDO'].dtype == object:
+                    df_est_mp['SALDO'] = df_est_mp['SALDO'].astype(str).str.replace(',', '', regex=False)
+                df_est_mp['SALDO'] = pd.to_numeric(df_est_mp['SALDO'], errors='coerce')
 
             for col_req in ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
                 if col_req not in df_est_mp.columns:
