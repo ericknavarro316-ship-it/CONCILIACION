@@ -451,8 +451,9 @@ elif eleccion == "🛒 VENTAS":
                     if col not in df_mp_aux.columns:
                         df_mp_aux[col] = ""
 
-                # Crear columna ID VENTA vacía
-                df_mp_aux['ID VENTA'] = ""
+                # Crear columna ID VENTA si no existe
+                if 'ID VENTA' not in df_mp_aux.columns:
+                    df_mp_aux['ID VENTA'] = ""
 
                 # Filtrar y ordenar
                 df_mp_vista = df_mp_aux[cols_requeridas + ['ID VENTA']].copy()

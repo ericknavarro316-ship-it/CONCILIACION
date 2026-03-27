@@ -175,32 +175,17 @@ def limpiar_modulo_bancos(ruta_archivo):
             else:
                  print(f"  ⚠️ No se encontró columna ID válida para quitar duplicados. Columnas son: {df_mp.columns.tolist()}")
 
-            # Map columns to standard for MP DETALLE
-            cols_map_mp_det = {
-                'Fecha de creación': 'FECHA',
-                'Detalle': 'CONCEPTO',
-                'Monto (MXN)': 'MONTO',
-            }
+            # No renombramos las columnas analíticas de MP porque se utilizan
+            # directamente en la vista detallada de la pestaña Ventas -> MP Detalle.
+            # Solo nos aseguramos de no perder las columnas requeridas para dicha vista.
 
-            # Map REFERENCE based on available columns to avoid duplicates
-            if 'Operación relacionada' in df_mp.columns:
-                cols_map_mp_det['Operación relacionada'] = 'REFERENCE'
-            elif 'Número de la operación' in df_mp.columns:
-                cols_map_mp_det['Número de la operación'] = 'REFERENCE'
+            # No restringimos las columnas a las finales estándar de bancos
+            # porque esta tabla es 'AUX_MP_DETALLE' y el usuario la quiere ver con
+            # sus columnas analíticas originales (Fecha del cargo, Detalle, etc)
 
-            df_mp = df_mp.rename(columns=cols_map_mp_det)
-
-            if 'MONTO' in df_mp.columns:
-                df_mp['MONTO'] = pd.to_numeric(df_mp['MONTO'], errors='coerce')
-                df_mp['ABONO'] = df_mp['MONTO'].apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
-                df_mp['CARGO'] = df_mp['MONTO'].apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
-
-            for col_req in ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
-                if col_req not in df_mp.columns:
-                    df_mp[col_req] = None
-
-            columnas_finales = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
-            df_mp = df_mp[columnas_finales]
+            # Asegurar que al menos tenga ID VENTA vacía
+            if 'ID VENTA' not in df_mp.columns:
+                df_mp['ID VENTA'] = None
 
             resultados_bancos['MP_DETALLE'] = df_mp
             hojas_procesadas.append(hoja_mp_detalle)
