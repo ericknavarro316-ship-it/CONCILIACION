@@ -85,7 +85,9 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                 with st.spinner("Procesando CFDI..."):
                     cfdis = limpiar_modulo_cfdi(archivo_subido)
                     for nombre_cfdi, df_cfdi in cfdis.items():
-                        save_df_to_sql(df_cfdi, f"CFDI_{nombre_cfdi}")
+                        # Evitar prefijo doble "CFDI_CFDI_"
+                        nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
+                        save_df_to_sql(df_cfdi, nombre_tabla)
 
                 with st.spinner("Procesando Ventas..."):
                     ventas = limpiar_modulo_ventas_v2(archivo_subido)
@@ -152,7 +154,8 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                     with st.spinner(f"Procesando {archivo.name}..."):
                         cfdis = limpiar_modulo_cfdi(archivo)
                         for nombre_cfdi, df_cfdi in cfdis.items():
-                            save_df_to_sql(df_cfdi, f"CFDI_{nombre_cfdi}")
+                            nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
+                            save_df_to_sql(df_cfdi, nombre_tabla)
                 st.success("✅ ¡CFDI guardados en la Base de Datos SQL!")
             else:
                 st.warning("⚠️ Sube un archivo CFDI primero.")
