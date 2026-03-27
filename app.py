@@ -433,7 +433,55 @@ elif eleccion == "🛒 VENTAS":
             with tab_ventas:
                 if tablas_ventas:
                     bloque = st.selectbox("Selecciona bloque operativo:", tablas_ventas)
-                    st.dataframe(get_df_from_sql(bloque), use_container_width=True)
+                    df_v = get_df_from_sql(bloque)
+
+                    # Formatear columnas para visualizacion
+                    # ID VENTA | FECHA | SUCURSAL | PRODUCTO | NUMERO DE SERIE | PRECIO UNITARIO | nombre cliente | BANCOS COBRO | NUMERO TRANSACCION | SUCURSAL BAN
+                    mapa_cols = {
+                        'id_venta': 'ID VENTA',
+                        'fecha': 'FECHA',
+                        'sucursal': 'SUCURSAL',
+                        'producto': 'PRODUCTO',
+                        'precio_unitario': 'PRECIO UNITARIO',
+                        'nombre cliente': 'nombre cliente',
+                        'bancos_cobro': 'BANCOS COBRO',
+                        'numero_transaccion': 'NUMERO TRANSACCION',
+                    }
+
+                    # Renombrar si existen en la BD original
+                    for col_old, col_new in mapa_cols.items():
+                        if col_old in df_v.columns:
+                            df_v = df_v.rename(columns={col_old: col_new})
+
+                    # Crear columnas nuevas vacias (placeholders de conciliacion)
+                    if 'NUMERO DE SERIE' not in df_v.columns:
+                        df_v['NUMERO DE SERIE'] = ""
+                    if 'SUCURSAL BAN' not in df_v.columns:
+                        df_v['SUCURSAL BAN'] = ""
+
+                    # Columnas finales a mostrar
+                    cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN']
+
+                    # Asegurar que existan (por si el excel viene distinto)
+                    for c in cols_finales_v:
+                        if c not in df_v.columns:
+                            df_v[c] = ""
+
+                    df_v_vista = df_v[cols_finales_v].copy()
+
+                    # Formatear a datetime/string si existe
+                    if 'FECHA' in df_v_vista.columns:
+                        df_v_vista['FECHA'] = pd.to_datetime(df_v_vista['FECHA'], errors='ignore').astype(str).str.replace(' 00:00:00', '')
+
+                    # Formato a dinero seguro antes del fillna("")
+                    if 'PRECIO UNITARIO' in df_v_vista.columns:
+                        df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+
+                    df_v_vista = df_v_vista.fillna("")
+                    df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
+
+                    # Mostrar tabla
+                    st.dataframe(df_v_vista, use_container_width=True, hide_index=True)
                 else:
                     st.info("No hay bloques de ventas cargados.")
 
@@ -477,7 +525,54 @@ elif eleccion == "🛒 VENTAS":
         else:
             if tablas_ventas:
                 bloque = st.selectbox("Selecciona bloque operativo:", tablas_ventas)
-                st.dataframe(get_df_from_sql(bloque), use_container_width=True)
+                df_v = get_df_from_sql(bloque)
+
+                # Formatear columnas para visualizacion
+                mapa_cols = {
+                    'id_venta': 'ID VENTA',
+                    'fecha': 'FECHA',
+                    'sucursal': 'SUCURSAL',
+                    'producto': 'PRODUCTO',
+                    'precio_unitario': 'PRECIO UNITARIO',
+                    'nombre cliente': 'nombre cliente',
+                    'bancos_cobro': 'BANCOS COBRO',
+                    'numero_transaccion': 'NUMERO TRANSACCION',
+                }
+
+                # Renombrar si existen en la BD original
+                for col_old, col_new in mapa_cols.items():
+                    if col_old in df_v.columns:
+                        df_v = df_v.rename(columns={col_old: col_new})
+
+                # Crear columnas nuevas vacias (placeholders de conciliacion)
+                if 'NUMERO DE SERIE' not in df_v.columns:
+                    df_v['NUMERO DE SERIE'] = ""
+                if 'SUCURSAL BAN' not in df_v.columns:
+                    df_v['SUCURSAL BAN'] = ""
+
+                # Columnas finales a mostrar
+                cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN']
+
+                # Asegurar que existan (por si el excel viene distinto)
+                for c in cols_finales_v:
+                    if c not in df_v.columns:
+                        df_v[c] = ""
+
+                df_v_vista = df_v[cols_finales_v].copy()
+
+                # Formatear a datetime/string si existe
+                if 'FECHA' in df_v_vista.columns:
+                    df_v_vista['FECHA'] = pd.to_datetime(df_v_vista['FECHA'], errors='ignore').astype(str).str.replace(' 00:00:00', '')
+
+                # Formato a dinero seguro antes del fillna("")
+                if 'PRECIO UNITARIO' in df_v_vista.columns:
+                    df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+
+                df_v_vista = df_v_vista.fillna("")
+                df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
+
+                # Mostrar tabla
+                st.dataframe(df_v_vista, use_container_width=True, hide_index=True)
 
 # ==========================================================
 # 📊 O00: PRE-CLÁSICOS FISCALES (NUEVO)
