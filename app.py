@@ -85,7 +85,9 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                 with st.spinner("Procesando CFDI..."):
                     cfdis = limpiar_modulo_cfdi(archivo_subido)
                     for nombre_cfdi, df_cfdi in cfdis.items():
-                        save_df_to_sql(df_cfdi, f"CFDI_{nombre_cfdi}")
+                        # Evitar prefijo doble "CFDI_CFDI_"
+                        nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
+                        save_df_to_sql(df_cfdi, nombre_tabla)
 
                 with st.spinner("Procesando Ventas..."):
                     ventas = limpiar_modulo_ventas_v2(archivo_subido)
@@ -152,7 +154,8 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                     with st.spinner(f"Procesando {archivo.name}..."):
                         cfdis = limpiar_modulo_cfdi(archivo)
                         for nombre_cfdi, df_cfdi in cfdis.items():
-                            save_df_to_sql(df_cfdi, f"CFDI_{nombre_cfdi}")
+                            nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
+                            save_df_to_sql(df_cfdi, nombre_tabla)
                 st.success("✅ ¡CFDI guardados en la Base de Datos SQL!")
             else:
                 st.warning("⚠️ Sube un archivo CFDI primero.")
@@ -335,11 +338,83 @@ elif eleccion == "🏦 BANCOS":
 
 elif eleccion == "📄 CFDI (Facturas)":
     st.title("📄 Módulo CFDI")
-    tablas = [t for t in get_all_tables() if t.startswith("CFDI_")]
-    if not tablas: st.warning("La BD está vacía.")
+
+    tablas_todas = get_all_tables()
+    tablas_cfdi_ingresos = [t for t in tablas_todas if t.startswith("CFDI_I_") or t == "PAGOS_I"]
+    tablas_cfdi_egresos = [t for t in tablas_todas if t.startswith("CFDI_E_") or t == "PAGOS_E"]
+
+    if not tablas_cfdi_ingresos and not tablas_cfdi_egresos:
+        st.warning("La BD está vacía o no hay CFDI/Pagos procesados.")
     else:
-        cfdi = st.selectbox("Selecciona bloque fiscal:", tablas)
-        st.dataframe(get_df_from_sql(cfdi), use_container_width=True)
+        # Top-level filter for INGRESOS vs EGRESOS
+        tipo_cfdi = st.radio("Selecciona Categoría:", ["INGRESOS", "EGRESOS"], horizontal=True)
+        st.divider()
+
+        tablas_mostrar = tablas_cfdi_ingresos if tipo_cfdi == "INGRESOS" else tablas_cfdi_egresos
+
+        if not tablas_mostrar:
+            st.info(f"No hay registros cargados para la categoría {tipo_cfdi}.")
+        else:
+            bloque_cfdi = st.selectbox("Selecciona bloque fiscal:", tablas_mostrar)
+            df = get_df_from_sql(bloque_cfdi)
+            df_mostrar = df.copy()
+
+            # Lógica de Columnas a Mostrar según el tipo de archivo seleccionado
+            # Agregamos placeholders vacíos para conciliaciones futuras si no existen
+            if "CFDI_I" in bloque_cfdi:
+                cols_deseadas = ['UUID', 'Fecha Emisión', 'PDF', 'Serie', 'Folio', 'RFC',
+                                 'Nombre, denominación o razón social del Receptor', 'Forma de Pago',
+                                 'Método de Pago', 'SubTotal XML', 'IVA 16', 'Total', 'Conceptos',
+                                 'BANCOS', 'ID VENTA']
+            elif "PAGOS_I" in bloque_cfdi or "PAGOS_E" in bloque_cfdi:
+                # Calcular Subtotal Pagado = Total Pagado (Monto en PAGOS = Total Pagado/ImportePagado, pero acá es "Monto" o "Total"?)
+                # SAT reports typically have 'Monto' for Pagos. The user calls it 'Total Pagado'.
+                # Let's try to find it safely.
+                total_col = next((c for c in ['Monto', 'Total', 'Total Pagado'] if c in df_mostrar.columns), None)
+                iva_col = next((c for c in ['IVA', 'IVA 16'] if c in df_mostrar.columns), None)
+
+                if total_col and iva_col:
+                    try:
+                        t = pd.to_numeric(df_mostrar[total_col], errors='coerce').fillna(0)
+                        i = pd.to_numeric(df_mostrar[iva_col], errors='coerce').fillna(0)
+                        df_mostrar['Subtotal Pagado'] = t - i
+                    except:
+                        df_mostrar['Subtotal Pagado'] = None
+                else:
+                    df_mostrar['Subtotal Pagado'] = None
+
+                # Asignar nombres estándar si varían
+                if total_col and total_col != 'Total Pagado':
+                    df_mostrar['Total Pagado'] = df_mostrar[total_col]
+
+                nombre_entidad = 'Nombre, denominación o razón social del Receptor' if "PAGOS_I" in bloque_cfdi else 'Nombre, denominación o razón social del Emisor'
+
+                cols_deseadas = ['UUID', 'PDF', 'Fecha Pago', 'Fecha Emisión', 'UUID Madre', 'Folio', 'RFC',
+                                 nombre_entidad, 'Forma de Pago', 'Subtotal Pagado',
+                                 'IVA 16' if 'IVA 16' in df_mostrar.columns else 'IVA',
+                                 'Total Pagado', 'BANCOS']
+            elif "CFDI_E" in bloque_cfdi:
+                cols_deseadas = ['UUID', 'Fecha Emisión', 'PDF', 'Serie', 'Folio', 'RFC',
+                                 'Nombre, denominación o razón social del Emisor', 'Forma de Pago',
+                                 'Método de Pago', 'Uso CFDI Receptor', 'SubTotal No Obj de Impuesto', # Usamos este como el subtotal IVA 16 si no hay otro, o SubTotal XML
+                                 'RET. ISR', 'RET. IVA', 'IVA 16', 'Total', 'Conceptos', 'BANCOS']
+                if 'SubTotal XML' in df_mostrar.columns and 'SubTotal No Obj de Impuesto' not in cols_deseadas:
+                    cols_deseadas[10] = 'SubTotal XML' # Fallback
+            else:
+                cols_deseadas = df_mostrar.columns.tolist()
+
+            # Asegurar que las columnas deseadas existan (llenar con vacío si son placeholders)
+            for col in cols_deseadas:
+                if col not in df_mostrar.columns:
+                    df_mostrar[col] = ""
+
+            # Filtrar solo las columnas solicitadas
+            df_mostrar = df_mostrar[cols_deseadas]
+
+            df_mostrar = df_mostrar.fillna("")
+            df_mostrar = df_mostrar.replace("None", "").replace("NaT", "")
+
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
 
 elif eleccion == "🛒 VENTAS":
     st.title("🛒 Módulo VENTAS")
