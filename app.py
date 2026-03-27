@@ -418,11 +418,65 @@ elif eleccion == "📄 CFDI (Facturas)":
 
 elif eleccion == "🛒 VENTAS":
     st.title("🛒 Módulo VENTAS")
-    tablas = [t for t in get_all_tables() if t.startswith("VENTAS_") and not t.endswith("CRUZADO")]
-    if not tablas: st.warning("La BD está vacía.")
+
+    # Check what tables are available
+    tablas_ventas = [t for t in get_all_tables() if t.startswith("VENTAS_") and not t.endswith("CRUZADO")]
+    tabla_mp_detalle = "AUX_MP_DETALLE" if "AUX_MP_DETALLE" in get_all_tables() else None
+
+    if not tablas_ventas and not tabla_mp_detalle:
+        st.warning("La BD está vacía. Carga tu Excel en 'Ingesta' primero.")
     else:
-        bloque = st.selectbox("Selecciona bloque operativo:", tablas)
-        st.dataframe(get_df_from_sql(bloque), use_container_width=True)
+        # Create tabs if MP Detalle is present, otherwise just show dropdown
+        if tabla_mp_detalle:
+            tab_ventas, tab_mp = st.tabs(["🛒 Ventas Registradas", "🔵 MP Detalle (Cobros y Liquidaciones)"])
+
+            with tab_ventas:
+                if tablas_ventas:
+                    bloque = st.selectbox("Selecciona bloque operativo:", tablas_ventas)
+                    st.dataframe(get_df_from_sql(bloque), use_container_width=True)
+                else:
+                    st.info("No hay bloques de ventas cargados.")
+
+            with tab_mp:
+                st.subheader("Detalle Analítico de Mercado Pago")
+                st.markdown("Tabla auxiliar que muestra el desglose de los cobros y operaciones de Mercado Pago. Útil para conciliar luego contra el Estado de Cuenta global y las Ventas.")
+
+                df_mp_aux = get_df_from_sql("AUX_MP_DETALLE")
+
+                # Columnas solicitadas: Fecha del cargo, Detalle, Valor del cargo, Operación relacionada, Nombre de sucursal, Valor de la operación, ID VENTA
+                cols_requeridas = ['Fecha del cargo', 'Detalle', 'Valor del cargo', 'Operación relacionada', 'Nombre de sucursal', 'Valor de la operación']
+
+                # Verificar y crear columnas faltantes si el Excel tenía otro formato
+                for col in cols_requeridas:
+                    if col not in df_mp_aux.columns:
+                        df_mp_aux[col] = ""
+
+                # Crear columna ID VENTA vacía
+                df_mp_aux['ID VENTA'] = ""
+
+                # Filtrar y ordenar
+                df_mp_vista = df_mp_aux[cols_requeridas + ['ID VENTA']].copy()
+
+                # Limpieza visual
+                df_mp_vista = df_mp_vista.fillna("")
+                df_mp_vista = df_mp_vista.replace("None", "").replace("NaT", "")
+
+                # Formato a fechas si existe
+                if 'Fecha del cargo' in df_mp_vista.columns:
+                    # Intenta convertir a datetime y luego a string, ignorando errores si es texto
+                    df_mp_vista['Fecha del cargo'] = pd.to_datetime(df_mp_vista['Fecha del cargo'], errors='ignore').astype(str).str.replace(' 00:00:00', '')
+
+                # Formato a dinero
+                for col_moneda in ['Valor del cargo', 'Valor de la operación']:
+                    if col_moneda in df_mp_vista.columns:
+                        df_mp_vista[col_moneda] = pd.to_numeric(df_mp_vista[col_moneda], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+
+                st.dataframe(df_mp_vista, use_container_width=True, hide_index=True)
+
+        else:
+            if tablas_ventas:
+                bloque = st.selectbox("Selecciona bloque operativo:", tablas_ventas)
+                st.dataframe(get_df_from_sql(bloque), use_container_width=True)
 
 # ==========================================================
 # 📊 O00: PRE-CLÁSICOS FISCALES (NUEVO)
