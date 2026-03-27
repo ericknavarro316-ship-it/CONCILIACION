@@ -46,14 +46,13 @@ def limpiar_modulo_ventas(ruta_archivo):
     mask_sz = df_ventas['bancos_cobro'].str.contains('SCOOTERZONE', case=False)
     bloques_ventas['VENTAS_SCOOTERZONE'] = df_ventas[mask_sz].copy()
 
-    # 4. Físico / Efectivo (Si contiene 'Físico')
-    mask_fisico = df_ventas['bancos_cobro'].str.contains('Físico', case=False)
-    bloques_ventas['VENTAS_FISICO'] = df_ventas[mask_fisico].copy()
-
-    # 5. SIN BANCO (Los que dicen SIN_ESPECIFICAR o métodos raros que no encajan en los 4 principales)
-    # Por ejemplo, Aliantextil o Lance, si no están mapeados a bancos
-    mask_sin_banco = ~(mask_mp | mask_bbva | mask_sz | mask_fisico)
+    # 5. SIN BANCO (Únicamente los que están vacíos, marcados como SIN_ESPECIFICAR)
+    mask_sin_banco = df_ventas['bancos_cobro'] == 'SIN_ESPECIFICAR'
     bloques_ventas['VENTAS_SIN_BANCO'] = df_ventas[mask_sin_banco].copy()
+
+    # 4. Físico / Efectivo (Si contiene 'Físico' o si NO es MP, BBVA, SZ y no está vacío)
+    mask_fisico = df_ventas['bancos_cobro'].str.contains('Físico', case=False) | (~mask_mp & ~mask_bbva & ~mask_sz & ~mask_sin_banco)
+    bloques_ventas['VENTAS_FISICO'] = df_ventas[mask_fisico].copy()
 
     # OJO: Si una venta dice "Físico, BBVA", se copiará en AMBOS bloques.
     # Esto es común en sistemas de punto de venta (Split Payment).
