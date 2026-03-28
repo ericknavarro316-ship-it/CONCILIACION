@@ -7,6 +7,7 @@ from modulo_bancos_fix import limpiar_mp
 from modulo_bancos import limpiar_modulo_bancos
 from modulo_cfdi import limpiar_modulo_cfdi
 from modulo_ventas_ajustado import limpiar_modulo_ventas_v2
+from modulo_ventas_resumen import limpiar_reporte_ventas_csv
 from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables
 
 # Motores de análisis
@@ -128,20 +129,34 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
                  st.warning("Sube un archivo de banco primero.")
 
     with tab3:
-        st.markdown("### Carga de Notas de Venta (Individual)")
-        st.markdown("Sube los archivos que contengan las ventas registradas.")
-        archivo_ventas = st.file_uploader("📂 Cargar Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
+        st.markdown("### Carga de Notas de Venta y Reporte Resumen")
+        st.markdown("Sube los archivos que contengan las ventas registradas o el reporte de resumen (CSV).")
+        archivo_ventas = st.file_uploader("📂 Cargar Notas de Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
+        archivo_ventas_csv = st.file_uploader("📂 Cargar Reporte de Ventas (CSV con ;)", type=['csv'], accept_multiple_files=True, key="ventas_csv")
 
-        if st.button("Procesar Ventas", type="primary", key="btn_ventas"):
+        if st.button("Procesar Ventas y Resumen", type="primary", key="btn_ventas"):
+            procesados_ventas = False
+
             if archivo_ventas:
                 for archivo in archivo_ventas:
-                    with st.spinner(f"Procesando {archivo.name}..."):
+                    with st.spinner(f"Procesando Notas de Venta de {archivo.name}..."):
                         ventas = limpiar_modulo_ventas_v2(archivo)
                         for nombre_venta, df_venta in ventas.items():
                             save_df_to_sql(df_venta, nombre_venta)
-                st.success("✅ ¡Ventas guardadas en la Base de Datos SQL!")
+                procesados_ventas = True
+
+            if archivo_ventas_csv:
+                for archivo in archivo_ventas_csv:
+                    with st.spinner(f"Procesando Resumen de Ventas CSV de {archivo.name}..."):
+                        ventas_resumen = limpiar_reporte_ventas_csv(archivo)
+                        for nombre_venta, df_venta in ventas_resumen.items():
+                            save_df_to_sql(df_venta, nombre_venta)
+                procesados_ventas = True
+
+            if procesados_ventas:
+                st.success("✅ ¡Ventas y Resumen guardados en la Base de Datos SQL!")
             else:
-                st.warning("⚠️ Sube un archivo de ventas primero.")
+                st.warning("⚠️ Sube al menos un archivo de ventas o reporte CSV primero.")
 
     with tab4:
         st.markdown("### Carga de CFDI (Individual)")
@@ -419,24 +434,121 @@ elif eleccion == "📄 CFDI (Facturas)":
 elif eleccion == "🛒 VENTAS":
     st.title("🛒 Módulo VENTAS")
 
+    tablas_todas = get_all_tables()
     # Check what tables are available
-    tablas_ventas = [t for t in get_all_tables() if t.startswith("VENTAS_") and not t.endswith("CRUZADO")]
-    tabla_mp_detalle = "AUX_MP_DETALLE" if "AUX_MP_DETALLE" in get_all_tables() else None
+    tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_RESUMEN"]
+    tabla_mp_detalle = "AUX_MP_DETALLE" if "AUX_MP_DETALLE" in tablas_todas else None
+    tabla_resumen = "VENTAS_RESUMEN" if "VENTAS_RESUMEN" in tablas_todas else None
 
-    if not tablas_ventas and not tabla_mp_detalle:
-        st.warning("La BD está vacía. Carga tu Excel en 'Ingesta' primero.")
+    if not tablas_ventas and not tabla_mp_detalle and not tabla_resumen:
+        st.warning("La BD está vacía. Carga tu Excel o CSV en 'Ingesta' primero.")
     else:
-        # Create tabs if MP Detalle is present, otherwise just show dropdown
+        # Configurar pestañas de acuerdo a lo que exista
+        tabs_names = []
+        if tabla_resumen:
+            tabs_names.append("📈 Resumen de Ventas (CSV)")
+        if tablas_ventas or tabla_mp_detalle:
+            tabs_names.append("🛒 Notas de Ventas (Detalle)")
         if tabla_mp_detalle:
-            tab_ventas, tab_mp = st.tabs(["🛒 Ventas Registradas", "🔵 MP Detalle (Cobros y Liquidaciones)"])
+            tabs_names.append("🔵 MP Detalle (Cobros)")
 
-            with tab_ventas:
+        tabs = st.tabs(tabs_names)
+
+        tab_idx = 0
+
+        if tabla_resumen:
+            with tabs[tab_idx]:
+                st.subheader("Resumen Global de Ventas (Importado de CSV)")
+                df_resumen = get_df_from_sql("VENTAS_RESUMEN")
+
+                # Formatear la tabla del CSV para la vista
+                if not df_resumen.empty:
+                    # Formatear columnas de fecha
+                    if 'fecha venta' in df_resumen.columns:
+                        df_resumen['fecha venta'] = pd.to_datetime(df_resumen['fecha venta'], errors='ignore').astype(str).str.replace(' 00:00:00', '')
+
+                    # Guardamos un respaldo numérico antes de formatear para poder sumar correctamente
+                    df_numerico = df_resumen.copy()
+
+                    # Formatear montos
+                    columnas_dinero = ['total (antes descuento)', 'efectivo', 'tarjeta crédito', 'tarjeta débito', 'transferencia', 'deposito', 'total real']
+                    for col in columnas_dinero:
+                        if col in df_resumen.columns:
+                            df_resumen[col] = pd.to_numeric(df_resumen[col], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00")
+
+                    # Limpieza visual
+                    df_resumen = df_resumen.fillna("")
+                    df_resumen = df_resumen.replace("None", "").replace("NaT", "")
+
+                    # --- VISTA DE COLUMNAS EXACTA ---
+                    # Mapear a mayúsculas o nombres específicos según solicitud
+                    map_cols_resumen = {
+                        'id venta': 'ID Venta',
+                        'fecha venta': 'Fecha Venta',
+                        'total (antes descuento)': 'Total (antes descuento)',
+                        'forma pago': 'Forma pago',
+                        'efectivo': 'Efectivo',
+                        'tarjeta crédito': 'Tarjeta Crédito',
+                        'transferencia': 'Transferencia',
+                        'cliente': 'Cliente',
+                        'tipo cliente': 'Tipo cliente',
+                        'sucursal': 'Sucursal'
+                    }
+
+                    for col_old, col_new in map_cols_resumen.items():
+                        if col_old in df_resumen.columns:
+                            df_resumen = df_resumen.rename(columns={col_old: col_new})
+
+                    # Agregar columnas que se obtendrán por conciliación en el futuro
+                    columnas_futuras = ['NUMERO DE TRANSACCION', 'SUCURSAL BAN', 'UUID', 'OBSERVACION']
+                    for c in columnas_futuras:
+                        if c not in df_resumen.columns:
+                            df_resumen[c] = ""
+
+                    # Ordenar y seleccionar solo las columnas de la vista
+                    cols_vista_resumen = [
+                        'ID Venta', 'Fecha Venta', 'Total (antes descuento)', 'Forma pago',
+                        'NUMERO DE TRANSACCION', 'Efectivo', 'Tarjeta Crédito', 'Transferencia',
+                        'Cliente', 'Tipo cliente', 'Sucursal', 'SUCURSAL BAN', 'UUID', 'OBSERVACION'
+                    ]
+
+                    # Asegurarse de que existan (por si el CSV no las tenía)
+                    for c in cols_vista_resumen:
+                        if c not in df_resumen.columns:
+                            df_resumen[c] = ""
+
+                    df_vista_final_resumen = df_resumen[cols_vista_resumen].copy()
+
+                    # Métricas Generales (Monto Total, Efectivo Total, Tarjetas)
+                    st.markdown("#### Métricas de Resumen")
+
+                    # Asegurar números para la suma usando df_numerico (antes de formatear como texto)
+                    monto_total = pd.to_numeric(df_numerico['total real'], errors='coerce').sum() if 'total real' in df_numerico.columns else 0
+                    efectivo_total = pd.to_numeric(df_numerico['efectivo'], errors='coerce').sum() if 'efectivo' in df_numerico.columns else 0
+
+                    credito = pd.to_numeric(df_numerico['tarjeta crédito'], errors='coerce').sum() if 'tarjeta crédito' in df_numerico.columns else 0
+                    debito = pd.to_numeric(df_numerico['tarjeta débito'], errors='coerce').sum() if 'tarjeta débito' in df_numerico.columns else 0
+                    tarjetas_total = credito + debito
+
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    col_m1.metric("💰 Total Real Acumulado", f"${monto_total:,.2f}")
+                    col_m2.metric("💵 Total Efectivo", f"${efectivo_total:,.2f}")
+                    col_m3.metric("💳 Total Tarjetas (Crédito+Débito)", f"${tarjetas_total:,.2f}")
+                    col_m4.metric("📊 Total Operaciones", len(df_vista_final_resumen))
+
+                    st.dataframe(df_vista_final_resumen, use_container_width=True, hide_index=True)
+                else:
+                    st.info("La tabla de resumen está vacía.")
+            tab_idx += 1
+
+        if tablas_ventas or tabla_mp_detalle:
+            with tabs[tab_idx]:
+
                 if tablas_ventas:
-                    bloque = st.selectbox("Selecciona bloque operativo:", tablas_ventas)
+                    bloque = st.selectbox("Selecciona bloque operativo (Notas Detalle):", tablas_ventas)
                     df_v = get_df_from_sql(bloque)
 
                     # Formatear columnas para visualizacion
-                    # ID VENTA | FECHA | SUCURSAL | PRODUCTO | NUMERO DE SERIE | PRECIO UNITARIO | nombre cliente | BANCOS COBRO | NUMERO TRANSACCION | SUCURSAL BAN
                     mapa_cols = {
                         'id_venta': 'ID VENTA',
                         'fecha': 'FECHA',
@@ -483,9 +595,11 @@ elif eleccion == "🛒 VENTAS":
                     # Mostrar tabla
                     st.dataframe(df_v_vista, use_container_width=True, hide_index=True)
                 else:
-                    st.info("No hay bloques de ventas cargados.")
+                    st.info("No hay bloques de notas de ventas cargados.")
+            tab_idx += 1
 
-            with tab_mp:
+        if tabla_mp_detalle:
+            with tabs[tab_idx]:
                 st.subheader("Detalle Analítico de Mercado Pago")
                 st.markdown("Tabla auxiliar que muestra el desglose de los cobros y operaciones de Mercado Pago. Útil para conciliar luego contra el Estado de Cuenta global y las Ventas.")
 
@@ -522,57 +636,6 @@ elif eleccion == "🛒 VENTAS":
 
                 st.dataframe(df_mp_vista, use_container_width=True, hide_index=True)
 
-        else:
-            if tablas_ventas:
-                bloque = st.selectbox("Selecciona bloque operativo:", tablas_ventas)
-                df_v = get_df_from_sql(bloque)
-
-                # Formatear columnas para visualizacion
-                mapa_cols = {
-                    'id_venta': 'ID VENTA',
-                    'fecha': 'FECHA',
-                    'sucursal': 'SUCURSAL',
-                    'producto': 'PRODUCTO',
-                    'precio_unitario': 'PRECIO UNITARIO',
-                    'nombre cliente': 'nombre cliente',
-                    'bancos_cobro': 'BANCOS COBRO',
-                    'numero_transaccion': 'NUMERO TRANSACCION',
-                }
-
-                # Renombrar si existen en la BD original
-                for col_old, col_new in mapa_cols.items():
-                    if col_old in df_v.columns:
-                        df_v = df_v.rename(columns={col_old: col_new})
-
-                # Crear columnas nuevas vacias (placeholders de conciliacion)
-                if 'NUMERO DE SERIE' not in df_v.columns:
-                    df_v['NUMERO DE SERIE'] = ""
-                if 'SUCURSAL BAN' not in df_v.columns:
-                    df_v['SUCURSAL BAN'] = ""
-
-                # Columnas finales a mostrar
-                cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN']
-
-                # Asegurar que existan (por si el excel viene distinto)
-                for c in cols_finales_v:
-                    if c not in df_v.columns:
-                        df_v[c] = ""
-
-                df_v_vista = df_v[cols_finales_v].copy()
-
-                # Formatear a datetime/string si existe
-                if 'FECHA' in df_v_vista.columns:
-                    df_v_vista['FECHA'] = pd.to_datetime(df_v_vista['FECHA'], errors='ignore').astype(str).str.replace(' 00:00:00', '')
-
-                # Formato a dinero seguro antes del fillna("")
-                if 'PRECIO UNITARIO' in df_v_vista.columns:
-                    df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-
-                df_v_vista = df_v_vista.fillna("")
-                df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
-
-                # Mostrar tabla
-                st.dataframe(df_v_vista, use_container_width=True, hide_index=True)
 
 # ==========================================================
 # 📊 O00: PRE-CLÁSICOS FISCALES (NUEVO)
