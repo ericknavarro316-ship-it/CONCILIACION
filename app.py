@@ -480,6 +480,45 @@ elif eleccion == "🛒 VENTAS":
                     df_resumen = df_resumen.fillna("")
                     df_resumen = df_resumen.replace("None", "").replace("NaT", "")
 
+                    # --- VISTA DE COLUMNAS EXACTA ---
+                    # Mapear a mayúsculas o nombres específicos según solicitud
+                    map_cols_resumen = {
+                        'id venta': 'ID Venta',
+                        'fecha venta': 'Fecha Venta',
+                        'total (antes descuento)': 'Total (antes descuento)',
+                        'forma pago': 'Forma pago',
+                        'efectivo': 'Efectivo',
+                        'tarjeta crédito': 'Tarjeta Crédito',
+                        'transferencia': 'Transferencia',
+                        'cliente': 'Cliente',
+                        'tipo cliente': 'Tipo cliente',
+                        'sucursal': 'Sucursal'
+                    }
+
+                    for col_old, col_new in map_cols_resumen.items():
+                        if col_old in df_resumen.columns:
+                            df_resumen = df_resumen.rename(columns={col_old: col_new})
+
+                    # Agregar columnas que se obtendrán por conciliación en el futuro
+                    columnas_futuras = ['NUMERO DE TRANSACCION', 'SUCURSAL BAN', 'UUID', 'OBSERVACION']
+                    for c in columnas_futuras:
+                        if c not in df_resumen.columns:
+                            df_resumen[c] = ""
+
+                    # Ordenar y seleccionar solo las columnas de la vista
+                    cols_vista_resumen = [
+                        'ID Venta', 'Fecha Venta', 'Total (antes descuento)', 'Forma pago',
+                        'NUMERO DE TRANSACCION', 'Efectivo', 'Tarjeta Crédito', 'Transferencia',
+                        'Cliente', 'Tipo cliente', 'Sucursal', 'SUCURSAL BAN', 'UUID', 'OBSERVACION'
+                    ]
+
+                    # Asegurarse de que existan (por si el CSV no las tenía)
+                    for c in cols_vista_resumen:
+                        if c not in df_resumen.columns:
+                            df_resumen[c] = ""
+
+                    df_vista_final_resumen = df_resumen[cols_vista_resumen].copy()
+
                     # Métricas Generales (Monto Total, Efectivo Total, Tarjetas)
                     st.markdown("#### Métricas de Resumen")
 
@@ -495,9 +534,9 @@ elif eleccion == "🛒 VENTAS":
                     col_m1.metric("💰 Total Real Acumulado", f"${monto_total:,.2f}")
                     col_m2.metric("💵 Total Efectivo", f"${efectivo_total:,.2f}")
                     col_m3.metric("💳 Total Tarjetas (Crédito+Débito)", f"${tarjetas_total:,.2f}")
-                    col_m4.metric("📊 Total Operaciones", len(df_resumen))
+                    col_m4.metric("📊 Total Operaciones", len(df_vista_final_resumen))
 
-                    st.dataframe(df_resumen, use_container_width=True, hide_index=True)
+                    st.dataframe(df_vista_final_resumen, use_container_width=True, hide_index=True)
                 else:
                     st.info("La tabla de resumen está vacía.")
             tab_idx += 1
