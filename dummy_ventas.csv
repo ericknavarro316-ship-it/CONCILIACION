@@ -1,0 +1,4 @@
+id;fecha_venta;total_antes_descuento;forma_pago;numero_transaccion;efectivo;tarjeta_credito;transferencia;cliente;tipo_cliente;sucursal
+1;2023-10-01;1000.00;EFECTIVO;TX001;1000.00;0.00;0.00;Juan Perez;Publico General;Norte
+2;2023-10-02;500.00;TARJETA;TX002;0.00;500.00;0.00;Maria Lopez;Mayorista;Sur
+3;2023-10-02;1500.00;TRANSFERENCIA;TX003;0.00;0.00;1500.00;Empresa SA;Corporativo;Norte
