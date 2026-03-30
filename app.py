@@ -22,7 +22,7 @@ from export_excel import generate_final_report
 from engine_egresos import run_egresos_crosscheck
 from pdf_reader import parse_bank_pdf
 
-st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon="🏢", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon=":material/account_balance:", initial_sidebar_state="collapsed")
 
 # 1. ESTILOS CSS
 with open("style.css") as f:
@@ -37,24 +37,94 @@ if not os.path.exists("conciliacion_data.db"):
     import database_sqlite
     database_sqlite.init_db()
 
+# 3. HELPER DE FILTROS GLOBALES
+def render_filtros_globales(df, col_fecha, key_prefix):
+    """Renderiza controles de Mes, Fecha y Búsqueda sobre un dataframe, retornando el DF filtrado."""
+    if df.empty:
+        return df
+
+    # --- PREPARACIÓN DE DATOS ---
+    df_filtrado = df.copy()
+    if col_fecha and col_fecha in df_filtrado.columns:
+        df_filtrado['FECHA_DT_TMP'] = pd.to_datetime(df_filtrado[col_fecha], errors='coerce')
+        # Obtener lista de meses únicos (ej. "2024-01")
+        meses_unicos = df_filtrado['FECHA_DT_TMP'].dt.to_period('M').dropna().unique()
+        lista_meses = ["Todos"] + sorted([str(m) for m in meses_unicos], reverse=True)
+    else:
+        lista_meses = ["Todos"]
+        df_filtrado['FECHA_DT_TMP'] = pd.NaT
+
+    # --- UI: FILTROS SUPERIORES ---
+    with st.expander("🛠️ Opciones de Filtrado Búsqueda", expanded=True):
+        col1, col2, col3 = st.columns([1, 1, 2])
+
+        with col1:
+            mes_sel = st.selectbox("📅 Filtrar por Mes:", lista_meses, key=f"mes_{key_prefix}")
+
+        with col2:
+            min_date = df_filtrado['FECHA_DT_TMP'].min() if not pd.isna(df_filtrado['FECHA_DT_TMP'].min()) else None
+            max_date = df_filtrado['FECHA_DT_TMP'].max() if not pd.isna(df_filtrado['FECHA_DT_TMP'].max()) else None
+
+            if min_date and max_date:
+                col2_1, col2_2 = st.columns(2)
+                with col2_1:
+                    fecha_desde = st.date_input("Desde:", value=None, min_value=min_date.date(), max_value=max_date.date(), key=f"desde_{key_prefix}")
+                with col2_2:
+                    fecha_hasta = st.date_input("Hasta:", value=None, min_value=min_date.date(), max_value=max_date.date(), key=f"hasta_{key_prefix}")
+            else:
+                fecha_desde = None
+                fecha_hasta = None
+
+        with col3:
+            busqueda = st.text_input("🔍 Buscar (Texto libre):", "", key=f"buscar_{key_prefix}")
+
+    # --- APLICAR FILTROS ---
+    if mes_sel != "Todos":
+        df_filtrado = df_filtrado[df_filtrado['FECHA_DT_TMP'].dt.strftime('%Y-%m') == mes_sel]
+
+    if fecha_desde is not None:
+        df_filtrado = df_filtrado[df_filtrado['FECHA_DT_TMP'].dt.date >= fecha_desde]
+    if fecha_hasta is not None:
+        df_filtrado = df_filtrado[df_filtrado['FECHA_DT_TMP'].dt.date <= fecha_hasta]
+
+    if busqueda:
+        busqueda_lower = str(busqueda).lower()
+        mask_busqueda = df_filtrado.astype(str).apply(lambda row: row.str.lower().str.contains(busqueda_lower).any(), axis=1)
+        df_filtrado = df_filtrado[mask_busqueda]
+
+    # Limpiar columna temporal
+    if 'FECHA_DT_TMP' in df_filtrado.columns:
+        df_filtrado = df_filtrado.drop(columns=['FECHA_DT_TMP'])
+
+    return df_filtrado
+
 # ==========================================================
 # MENÚ LATERAL
 # ==========================================================
-st.sidebar.title("🏢 Módulos Avanzados")
-opciones = ["🏠 Ingesta (Excel / PDF)", "🏦 BANCOS", "📄 CFDI (Facturas)", "🛒 VENTAS", "📊 O00: PRE-CLÁSICOS FISCALES", "📈 I00: CRUCE INGRESOS (Ventas)", "💸 CRUCE EGRESOS", "📈 DASHBOARD & REPORTES"]
+st.sidebar.title(":material/dashboard_customize: Módulos Avanzados")
+opciones = [
+    "📥 Ingesta (Excel / PDF)",
+    "🏦 BANCOS",
+    "📄 CFDI (Facturas)",
+    "🛒 VENTAS",
+    "⚙️ O00: PRE-CLÁSICOS FISCALES",
+    "🔄 I00: CRUCE INGRESOS (Ventas)",
+    "💸 CRUCE EGRESOS",
+    "📊 DASHBOARD & REPORTES"
+]
 eleccion = st.sidebar.radio("Navegar:", opciones)
 
 # Logout en Sidebar
 st.sidebar.divider()
-if st.sidebar.button("🔒 Cerrar Sesión"):
+if st.sidebar.button(":material/logout: Cerrar Sesión"):
     st.session_state["password_correct"] = False
     st.rerun()
 
 # ==========================================================
-# 🏠 INICIO E INGESTA
+# 📥 INICIO E INGESTA
 # ==========================================================
-if eleccion == "🏠 Ingesta (Excel / PDF)":
-    st.title("Procesamiento de Archivos (ETL)")
+if eleccion == "📥 Ingesta (Excel / PDF)":
+    st.title(":material/cloud_upload: Procesamiento de Archivos (ETL)")
 
     st.markdown("Carga tus archivos de forma individual o un archivo consolidado.")
 
@@ -179,7 +249,7 @@ if eleccion == "🏠 Ingesta (Excel / PDF)":
 # MÓDULOS DE VISUALIZACIÓN BÁSICA
 # ==========================================================
 elif eleccion == "🏦 BANCOS":
-    st.title("🏦 Módulo BANCOS")
+    st.title(":material/account_balance: Módulo BANCOS")
     tablas = [t for t in get_all_tables() if t.startswith("BANCO_")]
 
     if not tablas:
@@ -220,83 +290,17 @@ elif eleccion == "🏦 BANCOS":
                 st.info("La tabla seleccionada no contiene registros.")
                 return
 
-            # --- PREPARACIÓN DE DATOS ---
-            # Asegurar que FECHA es datetime para poder filtrar
-            if 'FECHA' in df.columns:
-                df['FECHA_DT'] = pd.to_datetime(df['FECHA'], errors='coerce')
-                # Obtener lista de meses únicos (ej. "2024-01")
-                meses_unicos = df['FECHA_DT'].dt.to_period('M').dropna().unique()
-                lista_meses = ["Todos"] + sorted([str(m) for m in meses_unicos], reverse=True)
-            else:
-                lista_meses = ["Todos"]
-                df['FECHA_DT'] = pd.NaT
-
-            # --- UI: FILTROS SUPERIORES ---
-            col1, col2, col3 = st.columns([1, 1, 2])
-
-            with col1:
-                mes_sel = st.selectbox("📅 Filtrar por Mes:", lista_meses, key=f"mes_{key_prefix}")
-
-            with col2:
-                # Determinar min y max dates
-                min_date = df['FECHA_DT'].min() if not pd.isna(df['FECHA_DT'].min()) else None
-                max_date = df['FECHA_DT'].max() if not pd.isna(df['FECHA_DT'].max()) else None
-
-                if min_date and max_date:
-                    col2_1, col2_2 = st.columns(2)
-                    with col2_1:
-                        fecha_desde = st.date_input(
-                            "Desde:",
-                            value=None,
-                            min_value=min_date.date(),
-                            max_value=max_date.date(),
-                            key=f"desde_{key_prefix}"
-                        )
-                    with col2_2:
-                        fecha_hasta = st.date_input(
-                            "Hasta:",
-                            value=None,
-                            min_value=min_date.date(),
-                            max_value=max_date.date(),
-                            key=f"hasta_{key_prefix}"
-                        )
-                else:
-                    fecha_desde = None
-                    fecha_hasta = None
-                    st.write("Sin fechas válidas")
-
-            with col3:
-                busqueda = st.text_input("🔍 Buscar (Concepto, Referencia, Monto, etc):", "", key=f"buscar_{key_prefix}")
-
-            # --- APLICAR FILTROS ---
-            df_filtrado = df.copy()
-
-            # Filtro por Mes
-            if mes_sel != "Todos":
-                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.strftime('%Y-%m') == mes_sel]
-
-            # Filtro Rango Fechas
-            if fecha_desde is not None:
-                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.date >= fecha_desde]
-            if fecha_hasta is not None:
-                df_filtrado = df_filtrado[df_filtrado['FECHA_DT'].dt.date <= fecha_hasta]
-
-            # Filtro por Búsqueda (Texto Libre)
-            if busqueda:
-                busqueda_lower = str(busqueda).lower()
-                # Buscar en todas las columnas convirtiendo la fila a string
-                mask_busqueda = df_filtrado.astype(str).apply(lambda row: row.str.lower().str.contains(busqueda_lower).any(), axis=1)
-                df_filtrado = df_filtrado[mask_busqueda]
+            # Aplicar filtros globales usando la columna 'FECHA'
+            df_filtrado = render_filtros_globales(df, col_fecha='FECHA', key_prefix=key_prefix)
 
             # --- UI: MÉTRICAS RESUMEN ---
             # Calcular totales del dataframe filtrado
             tot_cargo = pd.to_numeric(df_filtrado['CARGO'], errors='coerce').sum() if 'CARGO' in df_filtrado.columns else 0
             tot_abono = pd.to_numeric(df_filtrado['ABONO'], errors='coerce').sum() if 'ABONO' in df_filtrado.columns else 0
 
-            # Obtener el último saldo (ordenando por fecha si es posible, o simplemente el último de la lista)
+            # Obtener el último saldo
             saldo_final = 0
             if 'SALDO' in df_filtrado.columns and not df_filtrado.empty:
-                 # Si la fecha está ordenada ascendente, el último registro tiene el saldo final
                  ultimo_saldo = pd.to_numeric(df_filtrado['SALDO'], errors='coerce').dropna().tail(1)
                  if not ultimo_saldo.empty:
                      saldo_final = ultimo_saldo.iloc[0]
@@ -308,8 +312,7 @@ elif eleccion == "🏦 BANCOS":
             m4.metric("📝 Movimientos", len(df_filtrado))
 
             # --- UI: TABLA DE DATOS ---
-            # Quitar columna auxiliar FECHA_DT
-            df_mostrar = df_filtrado.drop(columns=['FECHA_DT']) if 'FECHA_DT' in df_filtrado.columns else df_filtrado
+            df_mostrar = df_filtrado.copy()
 
             # Reordenar columnas a 10 columnas estándar si existen
             columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
@@ -352,7 +355,7 @@ elif eleccion == "🏦 BANCOS":
                 render_bank_panel(cuenta_sel, key_prefix=f"{nombre_banco}_{cuenta_sel}")
 
 elif eleccion == "📄 CFDI (Facturas)":
-    st.title("📄 Módulo CFDI")
+    st.title(":material/receipt_long: Módulo CFDI")
 
     tablas_todas = get_all_tables()
     tablas_cfdi_ingresos = [t for t in tablas_todas if t.startswith("CFDI_I_") or t == "PAGOS_I"]
@@ -372,7 +375,16 @@ elif eleccion == "📄 CFDI (Facturas)":
         else:
             bloque_cfdi = st.selectbox("Selecciona bloque fiscal:", tablas_mostrar)
             df = get_df_from_sql(bloque_cfdi)
-            df_mostrar = df.copy()
+
+            # Identificar la columna de fecha para este bloque para los filtros
+            col_fecha = 'Fecha Emisión'
+            if "PAGOS" in bloque_cfdi:
+                col_fecha = 'Fecha Pago'
+
+            # Aplicar filtros globales
+            df_filtrado = render_filtros_globales(df, col_fecha=col_fecha, key_prefix=f"cfdi_{bloque_cfdi}")
+
+            df_mostrar = df_filtrado.copy()
 
             # Lógica de Columnas a Mostrar según el tipo de archivo seleccionado
             # Agregamos placeholders vacíos para conciliaciones futuras si no existen
@@ -432,7 +444,7 @@ elif eleccion == "📄 CFDI (Facturas)":
             st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
 
 elif eleccion == "🛒 VENTAS":
-    st.title("🛒 Módulo VENTAS")
+    st.title(":material/point_of_sale: Módulo VENTAS")
 
     tablas_todas = get_all_tables()
     # Check what tables are available
@@ -459,7 +471,10 @@ elif eleccion == "🛒 VENTAS":
         if tabla_resumen:
             with tabs[tab_idx]:
                 st.subheader("Resumen Global de Ventas (Importado de CSV)")
-                df_resumen = get_df_from_sql("VENTAS_RESUMEN")
+                df_resumen_raw = get_df_from_sql("VENTAS_RESUMEN")
+
+                # Aplicar filtros globales
+                df_resumen = render_filtros_globales(df_resumen_raw, col_fecha='fecha venta', key_prefix='resumen_ventas')
 
                 # Formatear la tabla del CSV para la vista
                 if not df_resumen.empty:
@@ -467,14 +482,14 @@ elif eleccion == "🛒 VENTAS":
                     if 'fecha venta' in df_resumen.columns:
                         df_resumen['fecha venta'] = pd.to_datetime(df_resumen['fecha venta'], errors='ignore').astype(str).str.replace(' 00:00:00', '')
 
-                    # Guardamos un respaldo numérico antes de formatear para poder sumar correctamente
-                    df_numerico = df_resumen.copy()
-
-                    # Formatear montos
+                    # Convertir a flotantes reales
                     columnas_dinero = ['total (antes descuento)', 'efectivo', 'tarjeta crédito', 'tarjeta débito', 'transferencia', 'deposito', 'total real']
                     for col in columnas_dinero:
                         if col in df_resumen.columns:
-                            df_resumen[col] = pd.to_numeric(df_resumen[col], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00")
+                            df_resumen[col] = pd.to_numeric(df_resumen[col], errors='coerce')
+
+                    # El respaldo numérico es directamente el df ahora
+                    df_numerico = df_resumen.copy()
 
                     # Limpieza visual
                     df_resumen = df_resumen.fillna("")
@@ -536,7 +551,65 @@ elif eleccion == "🛒 VENTAS":
                     col_m3.metric("💳 Total Tarjetas (Crédito+Débito)", f"${tarjetas_total:,.2f}")
                     col_m4.metric("📊 Total Operaciones", len(df_vista_final_resumen))
 
-                    st.dataframe(df_vista_final_resumen, use_container_width=True, hide_index=True)
+                    st.divider()
+                    st.markdown("#### Análisis Gráfico")
+                    col_graf1, col_graf2 = st.columns(2)
+
+                    with col_graf1:
+                        # Gráfica de Métodos de Pago
+                        st.markdown("**Composición de Ingresos**")
+                        datos_pastel = pd.DataFrame({
+                            "Método": ["Efectivo", "Tarjetas (Crédito/Débito)"],
+                            "Total": [efectivo_total, tarjetas_total]
+                        })
+                        # Filtrar ceros
+                        datos_pastel = datos_pastel[datos_pastel["Total"] > 0]
+                        if not datos_pastel.empty:
+                            import altair as alt
+                            graf_pastel = alt.Chart(datos_pastel).mark_arc(innerRadius=50).encode(
+                                theta=alt.Theta(field="Total", type="quantitative"),
+                                color=alt.Color(field="Método", type="nominal", legend=alt.Legend(title="Métodos")),
+                                tooltip=['Método', alt.Tooltip('Total:Q', format='$,.2f')]
+                            ).properties(height=250)
+                            st.altair_chart(graf_pastel, use_container_width=True)
+                        else:
+                            st.info("No hay datos de ingresos para graficar.")
+
+                    with col_graf2:
+                        # Gráfica por Sucursal
+                        st.markdown("**Ventas por Sucursal**")
+                        if 'Sucursal' in df_vista_final_resumen.columns and 'total real' in df_numerico.columns:
+                            df_sucursales = pd.DataFrame({
+                                'Sucursal': df_vista_final_resumen['Sucursal'],
+                                'Total Real': df_numerico['total real']
+                            })
+                            # Rellenar vacíos
+                            df_sucursales['Sucursal'] = df_sucursales['Sucursal'].replace('', 'Sin Sucursal').fillna('Sin Sucursal')
+                            agrupado_sucursal = df_sucursales.groupby('Sucursal')['Total Real'].sum().reset_index()
+                            # Filtrar mayores a 0
+                            agrupado_sucursal = agrupado_sucursal[agrupado_sucursal['Total Real'] > 0]
+
+                            if not agrupado_sucursal.empty:
+                                graf_barras = alt.Chart(agrupado_sucursal).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
+                                    x=alt.X('Total Real:Q', title='Monto Total', axis=alt.Axis(format='$,.0f')),
+                                    y=alt.Y('Sucursal:N', sort='-x', title=''),
+                                    color=alt.Color('Sucursal:N', legend=None),
+                                    tooltip=['Sucursal', alt.Tooltip('Total Real:Q', format='$,.2f')]
+                                ).properties(height=250)
+                                st.altair_chart(graf_barras, use_container_width=True)
+                            else:
+                                st.info("No hay sucursales con ventas para graficar.")
+
+                    st.divider()
+
+                    # Column Config
+                    cols_dinero_formateadas = ['Total (antes descuento)', 'Efectivo', 'Tarjeta Crédito', 'Transferencia', 'Total Real']
+                    cc_resumen = {}
+                    for col in cols_dinero_formateadas:
+                        if col in df_vista_final_resumen.columns:
+                            cc_resumen[col] = st.column_config.NumberColumn(col, format="$%.2f")
+
+                    st.dataframe(df_vista_final_resumen, use_container_width=True, hide_index=True, column_config=cc_resumen)
                 else:
                     st.info("La tabla de resumen está vacía.")
             tab_idx += 1
@@ -546,7 +619,11 @@ elif eleccion == "🛒 VENTAS":
 
                 if tablas_ventas:
                     bloque = st.selectbox("Selecciona bloque operativo (Notas Detalle):", tablas_ventas)
-                    df_v = get_df_from_sql(bloque)
+                    df_v_raw = get_df_from_sql(bloque)
+
+                    # Aplicar filtros globales (la columna es fecha o FECHA)
+                    col_fecha_v = 'fecha' if 'fecha' in df_v_raw.columns else 'FECHA'
+                    df_v = render_filtros_globales(df_v_raw, col_fecha=col_fecha_v, key_prefix=f"ventas_{bloque}")
 
                     # Formatear columnas para visualizacion
                     mapa_cols = {
@@ -585,15 +662,19 @@ elif eleccion == "🛒 VENTAS":
                     if 'FECHA' in df_v_vista.columns:
                         df_v_vista['FECHA'] = pd.to_datetime(df_v_vista['FECHA'], errors='ignore').astype(str).str.replace(' 00:00:00', '')
 
-                    # Formato a dinero seguro antes del fillna("")
+                    # Convertir a float
                     if 'PRECIO UNITARIO' in df_v_vista.columns:
-                        df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+                        df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'], errors='coerce')
 
                     df_v_vista = df_v_vista.fillna("")
                     df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
 
+                    cc_v = {}
+                    if 'PRECIO UNITARIO' in df_v_vista.columns:
+                        cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO', format="$%.2f")
+
                     # Mostrar tabla
-                    st.dataframe(df_v_vista, use_container_width=True, hide_index=True)
+                    st.dataframe(df_v_vista, use_container_width=True, hide_index=True, column_config=cc_v)
                 else:
                     st.info("No hay bloques de notas de ventas cargados.")
             tab_idx += 1
@@ -603,7 +684,10 @@ elif eleccion == "🛒 VENTAS":
                 st.subheader("Detalle Analítico de Mercado Pago")
                 st.markdown("Tabla auxiliar que muestra el desglose de los cobros y operaciones de Mercado Pago. Útil para conciliar luego contra el Estado de Cuenta global y las Ventas.")
 
-                df_mp_aux = get_df_from_sql("AUX_MP_DETALLE")
+                df_mp_aux_raw = get_df_from_sql("AUX_MP_DETALLE")
+
+                # Aplicar filtros globales
+                df_mp_aux = render_filtros_globales(df_mp_aux_raw, col_fecha='Fecha del cargo', key_prefix='mp_detalle')
 
                 # Columnas solicitadas: Fecha del cargo, Detalle, Valor del cargo, Operación relacionada, Nombre de sucursal, Valor de la operación, ID VENTA
                 cols_requeridas = ['Fecha del cargo', 'Detalle', 'Valor del cargo', 'Operación relacionada', 'Nombre de sucursal', 'Valor de la operación']
@@ -630,18 +714,20 @@ elif eleccion == "🛒 VENTAS":
                     df_mp_vista['Fecha del cargo'] = pd.to_datetime(df_mp_vista['Fecha del cargo'], errors='ignore').astype(str).str.replace(' 00:00:00', '')
 
                 # Formato a dinero
+                cc_mp = {}
                 for col_moneda in ['Valor del cargo', 'Valor de la operación']:
                     if col_moneda in df_mp_vista.columns:
-                        df_mp_vista[col_moneda] = pd.to_numeric(df_mp_vista[col_moneda], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+                        df_mp_vista[col_moneda] = pd.to_numeric(df_mp_vista[col_moneda], errors='coerce')
+                        cc_mp[col_moneda] = st.column_config.NumberColumn(col_moneda, format="$%.2f")
 
-                st.dataframe(df_mp_vista, use_container_width=True, hide_index=True)
+                st.dataframe(df_mp_vista, use_container_width=True, hide_index=True, column_config=cc_mp)
 
 
 # ==========================================================
-# 📊 O00: PRE-CLÁSICOS FISCALES (NUEVO)
+# ⚙️ O00: PRE-CLÁSICOS FISCALES (NUEVO)
 # ==========================================================
-elif eleccion == "📊 O00: PRE-CLÁSICOS FISCALES":
-    st.title("📊 Módulo O00: Reglas Fiscales y Pre-clasificación")
+elif eleccion == "⚙️ O00: PRE-CLÁSICOS FISCALES":
+    st.title(":material/manufacturing: Módulo O00: Reglas Fiscales y Pre-clasificación")
     st.markdown("Este módulo aplica las reglas iniciales sobre los bancos y CFDI antes de conciliar ventas. **(Recomendado ejecutar primero)**.")
 
     col1, col2 = st.columns(2)
@@ -670,10 +756,10 @@ elif eleccion == "📊 O00: PRE-CLÁSICOS FISCALES":
 
 
 # ==========================================================
-# 📈 I00: CRUCE INGRESOS
+# 🔄 I00: CRUCE INGRESOS
 # ==========================================================
-elif eleccion == "📈 I00: CRUCE INGRESOS (Ventas)":
-    st.title("📈 Módulo I00: Cruce de Ventas vs Bancos")
+elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
+    st.title(":material/sync_alt: Módulo I00: Cruce de Ventas vs Bancos")
 
     col1, col2, col3 = st.columns(3)
     if col1.button("🚀 Cruce BBVA", type="primary"):
@@ -713,7 +799,7 @@ elif eleccion == "📈 I00: CRUCE INGRESOS (Ventas)":
 # 💸 ANÁLISIS EGRESOS
 # ==========================================================
 elif eleccion == "💸 CRUCE EGRESOS":
-    st.title("💸 Motor de Conciliación de Egresos")
+    st.title(":material/payments: Motor de Conciliación de Egresos")
     st.markdown("Cruza las **Facturas de Gastos (CFDI E PUE)** contra los **Cargos (Salidas)** del banco BBVA.")
 
     if st.button("💳 O06 - Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary"):
@@ -732,10 +818,10 @@ elif eleccion == "💸 CRUCE EGRESOS":
              st.dataframe(pendientes, use_container_width=True)
 
 # ==========================================================
-# 📈 DASHBOARD Y REPORTES
+# 📊 DASHBOARD Y REPORTES
 # ==========================================================
-elif eleccion == "📈 DASHBOARD & REPORTES":
-    st.title("📈 Tablero Ejecutivo y Generador de Reportes")
+elif eleccion == "📊 DASHBOARD & REPORTES":
+    st.title(":material/analytics: Tablero Ejecutivo y Generador de Reportes")
 
     st.subheader("📦 Descargar Consolidado Gerencial")
     st.markdown("Genera un libro de Excel con múltiples pestañas (Ventas OK, Faltantes, Fiscal) usando la información procesada.")
