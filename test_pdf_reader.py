@@ -1,3 +1,8 @@
+import sys
+from unittest.mock import MagicMock
+sys.modules['streamlit'] = MagicMock()
+sys.modules['database_sqlite'] = MagicMock()
+
 import pandas as pd
 from pdf_reader import parse_bank_pdf
 

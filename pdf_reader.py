@@ -17,76 +17,93 @@ def parse_bank_pdf(file_obj):
     all_rows = []
 
     try:
+        data = []
         with pdfplumber.open(file_obj) as pdf:
             for i, page in enumerate(pdf.pages):
-                table = page.extract_table()
-                if table:
-                    # Limpiamos las celdas de la tabla (quitamos saltos de linea extraños)
-                    for row in table:
-                        cleaned_row = [str(cell).replace('\n', ' ').strip() if cell else '' for cell in row]
-                        # Filtrar filas completamente vacías
-                        if any(cleaned_row):
-                            all_rows.append(cleaned_row)
+                words = page.extract_words()
+                if not words: continue
 
-        if not all_rows:
-            st.warning(f"⚠️ No se encontraron tablas estructuradas en el PDF {file_obj.name}.")
+                # Agrupar palabras por su coordenada Y (con tolerancia de 2px para alinear la misma fila)
+                lines_by_y = {}
+                for w in words:
+                    y = round(w['top'] / 2) * 2
+                    if y not in lines_by_y:
+                        lines_by_y[y] = []
+                    lines_by_y[y].append(w)
+
+                in_table = False
+                for y in sorted(lines_by_y.keys()):
+                    row_words = sorted(lines_by_y[y], key=lambda w: w['x0'])
+                    text = ' '.join([w['text'] for w in row_words])
+
+                    # Detectar inicio de tabla BBVA
+                    if 'OPER' in text and 'LIQ' in text and 'COD.' in text and 'DESCRIPCIÓN' in text:
+                        in_table = True
+                        continue
+
+                    # Detectar fin de tabla
+                    if in_table and ('Total de Movimientos' in text or 'Total de Cargos' in text or 'Total de' in text):
+                        in_table = False
+                        continue
+
+                    if in_table:
+                        # Buscar si la fila inicia con una fecha (DD/MMM)
+                        primary_date = next((w for w in row_words if w['x0'] < 50 and re.match(r'^\d{2}/[A-Z]{3}$', w['text'])), None)
+
+                        if primary_date:
+                            # Es una nueva fila de movimiento. Agrupar palabras por coordenada X
+                            cod_words = [w['text'] for w in row_words if 65 <= w['x0'] < 105]
+                            desc_words = [w['text'] for w in row_words if 105 <= w['x0'] < 225]
+                            ref_words = [w['text'] for w in row_words if 225 <= w['x0'] < 360]
+                            cargo_words = [w['text'] for w in row_words if 360 <= w['x0'] < 415]
+                            abono_words = [w['text'] for w in row_words if 415 <= w['x0'] < 470]
+                            saldo_words = [w['text'] for w in row_words if 470 <= w['x0'] < 535]
+
+                            row_data = {
+                                'FECHA': primary_date['text'],
+                                'COD': ' '.join(cod_words),
+                                'CONCEPTO': ' '.join(desc_words),
+                                'REFERENCE': ' '.join(ref_words),
+                                'CARGO': ' '.join(cargo_words),
+                                'ABONO': ' '.join(abono_words),
+                                'SALDO': ' '.join(saldo_words)
+                            }
+                            # Agregar el código al concepto para mayor contexto si existe
+                            if row_data['COD']:
+                                row_data['CONCEPTO'] = f"{row_data['COD']} {row_data['CONCEPTO']}".strip()
+
+                            data.append(row_data)
+                        else:
+                            # Fila de continuación (texto descriptivo en multilínea)
+                            if data and row_words:
+                                # Prevenir que se capture texto del footer o márgenes (ej. "Estimado Cliente...")
+                                # verificando que el texto de descripción no esté demasiado a la izquierda
+                                extra_desc = ' '.join([w['text'] for w in row_words if 65 <= w['x0'] < 225])
+                                extra_ref = ' '.join([w['text'] for w in row_words if 225 <= w['x0'] < 360])
+
+                                # Evitar agregar avisos genéricos del banco que aparecen en el pie de página
+                                invalid_phrases = ['Estimado Cliente', 'Estado de Cuenta ha sido', 'También le informamos', 'rendimiento que obtendría', 'INSTITUCION DE BANCA', 'Reforma 510', 'cual puede consultarlo', 'modificado y ahora tiene', 'en cualquier sucursal', 'Con BBVA adelante', 'la inflación estimada', 'GRUPO FINANCIERO BBVA MEXICO', 'C.P. 06600', 'Ciudad de México', 'México', 'BBVA México', 'que su Contrato']
+                                if extra_desc and not any(phrase in extra_desc for phrase in invalid_phrases):
+                                    data[-1]['CONCEPTO'] += ' ' + extra_desc
+                                if extra_ref and not any(phrase in extra_ref for phrase in invalid_phrases):
+                                    data[-1]['REFERENCE'] += ' ' + extra_ref
+
+        if not data:
+            st.warning(f"⚠️ No se encontraron movimientos estructurados en el PDF {file_obj.name}.")
             return pd.DataFrame()
 
-        # Convertir a DataFrame crudo
-        df_raw = pd.DataFrame(all_rows)
-
-        # Buscar la fila de encabezados (buscamos 'FECHA' o 'DIA')
-        fila_encabezado = -1
-        for i, row in df_raw.iterrows():
-            row_str = " ".join(row.astype(str).str.upper())
-            if 'FECHA' in row_str or 'DIA' in row_str or 'DÍA' in row_str:
-                fila_encabezado = i
-                break
-
-        if fila_encabezado == -1:
-            st.error(f"❌ No se pudo identificar la fila de encabezados en {file_obj.name}.")
-            return pd.DataFrame()
-
-        # Asignar encabezados y recortar las filas superiores
-        # Usamos df_raw para evitar errores de longitud dispar en las listas (pandas lo rellena con None)
-        df = df_raw.iloc[fila_encabezado+1:].copy()
-
-        # El encabezado será la fila que encontramos (convertido a strings limpios)
-        encabezados = [str(col).strip() if pd.notna(col) else f"COL_{i}" for i, col in enumerate(df_raw.iloc[fila_encabezado])]
-        df.columns = encabezados
-
-        # Limpiar y mapear columnas
-        cols_map = {}
-        for col in df.columns:
-            if not col: continue
-            col_str = str(col).strip().upper()
-            if 'FECHA' in col_str or 'DIA' in col_str or 'DÍA' in col_str:
-                cols_map[col] = 'FECHA'
-            elif 'CONCEPTO' in col_str or 'DESCRIPCIÓN' in col_str or 'DESCRIPCION' in col_str or 'REFERENCIA' in col_str:
-                cols_map[col] = 'DESCRIPCION'
-            elif 'CARGO' in col_str or 'RETIRO' in col_str:
-                cols_map[col] = 'CARGO'
-            elif 'ABONO' in col_str or 'DEPOSITO' in col_str or 'DEPÓSITO' in col_str:
-                cols_map[col] = 'ABONO'
-            elif 'SALDO' in col_str:
-                cols_map[col] = 'SALDO'
-
-        df = df.rename(columns=cols_map)
-
-        # Quedarnos solo con las columnas estandarizadas
-        columnas_finales = [c for c in ['FECHA', 'DESCRIPCION', 'CARGO', 'ABONO', 'SALDO'] if c in df.columns]
-
-        if not columnas_finales:
-             st.error(f"❌ No se pudieron mapear las columnas requeridas en {file_obj.name}.")
-             return pd.DataFrame()
-
-        df = df[columnas_finales].dropna(how='all')
+        df = pd.DataFrame(data)
 
         # Limpieza final de montos numéricos (quitar comas y signos de $)
         for num_col in ['CARGO', 'ABONO', 'SALDO']:
-            if num_col in df.columns:
-                df[num_col] = df[num_col].astype(str).str.replace('$', '').str.replace(',', '').str.strip()
-                df[num_col] = pd.to_numeric(df[num_col], errors='coerce')
+            df[num_col] = df[num_col].str.replace('$', '', regex=False).str.replace(',', '', regex=False)
+            df[num_col] = pd.to_numeric(df[num_col], errors='coerce')
+
+        # Agregar columnas faltantes para tener el esquema estandar de 10 columnas
+        for col in ['OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
+            df[col] = ''
+
+        df = df[['FECHA', 'CONCEPTO', 'REFERENCE', 'CARGO', 'ABONO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']]
 
         # Guardar en SQLite (Usamos un nombre generico + identificador único simple para evitar colisiones)
         # Extraemos solo letras y numeros del nombre original para el nombre de la tabla
