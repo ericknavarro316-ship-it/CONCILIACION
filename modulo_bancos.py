@@ -33,14 +33,23 @@ def limpiar_modulo_bancos(ruta_archivo):
                 return f"{banco}_{hoja_upper.replace(banco, '').strip(' _-')}"
 
         # 3. Buscar en el nombre del archivo
-        for banco in bancos_conocidos:
+        import re
+        bancos_con_bbva = bancos_conocidos + ['bbva']
+        for banco in bancos_con_bbva:
             if banco.lower() in nombre_archivo_lower:
-                # Si lo encontramos en el archivo, usamos el nombre del banco y el nombre de la hoja como identificador
-                return f"{banco}_{hoja_upper}"
+                # Si suben un archivo individual por cuenta, el número de cuenta suele estar en el nombre del archivo
+                numeros_archivo = re.findall(r'\d+', nombre_archivo_lower)
+                # Filtramos números que parecen años (exactamente 4 dígitos empezando con 20) si hay otros números
+                numeros_validos = [n for n in numeros_archivo if not (len(n) == 4 and n.startswith('20'))]
+                if not numeros_validos and numeros_archivo:
+                    numeros_validos = numeros_archivo
 
-        # 4. Si el archivo es BBVA pero la hoja no es numérica
-        if 'bbva' in nombre_archivo_lower:
-             return f"BBVA_{hoja_upper}"
+                if numeros_validos:
+                    # Usamos el número más largo
+                    cuenta = max(numeros_validos, key=len)
+                    return f"{banco.upper()}_{cuenta}"
+
+                return f"{banco.upper()}_{hoja_upper}"
 
         # REGLA ESTRICTA SUGERIDA POR EL USUARIO:
         # Si la hoja empieza con "BANCO " o "BANCO_", la procesamos directamente.
@@ -238,10 +247,10 @@ def limpiar_modulo_bancos(ruta_archivo):
                 col_str = str(col).strip().lower()
                 if 'día' in col_str or 'dia' in col_str or 'fecha' in col_str:
                     cols_map[col] = 'FECHA'
-                elif 'referencia' in col_str:
-                    cols_map[col] = 'REFERENCE'
                 elif 'concepto' in col_str or 'descripción' in col_str or 'descripcion' in col_str:
                     cols_map[col] = 'CONCEPTO'
+                elif 'referencia' in col_str:
+                    cols_map[col] = 'REFERENCE'
                 elif 'cargo' in col_str or 'retiro' in col_str:
                     cols_map[col] = 'CARGO'
                 elif 'abono' in col_str or 'deposito' in col_str or 'depósito' in col_str:
