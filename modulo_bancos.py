@@ -273,8 +273,13 @@ def limpiar_modulo_bancos(ruta_archivo):
             # Obtener el nombre de la cuenta usando la función auxiliar dinámica
             nombre_cuenta = identificar_banco(hoja, nombre_archivo)
 
-            resultados_bancos[nombre_cuenta] = df_banco
-            print(f"  ✅ Banco {nombre_cuenta} limpio: {len(df_banco)} movimientos.")
+            if nombre_cuenta in resultados_bancos:
+                 # Si ya existe una cuenta con este nombre (ej. misma cuenta en varios meses), concatenar
+                 resultados_bancos[nombre_cuenta] = pd.concat([resultados_bancos[nombre_cuenta], df_banco], ignore_index=True)
+                 print(f"  ✅ Banco {nombre_cuenta} actualizado (concatenando hoja '{hoja}'): +{len(df_banco)} movimientos. Total: {len(resultados_bancos[nombre_cuenta])}.")
+            else:
+                 resultados_bancos[nombre_cuenta] = df_banco
+                 print(f"  ✅ Banco {nombre_cuenta} limpio: {len(df_banco)} movimientos.")
         else:
             print(f"  ⚠️ No se encontró una fila de encabezados válida en la hoja '{hoja}'. Omitiendo.")
 
