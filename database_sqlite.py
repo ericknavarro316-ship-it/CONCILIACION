@@ -33,9 +33,34 @@ def save_df_to_sql(df, table_name):
              except Exception:
                  pass
 
+    # Verificar si la tabla ya existe para implementar lógica de "append" con "deduplicación"
+    # Así permitimos que el usuario suba archivos con nuevos meses sin perder los anteriores.
+    df_existente = get_df_from_sql(table_name)
+
+    if not df_existente.empty:
+        # Alineamos las columnas en caso de que el nuevo archivo traiga menos o más columnas
+        df_combinado = pd.concat([df_existente, df_copy], ignore_index=True)
+
+        # Eliminamos duplicados exactos en toda la fila para no triplicar
+        # meses si suben el mismo archivo varias veces.
+        # Si la tabla tiene un ID único fuerte (ej. "Número del cargo" en MP_DETALLE),
+        # podríamos usar subset=[ID], pero en bancos tradicionales (BBVA) a veces no hay,
+        # así que validamos toda la fila.
+        antes = len(df_combinado)
+
+        # Columnas a considerar para deduplicación (evitar usar index ocultos si los hubiera)
+        cols_dedup = df_combinado.columns.tolist()
+        df_combinado = df_combinado.drop_duplicates(subset=cols_dedup, keep='last')
+
+        print(f"[{table_name}] Base actual: {len(df_existente)} + Nuevo: {len(df_copy)} -> Combinado y Deduplicado: {len(df_combinado)} (Duplicados omitidos: {antes - len(df_combinado)})")
+        df_final_to_save = df_combinado
+    else:
+        df_final_to_save = df_copy
+        print(f"[{table_name}] Tabla nueva creada con {len(df_final_to_save)} registros.")
+
     conn = sqlite3.connect(DB_FILE)
-    # Reemplazamos la tabla si ya existe para cargar la info fresca del mes
-    df_copy.to_sql(table_name, conn, if_exists='replace', index=False)
+    # Siempre usamos replace, pero sobre el df_final_to_save que ya trae lo viejo + lo nuevo deduplicado
+    df_final_to_save.to_sql(table_name, conn, if_exists='replace', index=False)
     conn.close()
 
 def get_df_from_sql(table_name):

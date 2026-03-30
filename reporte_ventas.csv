@@ -1,0 +1,14 @@
+﻿"ID Venta";"Fecha Venta";"Total (antes descuento)";Estado;"Forma pago";Efectivo;"Tarjeta Crédito";"Tarjeta Débito";Transferencia;Deposito;Cliente;"Tipo cliente";Vendedor;Sucursal;"Total Real"
+28122;"2026-03-27 13:28:24";$6,999.00;activa;efectivo;$7,000.00;$0.00;$0.00;$0.00;$0.00;"Maria Lorena  Aceves  Hernandez";Distribuidor;"ROCIO VIRIDIANA  RODRIGUEZ CASTAÑON";"SUC OBREGON";$7,000.00
+28121;"2026-03-27 13:07:54";$13,999.00;activa;tarjeta_credito;$0.00;$13,999.00;$0.00;$0.00;$0.00;"JENIFER  CUITACO HERNANDEZ";cliente;"JESSICA GIOVANNA RODRIGUEZ  CONTRERAS";"SUC VALLARTA";$13,999.00
+28120;"2026-03-27 12:57:06";$1,000.00;activa;efectivo;$1,000.00;$0.00;$0.00;$0.00;$0.00;"JUAN MAYA  SIMON";cliente;"JUAN ALBERTO MARTELL GARCIA ";"ALMACEN COLON";$1,000.00
+28119;"2026-03-27 12:54:48";$9,999.00;activa;tarjeta_credito;$0.00;$8,999.10;$0.00;$0.00;$0.00;"ANGEL  CUEVAS  NUÑO";cliente;"SANTOS AXL MUÑOZ GONZALEZ";"ALMACEN JUAREZ";$8,999.10
+28118;"2026-03-27 12:39:54";$3,780.00;activa;efectivo;$3,780.00;$0.00;$0.00;$0.00;$0.00;"Jose Luis  Pajarito  Garcia";Distribuidor;"ROCIO VIRIDIANA  RODRIGUEZ CASTAÑON";"ALMACEN OBREGON";$3,780.00
+28117;"2026-03-27 12:18:43";$6,999.00;activa;tarjeta_credito;$0.00;$6,999.00;$0.00;$0.00;$0.00;" ALEXIS RAFAEL LARA GARCIA";cliente;"ZAYRA GODINEZ HOWARD";"SUC JUAREZ";$6,999.00
+28116;"2026-03-27 12:04:26";$8,999.00;activa;efectivo;$8,729.00;$0.00;$0.00;$0.00;$0.00;"MARIO  PEREZ NUÑO";cliente;"DIEGO ABRAHAM BECERRA";"SUC JUAREZ";$8,729.00
+28115;"2026-03-27 11:59:08";$12,400.00;activa;efectivo;$12,400.00;$0.00;$0.00;$0.00;$0.00;"BRANDON  CORDOVA GONZALEZ";Mayorista;"María de Jesus  Medel Gonzalez";"ALMACEN VALLARTA";$12,400.00
+28114;"2026-03-27 11:47:24";$14,598.00;activa;efectivo;$2,598.00;$0.00;$0.00;$0.00;$0.00;"ALEJANDRA TORRES GUTIERREZ";Mayorista;"María de Jesus  Medel Gonzalez";"ALMACEN VALLARTA";$2,598.00
+28113;"2026-03-27 11:38:47";$3,999.00;activa;efectivo;$3,999.00;$0.00;$0.00;$0.00;$0.00;"ADRIAN  ANCHEZ VEGA";cliente;"CHRISTIAN SEBASTIAN FREGOSO  MENA";"ALMACEN OBREGON";$3,999.00
+28112;"2026-03-27 11:19:44";$7,999.00;activa;efectivo;$7,999.00;$0.00;$0.00;$0.00;$0.00;"SILVIA  RAMIREZ  FIGUEROA ";cliente;"CHRISTIAN SEBASTIAN FREGOSO  MENA";"SUC OBREGON";$7,999.00
+28111;"2026-03-27 11:16:02";$14,598.00;activa;efectivo;$14,598.00;$0.00;$0.00;$0.00;$0.00;"ALEJANDRA TORRES GUTIERREZ";Mayorista;"María de Jesus  Medel Gonzalez";"ALMACEN VALLARTA";$14,598.00
+28110;"2026-03-27 10:44:23";$16,400.00;activa;efectivo;$16,400.00;$0.00;$0.00;$0.00;$0.00;"Adrian  Gomez  Renteria.";Mayorista;"María de Jesus  Medel Gonzalez";"ALMACEN VALLARTA";$16,400.00
