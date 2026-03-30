@@ -69,12 +69,23 @@ def get_df_from_sql(table_name):
         return pd.DataFrame()
 
     conn = sqlite3.connect(DB_FILE)
+
+    # Primero verificamos si la tabla existe realmente consultando sqlite_master
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
+    existe = cursor.fetchone()
+
+    if not existe:
+        conn.close()
+        return pd.DataFrame()
+
     try:
         df = pd.read_sql_query(f"SELECT * FROM '{table_name}'", conn)
         conn.close()
         return df
-    except sqlite3.OperationalError:
-        # La tabla no existe aún
+    except Exception as e:
+        # Fallback genérico para atrapar pd.errors.DatabaseError u otros errores de Pandas
+        print(f"Error al recuperar tabla {table_name}: {e}")
         conn.close()
         return pd.DataFrame()
 
