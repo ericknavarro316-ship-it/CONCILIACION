@@ -54,12 +54,21 @@ def render_filtros_globales(df, col_fecha, key_prefix):
         lista_meses = ["Todos"]
         df_filtrado['FECHA_DT_TMP'] = pd.NaT
 
+    # Determinar el índice por defecto para el mes (mes actual o el más reciente en lugar de "Todos")
+    from datetime import datetime
+    current_month_str = datetime.now().strftime('%Y-%m')
+    default_index = 0
+    if current_month_str in lista_meses:
+        default_index = lista_meses.index(current_month_str)
+    elif len(lista_meses) > 1:
+        default_index = 1
+
     # --- UI: FILTROS SUPERIORES ---
     with st.expander("🛠️ Opciones de Filtrado Búsqueda", expanded=True):
         col1, col2, col3 = st.columns([1, 1, 2])
 
         with col1:
-            mes_sel = st.selectbox("📅 Filtrar por Mes:", lista_meses, key=f"mes_{key_prefix}")
+            mes_sel = st.selectbox("📅 Filtrar por Mes:", lista_meses, index=default_index, key=f"mes_{key_prefix}")
 
         with col2:
             min_date = df_filtrado['FECHA_DT_TMP'].min() if not pd.isna(df_filtrado['FECHA_DT_TMP'].min()) else None
