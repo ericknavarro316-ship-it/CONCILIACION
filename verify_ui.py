@@ -29,10 +29,6 @@ def verify_bancos_ui():
             }''')
             time.sleep(2)
 
-            # We want to see the new elements (export button, delete button, global resume)
-            # Take screenshot of Global Resume tab
-            page.screenshot(path="/home/jules/verification/bancos_global_resume.png", full_page=True)
-
             # Now click on one of the banks tabs (should be the second tab)
             page.evaluate('''() => {
                 const tabs = Array.from(document.querySelectorAll('button[role="tab"]'));
@@ -40,8 +36,19 @@ def verify_bancos_ui():
             }''')
             time.sleep(2)
 
-            # Take screenshot of bank panel to see export/delete buttons and data quality
-            page.screenshot(path="/home/jules/verification/bancos_bank_panel.png", full_page=True)
+            # Take screenshot of bank panel to see graphics
+            page.screenshot(path="/home/jules/verification/bancos_graphics.png", full_page=True)
+
+            # Click the Edit button
+            page.evaluate('''() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const editBtn = buttons.find(b => b.innerText && b.innerText.includes('Editar Manualmente'));
+                if(editBtn) editBtn.click();
+            }''')
+            time.sleep(2)
+
+            # Take screenshot of bank panel to see editor
+            page.screenshot(path="/home/jules/verification/bancos_editor.png", full_page=True)
 
         finally:
             browser.close()

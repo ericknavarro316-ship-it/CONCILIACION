@@ -8,7 +8,7 @@ from modulo_bancos import limpiar_modulo_bancos
 from modulo_cfdi import limpiar_modulo_cfdi
 from modulo_ventas_ajustado import limpiar_modulo_ventas_v2
 from modulo_ventas_resumen import limpiar_reporte_ventas_csv
-from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables, drop_table_from_sql
+from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables, drop_table_from_sql, update_table_from_df
 
 # Motores de análisis
 from engine_bbva import run_bbva_crosscheck
@@ -516,6 +516,40 @@ elif eleccion == "🏦 BANCOS":
             m3.metric("💰 Saldo Final", f"${saldo_final:,.2f}")
             m4.metric("📝 Movimientos", len(df_filtrado))
 
+            # --- UI: GRÁFICO DE TENDENCIAS ---
+            if 'FECHA' in df_filtrado.columns and not df_filtrado.empty:
+                try:
+                    df_graf = df_filtrado.copy()
+                    df_graf['FECHA'] = safe_parse_dates(df_graf['FECHA'])
+                    df_graf['ABONO_NUM'] = pd.to_numeric(df_graf['ABONO'], errors='coerce').fillna(0)
+                    df_graf['CARGO_NUM'] = pd.to_numeric(df_graf['CARGO'], errors='coerce').fillna(0)
+
+                    df_graf = df_graf.dropna(subset=['FECHA'])
+                    if not df_graf.empty:
+                        # Agrupar por fecha diaria
+                        df_graf_grp = df_graf.groupby(df_graf['FECHA'].dt.date)[['ABONO_NUM', 'CARGO_NUM']].sum().reset_index()
+
+                        # Derretir para Altair (FECHA, TIPO_MOV, MONTO)
+                        df_graf_melt = pd.melt(df_graf_grp, id_vars=['FECHA'], value_vars=['ABONO_NUM', 'CARGO_NUM'],
+                                               var_name='Tipo de Movimiento', value_name='Monto')
+                        df_graf_melt['Tipo de Movimiento'] = df_graf_melt['Tipo de Movimiento'].map({'ABONO_NUM': 'Ingresos (Abonos)', 'CARGO_NUM': 'Egresos (Cargos)'})
+
+                        # Convertir a texto para que altair entienda que es temporal pero en la vista
+                        df_graf_melt['FECHA'] = pd.to_datetime(df_graf_melt['FECHA'])
+
+                        import altair as alt
+                        chart = alt.Chart(df_graf_melt).mark_bar(opacity=0.8).encode(
+                            x=alt.X('FECHA:T', title='Fecha del Movimiento', axis=alt.Axis(format='%d %b')),
+                            y=alt.Y('Monto:Q', title='Monto Total ($)', axis=alt.Axis(format='$,.0f')),
+                            color=alt.Color('Tipo de Movimiento:N', scale=alt.Scale(domain=['Ingresos (Abonos)', 'Egresos (Cargos)'], range=['#2e7d32', '#d32f2f']), legend=alt.Legend(title="Movimiento")),
+                            tooltip=[alt.Tooltip('FECHA:T', format='%Y-%m-%d', title='Día'), alt.Tooltip('Tipo de Movimiento:N'), alt.Tooltip('Monto:Q', format='$,.2f')]
+                        ).properties(height=200)
+
+                        st.altair_chart(chart, use_container_width=True)
+                except Exception as e:
+                    # Fallback silencioso si las fechas o valores fallan muy raro
+                    pass
+
             st.divider()
 
             col_btn1, col_btn2 = st.columns([8, 2])
@@ -589,8 +623,66 @@ elif eleccion == "🏦 BANCOS":
             # Reemplazar el literal 'NaT' por cadena vacía
             df_mostrar = df_mostrar.replace("NaT", "")
 
-            # Mostrar dataframe estilizado
-            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+            # --- UI: EDICIÓN MANUAL ---
+            # Mostramos un editor interactivo en lugar de un dataframe estático
+            # Definimos qué columnas son editables (ej. CONCEPTO y OBSERVACION)
+
+            # Recuperar estado de cambios
+            if f"edit_{key_prefix}" not in st.session_state:
+                st.session_state[f"edit_{key_prefix}"] = False
+
+            # Botón para activar/desactivar modo edición
+            col_edit1, col_edit2 = st.columns([8, 2])
+            with col_edit2:
+                if st.button("✏️ Editar Manualmente", key=f"btn_edit_{key_prefix}", help="Activa el modo de edición de celdas."):
+                    st.session_state[f"edit_{key_prefix}"] = not st.session_state[f"edit_{key_prefix}"]
+
+            if st.session_state[f"edit_{key_prefix}"]:
+                st.info("💡 Modo de Edición Activado: Doble clic en 'CONCEPTO' o 'OBSERVACION' para editar. Presiona Enter para confirmar y luego haz clic en Guardar.")
+
+                edited_df = st.data_editor(
+                    df_mostrar,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=[c for c in df_mostrar.columns if c not in ['CONCEPTO', 'OBSERVACION']],
+                    key=f"editor_{key_prefix}"
+                )
+
+                # Check for differences
+                if not df_mostrar.equals(edited_df):
+                    if st.button("💾 Guardar Cambios en BD", key=f"save_edit_{key_prefix}", type="primary"):
+                        # Debemos actualizar la BD real. 'df_mostrar' es un subset (filtrado/formateado).
+                        # Así que traemos la BD original completa, le hacemos merge con edited_df usando el index si lo tuvieramos.
+                        # Dado que no hay IDs únicos garantizados, actualizaremos la fila específica buscando la fila exacta original,
+                        # o más fácil: como el módulo bancos reescribe la tabla, reemplazaremos los valores en el df crudo.
+
+                        df_crudo = get_df_from_sql(cuenta_sel)
+
+                        # Vamos a encontrar las diferencias basándonos en las filas de 'df_filtrado' vs 'edited_df'
+                        # Asumiendo que el orden se mantuvo idéntico al filtrar
+                        for i in range(len(df_filtrado)):
+                            idx_original = df_filtrado.index[i]
+                            # Actualizar concepto (Si es MP_DETALLE, el concepto real en BD se llama 'Detalle')
+                            if 'CONCEPTO' in edited_df.columns:
+                                if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
+                                    if 'Detalle' in df_crudo.columns:
+                                        df_crudo.at[idx_original, 'Detalle'] = edited_df['CONCEPTO'].iloc[i]
+                                else:
+                                    df_crudo.at[idx_original, 'CONCEPTO'] = edited_df['CONCEPTO'].iloc[i]
+                            # Actualizar observacion
+                            if 'OBSERVACION' in edited_df.columns:
+                                df_crudo.at[idx_original, 'OBSERVACION'] = edited_df['OBSERVACION'].iloc[i]
+
+                        # Guardar a SQL
+                        if update_table_from_df(df_crudo, cuenta_sel):
+                            st.success("✅ ¡Cambios guardados con éxito!")
+                            import time
+                            time.sleep(1)
+                            st.session_state[f"edit_{key_prefix}"] = False
+                            st.rerun()
+            else:
+                # Mostrar dataframe estilizado (Solo Lectura)
+                st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
 
 
         # Llenar cada pestaña de banco dinámicamente (desplazadas +1 por el resumen)
