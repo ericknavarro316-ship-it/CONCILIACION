@@ -18,7 +18,24 @@ def parse_bank_pdf(file_obj):
 
     try:
         data = []
+        year_extracted = None
+        cuenta_extracted = None
+
         with pdfplumber.open(file_obj) as pdf:
+            # Primero intentar extraer Año y No. de Cuenta de las primeras páginas
+            for page in pdf.pages[:3]:
+                text = page.extract_text()
+                if text:
+                    if not year_extracted:
+                        match_year = re.search(r'Periodo\s+DEL\s+\d{2}/\d{2}/(\d{4})', text)
+                        if match_year:
+                            year_extracted = match_year.group(1)
+                    if not cuenta_extracted:
+                        match_cuenta = re.search(r'No\.\s*de\s*Cuenta\s+(\d+)', text)
+                        if match_cuenta:
+                            cuenta_str = match_cuenta.group(1)
+                            cuenta_extracted = cuenta_str[-5:] if len(cuenta_str) >= 5 else cuenta_str
+
             for i, page in enumerate(pdf.pages):
                 words = page.extract_words()
                 if not words: continue
@@ -51,16 +68,25 @@ def parse_bank_pdf(file_obj):
                         primary_date = next((w for w in row_words if w['x0'] < 50 and re.match(r'^\d{2}/[A-Z]{3}$', w['text'])), None)
 
                         if primary_date:
+                            # Formatear la fecha si tenemos el año
+                            fecha_str = primary_date['text']
+                            if year_extracted:
+                                meses = {'ENE': '01', 'FEB': '02', 'MAR': '03', 'ABR': '04', 'MAY': '05', 'JUN': '06',
+                                         'JUL': '07', 'AGO': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DIC': '12'}
+                                parts = fecha_str.split('/')
+                                if len(parts) == 2 and parts[1] in meses:
+                                    fecha_str = f"{parts[0]}/{meses[parts[1]]}/{year_extracted}"
+
                             # Es una nueva fila de movimiento. Agrupar palabras por coordenada X
                             cod_words = [w['text'] for w in row_words if 65 <= w['x0'] < 105]
                             desc_words = [w['text'] for w in row_words if 105 <= w['x0'] < 225]
-                            ref_words = [w['text'] for w in row_words if 225 <= w['x0'] < 360]
-                            cargo_words = [w['text'] for w in row_words if 360 <= w['x0'] < 415]
+                            ref_words = [w['text'] for w in row_words if 225 <= w['x0'] < 355]
+                            cargo_words = [w['text'] for w in row_words if 355 <= w['x0'] < 415]
                             abono_words = [w['text'] for w in row_words if 415 <= w['x0'] < 470]
                             saldo_words = [w['text'] for w in row_words if 470 <= w['x0'] < 535]
 
                             row_data = {
-                                'FECHA': primary_date['text'],
+                                'FECHA': fecha_str,
                                 'COD': ' '.join(cod_words),
                                 'CONCEPTO': ' '.join(desc_words),
                                 'REFERENCE': ' '.join(ref_words),
@@ -79,7 +105,7 @@ def parse_bank_pdf(file_obj):
                                 # Prevenir que se capture texto del footer o márgenes (ej. "Estimado Cliente...")
                                 # verificando que el texto de descripción no esté demasiado a la izquierda
                                 extra_desc = ' '.join([w['text'] for w in row_words if 65 <= w['x0'] < 225])
-                                extra_ref = ' '.join([w['text'] for w in row_words if 225 <= w['x0'] < 360])
+                                extra_ref = ' '.join([w['text'] for w in row_words if 225 <= w['x0'] < 355])
 
                                 # Evitar agregar avisos genéricos del banco que aparecen en el pie de página
                                 invalid_phrases = ['Estimado Cliente', 'Estado de Cuenta ha sido', 'También le informamos', 'rendimiento que obtendría', 'INSTITUCION DE BANCA', 'Reforma 510', 'cual puede consultarlo', 'modificado y ahora tiene', 'en cualquier sucursal', 'Con BBVA adelante', 'la inflación estimada', 'GRUPO FINANCIERO BBVA MEXICO', 'C.P. 06600', 'Ciudad de México', 'México', 'BBVA México', 'que su Contrato']
@@ -105,10 +131,14 @@ def parse_bank_pdf(file_obj):
 
         df = df[['FECHA', 'CONCEPTO', 'REFERENCE', 'CARGO', 'ABONO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']]
 
-        # Guardar en SQLite (Usamos un nombre generico + identificador único simple para evitar colisiones)
-        # Extraemos solo letras y numeros del nombre original para el nombre de la tabla
-        nombre_limpio = re.sub(r'[^a-zA-Z0-9]', '_', file_obj.name.split('.')[0]).upper()
-        nombre_tabla = f"BANCO_PDF_{nombre_limpio}"
+        # Guardar en SQLite
+        # Si logramos extraer la cuenta, usamos su terminación para nombrar la tabla (ej. BANCO_BBVA_21387)
+        # Si no, caemos en el nombre del archivo.
+        if cuenta_extracted:
+            nombre_tabla = f"BANCO_BBVA_{cuenta_extracted}"
+        else:
+            nombre_limpio = re.sub(r'[^a-zA-Z0-9]', '_', file_obj.name.split('.')[0]).upper()
+            nombre_tabla = f"BANCO_PDF_{nombre_limpio}"
 
         save_df_to_sql(df, nombre_tabla)
         st.success(f"✅ PDF '{file_obj.name}' procesado y guardado como {nombre_tabla} ({len(df)} movimientos).")
