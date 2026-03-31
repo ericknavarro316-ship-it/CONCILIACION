@@ -95,6 +95,22 @@ def get_df_from_sql(table_name):
         conn.close()
         return pd.DataFrame()
 
+def drop_table_from_sql(table_name):
+    """Elimina una tabla específica de la base de datos."""
+    if not os.path.exists(DB_FILE):
+        return False
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error al eliminar la tabla {table_name}: {e}")
+        return False
+
 def get_all_tables():
     """Retorna una lista con los nombres de todas las tablas en la BD"""
     if not os.path.exists(DB_FILE):

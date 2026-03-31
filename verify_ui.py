@@ -21,7 +21,7 @@ def verify_bancos_ui():
             }''')
             time.sleep(3)
 
-            # Try to click the "Movimientos Operativos" via evaluation to bypass "out of viewport" errors
+            # Click on Movimientos Operativos
             page.evaluate('''() => {
                 const labels = Array.from(document.querySelectorAll('label'));
                 const movsLabel = labels.find(l => l.innerText && l.innerText.includes('Movimientos Operativos'));
@@ -29,17 +29,19 @@ def verify_bancos_ui():
             }''')
             time.sleep(2)
 
-            page.screenshot(path="/home/jules/verification/bancos_movimientos.png", full_page=True)
+            # We want to see the new elements (export button, delete button, global resume)
+            # Take screenshot of Global Resume tab
+            page.screenshot(path="/home/jules/verification/bancos_global_resume.png", full_page=True)
 
-            # Try to click the "Estados de Cuenta" via evaluation
+            # Now click on one of the banks tabs (should be the second tab)
             page.evaluate('''() => {
-                const labels = Array.from(document.querySelectorAll('label'));
-                const estLabel = labels.find(l => l.innerText && l.innerText.includes('Estados de Cuenta'));
-                if(estLabel) estLabel.click();
+                const tabs = Array.from(document.querySelectorAll('button[role="tab"]'));
+                if(tabs.length > 1) tabs[1].click();
             }''')
             time.sleep(2)
 
-            page.screenshot(path="/home/jules/verification/bancos_estados.png", full_page=True)
+            # Take screenshot of bank panel to see export/delete buttons and data quality
+            page.screenshot(path="/home/jules/verification/bancos_bank_panel.png", full_page=True)
 
         finally:
             browser.close()
