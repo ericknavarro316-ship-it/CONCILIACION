@@ -8,7 +8,7 @@ from modulo_bancos import limpiar_modulo_bancos
 from modulo_cfdi import limpiar_modulo_cfdi
 from modulo_ventas_ajustado import limpiar_modulo_ventas_v2
 from modulo_ventas_resumen import limpiar_reporte_ventas_csv
-from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables
+from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables, drop_table_from_sql, update_table_from_df
 
 # Motores de análisis
 from engine_bbva import run_bbva_crosscheck
@@ -268,7 +268,9 @@ elif eleccion == "🏦 BANCOS":
 
                             bancos = limpiar_modulo_bancos(archivo)
                             for nombre_cuenta, df_banco in bancos.items():
-                                if nombre_cuenta == "MP_DETALLE" or "MP_ESTADO_CUENTA" in nombre_cuenta:
+                                if nombre_cuenta == "MP_DETALLE":
+                                    save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                                elif "MP_ESTADO_CUENTA" in nombre_cuenta:
                                     save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
                                 else:
                                     # Asegurar que tenga EST_ en el nombre
@@ -380,8 +382,76 @@ elif eleccion == "🏦 BANCOS":
             nombres_bancos.remove("Otros")
             nombres_bancos.append("Otros")
 
-        # Crear pestañas dinámicas
-        tabs = st.tabs(nombres_bancos)
+        # Crear pestañas dinámicas (incluyendo Resumen Global al principio)
+        tabs_names = ["📊 Resumen Global"] + nombres_bancos
+        tabs = st.tabs(tabs_names)
+
+        # --- Pestaña de Resumen Global ---
+        with tabs[0]:
+            st.subheader(f"Resumen Consolidado de {tipo_vista}")
+
+            # Recolectar totales de todas las tablas mostradas
+            tot_abono_global = 0
+            tot_cargo_global = 0
+            tot_saldo_global = 0
+            tot_movimientos_global = 0
+
+            # Datos para el mini dashboard
+            resumen_data = []
+
+            for banco_key, cuentas in bancos_dict.items():
+                for cta in cuentas:
+                    df_res = get_df_from_sql(cta)
+                    if not df_res.empty:
+                        # Si es MP, tenemos que hacer la conversión de la misma manera
+                        if cta == "AUX_MP_DETALLE" or "MP_DETALLE" in cta:
+                            if 'Valor del cargo' in df_res.columns:
+                                df_res['monto_num'] = pd.to_numeric(df_res['Valor del cargo'].astype(str).str.replace(',', ''), errors='coerce')
+                                df_res['ABONO'] = df_res['monto_num'].apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
+                                df_res['CARGO'] = df_res['monto_num'].apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
+
+                        abono_cta = pd.to_numeric(df_res.get('ABONO', pd.Series(dtype=float)), errors='coerce').sum()
+                        cargo_cta = pd.to_numeric(df_res.get('CARGO', pd.Series(dtype=float)), errors='coerce').sum()
+                        movs_cta = len(df_res)
+
+                        saldo_cta = 0
+                        if 'SALDO' in df_res.columns:
+                             u_saldo = pd.to_numeric(df_res['SALDO'], errors='coerce').dropna().tail(1)
+                             if not u_saldo.empty:
+                                 saldo_cta = u_saldo.iloc[0]
+
+                        tot_abono_global += abono_cta
+                        tot_cargo_global += cargo_cta
+                        tot_saldo_global += saldo_cta
+                        tot_movimientos_global += movs_cta
+
+                        resumen_data.append({
+                            "Banco": banco_key,
+                            "Cuenta": cta.replace("BANCO_", ""),
+                            "Total Abonos": abono_cta,
+                            "Total Cargos": cargo_cta,
+                            "Último Saldo": saldo_cta,
+                            "Movimientos": movs_cta
+                        })
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("🟢 Total Abonos Global", f"${tot_abono_global:,.2f}")
+            m2.metric("🔴 Total Cargos Global", f"${tot_cargo_global:,.2f}")
+            m3.metric("💰 Suma de Saldos (Aprox)", f"${tot_saldo_global:,.2f}")
+            m4.metric("📝 Movimientos Totales", tot_movimientos_global)
+
+            if resumen_data:
+                st.divider()
+                df_resumen = pd.DataFrame(resumen_data)
+
+                # Configuración de columnas para que se vean bien los dineros
+                cc_resumen_global = {
+                    "Total Abonos": st.column_config.NumberColumn("Total Abonos", format="$%.2f"),
+                    "Total Cargos": st.column_config.NumberColumn("Total Cargos", format="$%.2f"),
+                    "Último Saldo": st.column_config.NumberColumn("Último Saldo", format="$%.2f")
+                }
+                st.dataframe(df_resumen, use_container_width=True, hide_index=True, column_config=cc_resumen_global)
+
 
         # Función auxiliar para renderizar el panel de control de un banco
         def render_bank_panel(cuenta_sel, key_prefix):
@@ -433,11 +503,91 @@ elif eleccion == "🏦 BANCOS":
                  if not ultimo_saldo.empty:
                      saldo_final = ultimo_saldo.iloc[0]
 
+            # --- UI: INDICADOR DE CALIDAD DE DATOS ---
+            missing_concepts = df_filtrado['CONCEPTO'].isnull().sum() + (df_filtrado['CONCEPTO'] == '').sum() if 'CONCEPTO' in df_filtrado.columns else 0
+            missing_dates = df_filtrado['FECHA'].isnull().sum() if 'FECHA' in df_filtrado.columns else 0
+
+            if missing_concepts > 0 or missing_dates > 0:
+                st.warning(f"⚠️ **Calidad de Datos:** Tienes {missing_concepts} movimientos sin 'Concepto' y {missing_dates} sin 'Fecha' en este periodo. Esto podría dificultar la conciliación.")
+
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("🟢 Total Abonos", f"${tot_abono:,.2f}")
             m2.metric("🔴 Total Cargos", f"${tot_cargo:,.2f}")
             m3.metric("💰 Saldo Final", f"${saldo_final:,.2f}")
             m4.metric("📝 Movimientos", len(df_filtrado))
+
+            # --- UI: GRÁFICO DE TENDENCIAS ---
+            if 'FECHA' in df_filtrado.columns and not df_filtrado.empty:
+                try:
+                    df_graf = df_filtrado.copy()
+                    df_graf['FECHA'] = safe_parse_dates(df_graf['FECHA'])
+                    df_graf['ABONO_NUM'] = pd.to_numeric(df_graf['ABONO'], errors='coerce').fillna(0)
+                    df_graf['CARGO_NUM'] = pd.to_numeric(df_graf['CARGO'], errors='coerce').fillna(0)
+
+                    df_graf = df_graf.dropna(subset=['FECHA'])
+                    if not df_graf.empty:
+                        # Agrupar por fecha diaria
+                        df_graf_grp = df_graf.groupby(df_graf['FECHA'].dt.date)[['ABONO_NUM', 'CARGO_NUM']].sum().reset_index()
+
+                        # Derretir para Altair (FECHA, TIPO_MOV, MONTO)
+                        df_graf_melt = pd.melt(df_graf_grp, id_vars=['FECHA'], value_vars=['ABONO_NUM', 'CARGO_NUM'],
+                                               var_name='Tipo de Movimiento', value_name='Monto')
+                        df_graf_melt['Tipo de Movimiento'] = df_graf_melt['Tipo de Movimiento'].map({'ABONO_NUM': 'Ingresos (Abonos)', 'CARGO_NUM': 'Egresos (Cargos)'})
+
+                        # Convertir a texto para que altair entienda que es temporal pero en la vista
+                        df_graf_melt['FECHA'] = pd.to_datetime(df_graf_melt['FECHA'])
+
+                        import altair as alt
+                        chart = alt.Chart(df_graf_melt).mark_bar(opacity=0.8).encode(
+                            x=alt.X('FECHA:T', title='Fecha del Movimiento', axis=alt.Axis(format='%d %b')),
+                            y=alt.Y('Monto:Q', title='Monto Total ($)', axis=alt.Axis(format='$,.0f')),
+                            color=alt.Color('Tipo de Movimiento:N', scale=alt.Scale(domain=['Ingresos (Abonos)', 'Egresos (Cargos)'], range=['#2e7d32', '#d32f2f']), legend=alt.Legend(title="Movimiento")),
+                            tooltip=[alt.Tooltip('FECHA:T', format='%Y-%m-%d', title='Día'), alt.Tooltip('Tipo de Movimiento:N'), alt.Tooltip('Monto:Q', format='$,.2f')]
+                        ).properties(height=200)
+
+                        st.altair_chart(chart, use_container_width=True)
+                except Exception as e:
+                    # Fallback silencioso si las fechas o valores fallan muy raro
+                    pass
+
+            st.divider()
+
+            col_btn1, col_btn2 = st.columns([8, 2])
+            with col_btn1:
+                from io import BytesIO
+
+                # Función para generar excel de descarga
+                def to_excel(df_to_export):
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df_to_export.to_excel(writer, index=False, sheet_name='Export')
+                    return output.getvalue()
+
+                st.download_button(
+                    label="📥 Exportar a Excel",
+                    data=to_excel(df_filtrado),
+                    file_name=f"{cuenta_sel}_Exportado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"export_{key_prefix}"
+                )
+
+            with col_btn2:
+                if st.button("🗑️ Eliminar Tabla", key=f"del_{key_prefix}", type="secondary", help="Borra definitivamente esta cuenta/tabla de la base de datos."):
+                    st.session_state[f"confirm_del_{key_prefix}"] = True
+
+                if st.session_state.get(f"confirm_del_{key_prefix}", False):
+                    st.warning("¿Estás seguro?")
+                    c_yes, c_no = st.columns(2)
+                    if c_yes.button("✅ Sí, borrar", key=f"yes_{key_prefix}", type="primary"):
+                        if drop_table_from_sql(cuenta_sel):
+                            st.success(f"Tabla {cuenta_sel} eliminada.")
+                            st.session_state[f"confirm_del_{key_prefix}"] = False
+                            import time
+                            time.sleep(1.5)
+                            st.rerun()
+                    if c_no.button("❌ No", key=f"no_{key_prefix}"):
+                        st.session_state[f"confirm_del_{key_prefix}"] = False
+                        st.rerun()
 
             # --- UI: TABLA DE DATOS ---
             df_mostrar = df_filtrado.copy()
@@ -473,13 +623,71 @@ elif eleccion == "🏦 BANCOS":
             # Reemplazar el literal 'NaT' por cadena vacía
             df_mostrar = df_mostrar.replace("NaT", "")
 
-            # Mostrar dataframe estilizado
-            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+            # --- UI: EDICIÓN MANUAL ---
+            # Mostramos un editor interactivo en lugar de un dataframe estático
+            # Definimos qué columnas son editables (ej. CONCEPTO y OBSERVACION)
+
+            # Recuperar estado de cambios
+            if f"edit_{key_prefix}" not in st.session_state:
+                st.session_state[f"edit_{key_prefix}"] = False
+
+            # Botón para activar/desactivar modo edición
+            col_edit1, col_edit2 = st.columns([8, 2])
+            with col_edit2:
+                if st.button("✏️ Editar Manualmente", key=f"btn_edit_{key_prefix}", help="Activa el modo de edición de celdas."):
+                    st.session_state[f"edit_{key_prefix}"] = not st.session_state[f"edit_{key_prefix}"]
+
+            if st.session_state[f"edit_{key_prefix}"]:
+                st.info("💡 Modo de Edición Activado: Doble clic en 'CONCEPTO' o 'OBSERVACION' para editar. Presiona Enter para confirmar y luego haz clic en Guardar.")
+
+                edited_df = st.data_editor(
+                    df_mostrar,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=[c for c in df_mostrar.columns if c not in ['CONCEPTO', 'OBSERVACION']],
+                    key=f"editor_{key_prefix}"
+                )
+
+                # Check for differences
+                if not df_mostrar.equals(edited_df):
+                    if st.button("💾 Guardar Cambios en BD", key=f"save_edit_{key_prefix}", type="primary"):
+                        # Debemos actualizar la BD real. 'df_mostrar' es un subset (filtrado/formateado).
+                        # Así que traemos la BD original completa, le hacemos merge con edited_df usando el index si lo tuvieramos.
+                        # Dado que no hay IDs únicos garantizados, actualizaremos la fila específica buscando la fila exacta original,
+                        # o más fácil: como el módulo bancos reescribe la tabla, reemplazaremos los valores en el df crudo.
+
+                        df_crudo = get_df_from_sql(cuenta_sel)
+
+                        # Vamos a encontrar las diferencias basándonos en las filas de 'df_filtrado' vs 'edited_df'
+                        # Asumiendo que el orden se mantuvo idéntico al filtrar
+                        for i in range(len(df_filtrado)):
+                            idx_original = df_filtrado.index[i]
+                            # Actualizar concepto (Si es MP_DETALLE, el concepto real en BD se llama 'Detalle')
+                            if 'CONCEPTO' in edited_df.columns:
+                                if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
+                                    if 'Detalle' in df_crudo.columns:
+                                        df_crudo.at[idx_original, 'Detalle'] = edited_df['CONCEPTO'].iloc[i]
+                                else:
+                                    df_crudo.at[idx_original, 'CONCEPTO'] = edited_df['CONCEPTO'].iloc[i]
+                            # Actualizar observacion
+                            if 'OBSERVACION' in edited_df.columns:
+                                df_crudo.at[idx_original, 'OBSERVACION'] = edited_df['OBSERVACION'].iloc[i]
+
+                        # Guardar a SQL
+                        if update_table_from_df(df_crudo, cuenta_sel):
+                            st.success("✅ ¡Cambios guardados con éxito!")
+                            import time
+                            time.sleep(1)
+                            st.session_state[f"edit_{key_prefix}"] = False
+                            st.rerun()
+            else:
+                # Mostrar dataframe estilizado (Solo Lectura)
+                st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
 
 
-        # Llenar cada pestaña dinámicamente
+        # Llenar cada pestaña de banco dinámicamente (desplazadas +1 por el resumen)
         for i, nombre_banco in enumerate(nombres_bancos):
-            with tabs[i]:
+            with tabs[i + 1]:
                 st.subheader(f"Cuentas {nombre_banco}")
                 tablas_banco = bancos_dict[nombre_banco]
 

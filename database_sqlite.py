@@ -10,6 +10,32 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     conn.close()
 
+def update_table_from_df(df, table_name):
+    """Sobrescribe completamente una tabla con un nuevo DataFrame (usado para edición manual)."""
+    if df is None or df.empty:
+        return False
+
+    df_copy = df.copy()
+    for col in df_copy.columns:
+        if str(df_copy[col].dtype).startswith('datetime'):
+            df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+        elif df_copy[col].dtype == object or str(df_copy[col].dtype).startswith('int'):
+             df_copy[col] = df_copy[col].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if isinstance(x, pd.Timestamp) else x)
+             try:
+                 df_copy[col] = df_copy[col].astype(str)
+                 df_copy[col] = df_copy[col].replace(['nan', 'None', '<NA>'], np.nan)
+             except Exception:
+                 pass
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        df_copy.to_sql(table_name, conn, if_exists='replace', index=False)
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error al actualizar la tabla {table_name}: {e}")
+        return False
+
 def save_df_to_sql(df, table_name):
     """Guarda un DataFrame de Pandas directamente como una tabla SQL, evitando errores de desbordamiento entero."""
     if df is None or df.empty:
@@ -94,6 +120,22 @@ def get_df_from_sql(table_name):
         print(f"Error al recuperar tabla {table_name}: {e}")
         conn.close()
         return pd.DataFrame()
+
+def drop_table_from_sql(table_name):
+    """Elimina una tabla específica de la base de datos."""
+    if not os.path.exists(DB_FILE):
+        return False
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error al eliminar la tabla {table_name}: {e}")
+        return False
 
 def get_all_tables():
     """Retorna una lista con los nombres de todas las tablas en la BD"""

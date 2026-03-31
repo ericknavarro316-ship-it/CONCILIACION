@@ -21,7 +21,7 @@ def verify_bancos_ui():
             }''')
             time.sleep(3)
 
-            # Try to click the "Movimientos Operativos" via evaluation to bypass "out of viewport" errors
+            # Click on Movimientos Operativos
             page.evaluate('''() => {
                 const labels = Array.from(document.querySelectorAll('label'));
                 const movsLabel = labels.find(l => l.innerText && l.innerText.includes('Movimientos Operativos'));
@@ -29,17 +29,26 @@ def verify_bancos_ui():
             }''')
             time.sleep(2)
 
-            page.screenshot(path="/home/jules/verification/bancos_movimientos.png", full_page=True)
-
-            # Try to click the "Estados de Cuenta" via evaluation
+            # Now click on one of the banks tabs (should be the second tab)
             page.evaluate('''() => {
-                const labels = Array.from(document.querySelectorAll('label'));
-                const estLabel = labels.find(l => l.innerText && l.innerText.includes('Estados de Cuenta'));
-                if(estLabel) estLabel.click();
+                const tabs = Array.from(document.querySelectorAll('button[role="tab"]'));
+                if(tabs.length > 1) tabs[1].click();
             }''')
             time.sleep(2)
 
-            page.screenshot(path="/home/jules/verification/bancos_estados.png", full_page=True)
+            # Take screenshot of bank panel to see graphics
+            page.screenshot(path="/home/jules/verification/bancos_graphics.png", full_page=True)
+
+            # Click the Edit button
+            page.evaluate('''() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const editBtn = buttons.find(b => b.innerText && b.innerText.includes('Editar Manualmente'));
+                if(editBtn) editBtn.click();
+            }''')
+            time.sleep(2)
+
+            # Take screenshot of bank panel to see editor
+            page.screenshot(path="/home/jules/verification/bancos_editor.png", full_page=True)
 
         finally:
             browser.close()
