@@ -22,9 +22,15 @@ def save_df_to_sql(df, table_name):
     # Solución: Convertir los enteros largos (y cualquier columna sospechosa) a texto.
 
     for col in df_copy.columns:
-        # Si la columna es un objeto (string/mixed), nos aseguramos de que no haya enteros gigantes escondidos
-        if df_copy[col].dtype == object or str(df_copy[col].dtype).startswith('int'):
-             # Verificamos si hay algún valor numérico gigante (mayor a 10 dígitos)
+        # Prevenir "Error binding parameter: type 'Timestamp' is not supported" en columnas mixtas (object)
+        if str(df_copy[col].dtype).startswith('datetime'):
+            df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        # Si la columna es un objeto (string/mixed) o int, nos aseguramos de que no haya enteros gigantes escondidos
+        elif df_copy[col].dtype == object or str(df_copy[col].dtype).startswith('int'):
+             # Convertir valores de Timestamp puros a string antes de convertirlos a string global
+             # (Si la columna es object pero contiene fechas pandas)
+             df_copy[col] = df_copy[col].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if isinstance(x, pd.Timestamp) else x)
              try:
                  # Convertimos a string de manera segura
                  df_copy[col] = df_copy[col].astype(str)
