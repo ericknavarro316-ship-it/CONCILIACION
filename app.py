@@ -873,7 +873,12 @@ elif eleccion == "📊 DASHBOARD & REPORTES":
     tablas = get_all_tables()
 
     total_bbva = 0
-    bancos_bbva = [t for t in tablas if t.startswith("BANCO_") and t.replace("BANCO_", "").isdigit()]
+    # Incluir cuentas BBVA antiguas y las nuevas con prefijos EST y DET
+    bancos_bbva = [t for t in tablas if t.startswith("BANCO_") and (
+        t.replace("BANCO_", "").isdigit() or
+        t.startswith("BANCO_BBVA_EST_") or
+        t.startswith("BANCO_BBVA_DET_")
+    )]
     for t in bancos_bbva:
         df = get_df_from_sql(t)
         if 'ABONO' in df.columns:

@@ -23,9 +23,10 @@ def limpiar_modulo_bancos(ruta_archivo):
         bancos_conocidos = ['SANTANDER', 'BANAMEX', 'HSBC', 'BANORTE', 'SCOTIABANK', 'INBURSA', 'NU']
 
         # 1. Si la hoja empieza con "BBVA_" o es solo números (históricamente BBVA)
+        # Lo marcamos como DET (Detalle) para diferenciarlo de los EST (Estados de cuenta oficiales en PDF)
         if hoja_upper.startswith('BBVA_') or str(nombre_hoja).isdigit():
-            cuenta = str(nombre_hoja).replace('BBVA_', '')
-            return f"BBVA_{cuenta}" if cuenta.isdigit() else f"BBVA_{hoja_upper}"
+            cuenta = str(nombre_hoja).replace('BBVA_', '').replace('DET_', '') # Limpiar si ya lo tiene
+            return f"BBVA_DET_{cuenta}" if cuenta.isdigit() else f"BBVA_DET_{hoja_upper}"
 
         # 2. Buscar en el nombre de la hoja
         for banco in bancos_conocidos:
@@ -47,8 +48,13 @@ def limpiar_modulo_bancos(ruta_archivo):
                 if numeros_validos:
                     # Usamos el número más largo
                     cuenta = max(numeros_validos, key=len)
+                    # Separamos EST (PDF) de DET (Excel) para BBVA
+                    if banco.lower() == 'bbva':
+                        return f"BBVA_DET_{cuenta}"
                     return f"{banco.upper()}_{cuenta}"
 
+                if banco.lower() == 'bbva':
+                    return f"BBVA_DET_{hoja_upper}"
                 return f"{banco.upper()}_{hoja_upper}"
 
         # REGLA ESTRICTA SUGERIDA POR EL USUARIO:
