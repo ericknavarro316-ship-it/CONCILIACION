@@ -538,7 +538,7 @@ elif eleccion == "🏦 BANCOS":
                         df_graf_melt['FECHA'] = pd.to_datetime(df_graf_melt['FECHA'])
 
                         import altair as alt
-                        chart = alt.Chart(df_graf_melt).mark_bar(opacity=0.8).encode(
+                        chart = alt.Chart(df_graf_melt).mark_line(point=True, strokeWidth=3).encode(
                             x=alt.X('FECHA:T', title='Fecha del Movimiento', axis=alt.Axis(format='%d %b')),
                             y=alt.Y('Monto:Q', title='Monto Total ($)', axis=alt.Axis(format='$,.0f')),
                             color=alt.Color('Tipo de Movimiento:N', scale=alt.Scale(domain=['Ingresos (Abonos)', 'Egresos (Cargos)'], range=['#2e7d32', '#d32f2f']), legend=alt.Legend(title="Movimiento")),
@@ -648,38 +648,37 @@ elif eleccion == "🏦 BANCOS":
                     key=f"editor_{key_prefix}"
                 )
 
-                # Check for differences
-                if not df_mostrar.equals(edited_df):
-                    if st.button("💾 Guardar Cambios en BD", key=f"save_edit_{key_prefix}", type="primary"):
-                        # Debemos actualizar la BD real. 'df_mostrar' es un subset (filtrado/formateado).
-                        # Así que traemos la BD original completa, le hacemos merge con edited_df usando el index si lo tuvieramos.
-                        # Dado que no hay IDs únicos garantizados, actualizaremos la fila específica buscando la fila exacta original,
-                        # o más fácil: como el módulo bancos reescribe la tabla, reemplazaremos los valores en el df crudo.
+                # Mostramos el botón siempre que el modo edición esté activo para evitar bugs de detección
+                if st.button("💾 Guardar Cambios en BD", key=f"save_edit_{key_prefix}", type="primary"):
+                    # Debemos actualizar la BD real. 'df_mostrar' es un subset (filtrado/formateado).
+                    # Así que traemos la BD original completa, le hacemos merge con edited_df usando el index si lo tuvieramos.
+                    # Dado que no hay IDs únicos garantizados, actualizaremos la fila específica buscando la fila exacta original,
+                    # o más fácil: como el módulo bancos reescribe la tabla, reemplazaremos los valores en el df crudo.
 
-                        df_crudo = get_df_from_sql(cuenta_sel)
+                    df_crudo = get_df_from_sql(cuenta_sel)
 
-                        # Vamos a encontrar las diferencias basándonos en las filas de 'df_filtrado' vs 'edited_df'
-                        # Asumiendo que el orden se mantuvo idéntico al filtrar
-                        for i in range(len(df_filtrado)):
-                            idx_original = df_filtrado.index[i]
-                            # Actualizar concepto (Si es MP_DETALLE, el concepto real en BD se llama 'Detalle')
-                            if 'CONCEPTO' in edited_df.columns:
-                                if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
-                                    if 'Detalle' in df_crudo.columns:
-                                        df_crudo.at[idx_original, 'Detalle'] = edited_df['CONCEPTO'].iloc[i]
-                                else:
-                                    df_crudo.at[idx_original, 'CONCEPTO'] = edited_df['CONCEPTO'].iloc[i]
-                            # Actualizar observacion
-                            if 'OBSERVACION' in edited_df.columns:
-                                df_crudo.at[idx_original, 'OBSERVACION'] = edited_df['OBSERVACION'].iloc[i]
+                    # Vamos a encontrar las diferencias basándonos en las filas de 'df_filtrado' vs 'edited_df'
+                    # Asumiendo que el orden se mantuvo idéntico al filtrar
+                    for i in range(len(df_filtrado)):
+                        idx_original = df_filtrado.index[i]
+                        # Actualizar concepto (Si es MP_DETALLE, el concepto real en BD se llama 'Detalle')
+                        if 'CONCEPTO' in edited_df.columns:
+                            if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
+                                if 'Detalle' in df_crudo.columns:
+                                    df_crudo.at[idx_original, 'Detalle'] = edited_df['CONCEPTO'].iloc[i]
+                            else:
+                                df_crudo.at[idx_original, 'CONCEPTO'] = edited_df['CONCEPTO'].iloc[i]
+                        # Actualizar observacion
+                        if 'OBSERVACION' in edited_df.columns:
+                            df_crudo.at[idx_original, 'OBSERVACION'] = edited_df['OBSERVACION'].iloc[i]
 
-                        # Guardar a SQL
-                        if update_table_from_df(df_crudo, cuenta_sel):
-                            st.success("✅ ¡Cambios guardados con éxito!")
-                            import time
-                            time.sleep(1)
-                            st.session_state[f"edit_{key_prefix}"] = False
-                            st.rerun()
+                    # Guardar a SQL
+                    if update_table_from_df(df_crudo, cuenta_sel):
+                        st.success("✅ ¡Cambios guardados con éxito!")
+                        import time
+                        time.sleep(1)
+                        st.session_state[f"edit_{key_prefix}"] = False
+                        st.rerun()
             else:
                 # Mostrar dataframe estilizado (Solo Lectura)
                 st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
