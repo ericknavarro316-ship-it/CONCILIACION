@@ -460,55 +460,41 @@ elif eleccion == "🏦 BANCOS":
                 st.info("La tabla seleccionada no contiene registros.")
                 return
 
-            # --- TRANSFORMACIÓN VISUAL PARA MP_DETALLE ---
-            if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
-                # Mapear las columnas analíticas de MP a las 10 estándar solo para la vista
-                if 'Fecha del cargo' in df.columns:
-                    df['FECHA'] = df['Fecha del cargo']
-                if 'Detalle' in df.columns:
-                    df['CONCEPTO'] = df['Detalle']
-                if 'Número del cargo' in df.columns:
-                    df['REFERENCE'] = df['Número del cargo']
-                elif 'Número de la operación' in df.columns:
-                    df['REFERENCE'] = df['Número de la operación']
+            es_mp_detalle = cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel
 
-                # Transformar montos (Valor del cargo)
-                if 'Valor del cargo' in df.columns:
-                    df['monto_num'] = pd.to_numeric(df['Valor del cargo'].astype(str).str.replace(',', ''), errors='coerce')
-                    df['ABONO'] = df['monto_num'].apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
-                    df['CARGO'] = df['monto_num'].apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
-                    df = df.drop(columns=['monto_num'])
-
-                # Crear las columnas faltantes
-                for col_req in ['SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
-                    if col_req not in df.columns:
-                        df[col_req] = None
-
-            # Aplicar filtros globales usando la columna 'FECHA' (o la que se haya mapeado)
-            col_fecha_uso = 'FECHA' if 'FECHA' in df.columns else None
-            if col_fecha_uso:
-                df_filtrado = render_filtros_globales(df, col_fecha=col_fecha_uso, key_prefix=key_prefix)
-            else:
-                df_filtrado = df
+            # Aplicar filtros globales usando la columna adecuada
+            col_fecha_filtro = 'Fecha del cargo' if es_mp_detalle else 'FECHA'
+            df_filtrado = render_filtros_globales(df, col_fecha=col_fecha_filtro, key_prefix=key_prefix)
 
             # --- UI: MÉTRICAS RESUMEN ---
-            # Calcular totales del dataframe filtrado
-            tot_cargo = pd.to_numeric(df_filtrado['CARGO'], errors='coerce').sum() if 'CARGO' in df_filtrado.columns else 0
-            tot_abono = pd.to_numeric(df_filtrado['ABONO'], errors='coerce').sum() if 'ABONO' in df_filtrado.columns else 0
-
-            # Obtener el último saldo
-            saldo_final = 0
-            if 'SALDO' in df_filtrado.columns and not df_filtrado.empty:
-                 ultimo_saldo = pd.to_numeric(df_filtrado['SALDO'], errors='coerce').dropna().tail(1)
-                 if not ultimo_saldo.empty:
-                     saldo_final = ultimo_saldo.iloc[0]
+            if es_mp_detalle:
+                # Mercado Pago maneja todo en 'Valor del cargo'
+                if 'Valor del cargo' in df_filtrado.columns:
+                    monto_num = pd.to_numeric(df_filtrado['Valor del cargo'].astype(str).str.replace(',', ''), errors='coerce')
+                    tot_abono = monto_num[monto_num > 0].sum()
+                    tot_cargo = abs(monto_num[monto_num < 0].sum())
+                else:
+                    tot_abono = tot_cargo = 0
+                saldo_final = 0 # No hay saldo final en MP_DETALLE usualmente
+            else:
+                tot_cargo = pd.to_numeric(df_filtrado['CARGO'], errors='coerce').sum() if 'CARGO' in df_filtrado.columns else 0
+                tot_abono = pd.to_numeric(df_filtrado['ABONO'], errors='coerce').sum() if 'ABONO' in df_filtrado.columns else 0
+                saldo_final = 0
+                if 'SALDO' in df_filtrado.columns and not df_filtrado.empty:
+                     ultimo_saldo = pd.to_numeric(df_filtrado['SALDO'], errors='coerce').dropna().tail(1)
+                     if not ultimo_saldo.empty:
+                         saldo_final = ultimo_saldo.iloc[0]
 
             # --- UI: INDICADOR DE CALIDAD DE DATOS ---
-            missing_concepts = df_filtrado['CONCEPTO'].isnull().sum() + (df_filtrado['CONCEPTO'] == '').sum() if 'CONCEPTO' in df_filtrado.columns else 0
-            missing_dates = df_filtrado['FECHA'].isnull().sum() if 'FECHA' in df_filtrado.columns else 0
+            if es_mp_detalle:
+                missing_concepts = df_filtrado['Detalle'].isnull().sum() + (df_filtrado['Detalle'] == '').sum() if 'Detalle' in df_filtrado.columns else 0
+                missing_dates = df_filtrado['Fecha del cargo'].isnull().sum() if 'Fecha del cargo' in df_filtrado.columns else 0
+            else:
+                missing_concepts = df_filtrado['CONCEPTO'].isnull().sum() + (df_filtrado['CONCEPTO'] == '').sum() if 'CONCEPTO' in df_filtrado.columns else 0
+                missing_dates = df_filtrado['FECHA'].isnull().sum() if 'FECHA' in df_filtrado.columns else 0
 
             if missing_concepts > 0 or missing_dates > 0:
-                st.warning(f"⚠️ **Calidad de Datos:** Tienes {missing_concepts} movimientos sin 'Concepto' y {missing_dates} sin 'Fecha' en este periodo. Esto podría dificultar la conciliación.")
+                st.warning(f"⚠️ **Calidad de Datos:** Tienes {missing_concepts} movimientos sin 'Concepto/Detalle' y {missing_dates} sin 'Fecha' en este periodo. Esto podría dificultar la conciliación.")
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("🟢 Total Abonos", f"${tot_abono:,.2f}")
@@ -517,24 +503,29 @@ elif eleccion == "🏦 BANCOS":
             m4.metric("📝 Movimientos", len(df_filtrado))
 
             # --- UI: GRÁFICO DE TENDENCIAS ---
-            if 'FECHA' in df_filtrado.columns and not df_filtrado.empty:
+            if not df_filtrado.empty:
                 try:
                     df_graf = df_filtrado.copy()
-                    df_graf['FECHA'] = safe_parse_dates(df_graf['FECHA'])
-                    df_graf['ABONO_NUM'] = pd.to_numeric(df_graf['ABONO'], errors='coerce').fillna(0)
-                    df_graf['CARGO_NUM'] = pd.to_numeric(df_graf['CARGO'], errors='coerce').fillna(0)
+                    if es_mp_detalle:
+                        df_graf['FECHA'] = safe_parse_dates(df_graf['Fecha del cargo'])
+                        if 'Valor del cargo' in df_graf.columns:
+                            mnt = pd.to_numeric(df_graf['Valor del cargo'].astype(str).str.replace(',', ''), errors='coerce')
+                            df_graf['ABONO_NUM'] = mnt.apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
+                            df_graf['CARGO_NUM'] = mnt.apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
+                        else:
+                            df_graf['ABONO_NUM'] = 0
+                            df_graf['CARGO_NUM'] = 0
+                    else:
+                        df_graf['FECHA'] = safe_parse_dates(df_graf['FECHA'])
+                        df_graf['ABONO_NUM'] = pd.to_numeric(df_graf['ABONO'], errors='coerce').fillna(0)
+                        df_graf['CARGO_NUM'] = pd.to_numeric(df_graf['CARGO'], errors='coerce').fillna(0)
 
                     df_graf = df_graf.dropna(subset=['FECHA'])
                     if not df_graf.empty:
-                        # Agrupar por fecha diaria
                         df_graf_grp = df_graf.groupby(df_graf['FECHA'].dt.date)[['ABONO_NUM', 'CARGO_NUM']].sum().reset_index()
-
-                        # Derretir para Altair (FECHA, TIPO_MOV, MONTO)
                         df_graf_melt = pd.melt(df_graf_grp, id_vars=['FECHA'], value_vars=['ABONO_NUM', 'CARGO_NUM'],
                                                var_name='Tipo de Movimiento', value_name='Monto')
                         df_graf_melt['Tipo de Movimiento'] = df_graf_melt['Tipo de Movimiento'].map({'ABONO_NUM': 'Ingresos (Abonos)', 'CARGO_NUM': 'Egresos (Cargos)'})
-
-                        # Convertir a texto para que altair entienda que es temporal pero en la vista
                         df_graf_melt['FECHA'] = pd.to_datetime(df_graf_melt['FECHA'])
 
                         import altair as alt
@@ -547,7 +538,6 @@ elif eleccion == "🏦 BANCOS":
 
                         st.altair_chart(chart, use_container_width=True)
                 except Exception as e:
-                    # Fallback silencioso si las fechas o valores fallan muy raro
                     pass
 
             st.divider()
@@ -592,16 +582,24 @@ elif eleccion == "🏦 BANCOS":
             # --- UI: TABLA DE DATOS ---
             df_mostrar = df_filtrado.copy()
 
-            # Si es MP_DETALLE, forzamos a mostrar solo las 10 columnas
-            if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
+            if es_mp_detalle:
+                # Dejamos las columnas analíticas de MP, no filtramos a 10
+                columnas_orden = ['Fecha del cargo', 'Detalle', 'Valor del cargo', 'Operación relacionada', 'Nombre de sucursal', 'Valor de la operación', 'ID VENTA']
+                # Si en el archivo subido faltan algunas de estas, las rellenamos vacías
+                for c in columnas_orden:
+                    if c not in df_mostrar.columns:
+                        df_mostrar[c] = ""
+                # Si hay más columnas originales las dejamos al final
+                otras_cols = [c for c in df_mostrar.columns if c not in columnas_orden]
+                df_mostrar = df_mostrar[columnas_orden + otras_cols]
+                col_conceptos_editables = ['Detalle', 'Nombre de sucursal', 'ID VENTA']
+            else:
+                # Reordenar columnas a 10 columnas estándar si existen
                 columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
-                df_mostrar = df_mostrar[[c for c in columnas_orden if c in df_mostrar.columns]]
-
-            # Reordenar columnas a 10 columnas estándar si existen
-            columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
-            cols_existentes = [c for c in columnas_orden if c in df_mostrar.columns]
-            otras_cols = [c for c in df_mostrar.columns if c not in cols_existentes]
-            df_mostrar = df_mostrar[cols_existentes + otras_cols]
+                cols_existentes = [c for c in columnas_orden if c in df_mostrar.columns]
+                otras_cols = [c for c in df_mostrar.columns if c not in cols_existentes]
+                df_mostrar = df_mostrar[cols_existentes + otras_cols]
+                col_conceptos_editables = ['CONCEPTO', 'OBSERVACION']
 
             # Reemplazar explícitamente "None" y nulls con cadena vacía para limpiar la UI
             df_mostrar = df_mostrar.fillna("")
@@ -614,18 +612,27 @@ elif eleccion == "🏦 BANCOS":
                 except Exception:
                     df_mostrar['FECHA'] = pd.to_datetime(df_mostrar['FECHA'], errors='coerce').dt.strftime('%d/%m/%Y')
 
+            if 'Fecha del cargo' in df_mostrar.columns:
+                try:
+                    df_mostrar['Fecha del cargo'] = safe_parse_dates(df_mostrar['Fecha del cargo']).dt.strftime('%d/%m/%Y')
+                except Exception:
+                    df_mostrar['Fecha del cargo'] = pd.to_datetime(df_mostrar['Fecha del cargo'], errors='coerce').dt.strftime('%d/%m/%Y')
+
             # Formatear montos para que se vean como moneda ($)
-            for col_moneda in ['CARGO', 'ABONO', 'SALDO']:
+            for col_moneda in ['CARGO', 'ABONO', 'SALDO', 'Valor del cargo', 'Valor de la operación']:
                 if col_moneda in df_mostrar.columns:
-                    # Convertir a float y luego a string formateado
-                    df_mostrar[col_moneda] = pd.to_numeric(df_mostrar[col_moneda], errors='coerce').apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+                    # Convertir a float y luego a string formateado limpiando posibles comas previas de MP
+                    try:
+                        temp_num = pd.to_numeric(df_mostrar[col_moneda].astype(str).str.replace(',', ''), errors='coerce')
+                        df_mostrar[col_moneda] = temp_num.apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+                    except:
+                        pass
 
             # Reemplazar el literal 'NaT' por cadena vacía
             df_mostrar = df_mostrar.replace("NaT", "")
 
             # --- UI: EDICIÓN MANUAL ---
             # Mostramos un editor interactivo en lugar de un dataframe estático
-            # Definimos qué columnas son editables (ej. CONCEPTO y OBSERVACION)
 
             # Recuperar estado de cambios
             if f"edit_{key_prefix}" not in st.session_state:
@@ -638,39 +645,26 @@ elif eleccion == "🏦 BANCOS":
                     st.session_state[f"edit_{key_prefix}"] = not st.session_state[f"edit_{key_prefix}"]
 
             if st.session_state[f"edit_{key_prefix}"]:
-                st.info("💡 Modo de Edición Activado: Doble clic en 'CONCEPTO' o 'OBSERVACION' para editar. Presiona Enter para confirmar y luego haz clic en Guardar.")
+                nombres_editables_txt = " / ".join(col_conceptos_editables)
+                st.info(f"💡 Modo de Edición Activado: Doble clic en **{nombres_editables_txt}** para editar. Presiona Enter para confirmar y luego haz clic en Guardar.")
 
                 edited_df = st.data_editor(
                     df_mostrar,
                     use_container_width=True,
                     hide_index=True,
-                    disabled=[c for c in df_mostrar.columns if c not in ['CONCEPTO', 'OBSERVACION']],
+                    disabled=[c for c in df_mostrar.columns if c not in col_conceptos_editables],
                     key=f"editor_{key_prefix}"
                 )
 
                 # Mostramos el botón siempre que el modo edición esté activo para evitar bugs de detección
                 if st.button("💾 Guardar Cambios en BD", key=f"save_edit_{key_prefix}", type="primary"):
-                    # Debemos actualizar la BD real. 'df_mostrar' es un subset (filtrado/formateado).
-                    # Así que traemos la BD original completa, le hacemos merge con edited_df usando el index si lo tuvieramos.
-                    # Dado que no hay IDs únicos garantizados, actualizaremos la fila específica buscando la fila exacta original,
-                    # o más fácil: como el módulo bancos reescribe la tabla, reemplazaremos los valores en el df crudo.
-
                     df_crudo = get_df_from_sql(cuenta_sel)
 
-                    # Vamos a encontrar las diferencias basándonos en las filas de 'df_filtrado' vs 'edited_df'
-                    # Asumiendo que el orden se mantuvo idéntico al filtrar
                     for i in range(len(df_filtrado)):
                         idx_original = df_filtrado.index[i]
-                        # Actualizar concepto (Si es MP_DETALLE, el concepto real en BD se llama 'Detalle')
-                        if 'CONCEPTO' in edited_df.columns:
-                            if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
-                                if 'Detalle' in df_crudo.columns:
-                                    df_crudo.at[idx_original, 'Detalle'] = edited_df['CONCEPTO'].iloc[i]
-                            else:
-                                df_crudo.at[idx_original, 'CONCEPTO'] = edited_df['CONCEPTO'].iloc[i]
-                        # Actualizar observacion
-                        if 'OBSERVACION' in edited_df.columns:
-                            df_crudo.at[idx_original, 'OBSERVACION'] = edited_df['OBSERVACION'].iloc[i]
+                        for c_edit in col_conceptos_editables:
+                             if c_edit in edited_df.columns and c_edit in df_crudo.columns:
+                                  df_crudo.at[idx_original, c_edit] = edited_df[c_edit].iloc[i]
 
                     # Guardar a SQL
                     if update_table_from_df(df_crudo, cuenta_sel):
