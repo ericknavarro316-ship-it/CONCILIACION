@@ -120,6 +120,10 @@ def parse_bank_pdf(file_obj):
 
         df = pd.DataFrame(data)
 
+        # Parsear fechas de DD/MM/YYYY a datetime real para que SQLite y Pandas no inviertan mes/día
+        if 'FECHA' in df.columns:
+            df['FECHA'] = pd.to_datetime(df['FECHA'], format='%d/%m/%Y', errors='coerce')
+
         # Limpieza final de montos numéricos (quitar comas y signos de $)
         for num_col in ['CARGO', 'ABONO', 'SALDO']:
             df[num_col] = df[num_col].str.replace('$', '', regex=False).str.replace(',', '', regex=False)
