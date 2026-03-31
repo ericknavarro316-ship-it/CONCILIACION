@@ -37,7 +37,19 @@ if not os.path.exists("conciliacion_data.db"):
     import database_sqlite
     database_sqlite.init_db()
 
-# 3. HELPER DE FILTROS GLOBALES
+# 3. HELPER DE FECHAS ROBUSTO
+def safe_parse_dates(serie):
+    """
+    Intenta parsear fechas de forma segura para no invertir Día y Mes.
+    Intenta primero formatos ISO estándar de SQLite, y si falla, asume DD/MM/YYYY.
+    """
+    s_iso_full = pd.to_datetime(serie, format='%Y-%m-%d %H:%M:%S', errors='coerce')
+    s_iso_short = pd.to_datetime(serie, format='%Y-%m-%d', errors='coerce')
+    s_eu = pd.to_datetime(serie, format='%d/%m/%Y', errors='coerce')
+
+    return s_iso_full.fillna(s_iso_short).fillna(s_eu)
+
+# 4. HELPER DE FILTROS GLOBALES
 def render_filtros_globales(df, col_fecha, key_prefix):
     """Renderiza controles de Mes, Fecha y Búsqueda sobre un dataframe, retornando el DF filtrado."""
     if df.empty:
@@ -46,7 +58,7 @@ def render_filtros_globales(df, col_fecha, key_prefix):
     # --- PREPARACIÓN DE DATOS ---
     df_filtrado = df.copy()
     if col_fecha and col_fecha in df_filtrado.columns:
-        df_filtrado['FECHA_DT_TMP'] = pd.to_datetime(df_filtrado[col_fecha], dayfirst=True, errors='coerce')
+        df_filtrado['FECHA_DT_TMP'] = safe_parse_dates(df_filtrado[col_fecha])
         # Obtener lista de meses únicos (ej. "2024-01")
         meses_unicos = df_filtrado['FECHA_DT_TMP'].dt.to_period('M').dropna().unique()
         lista_meses = ["Todos"] + sorted([str(m) for m in meses_unicos], reverse=True)
@@ -335,7 +347,10 @@ elif eleccion == "🏦 BANCOS":
 
             # Asegurar que las fechas se vean bonitas
             if 'FECHA' in df_mostrar.columns:
-                df_mostrar['FECHA'] = pd.to_datetime(df_mostrar['FECHA'], errors='coerce').dt.strftime('%d/%m/%Y')
+                try:
+                    df_mostrar['FECHA'] = safe_parse_dates(df_mostrar['FECHA']).dt.strftime('%d/%m/%Y')
+                except Exception:
+                    df_mostrar['FECHA'] = pd.to_datetime(df_mostrar['FECHA'], errors='coerce').dt.strftime('%d/%m/%Y')
 
             # Formatear montos para que se vean como moneda ($)
             for col_moneda in ['CARGO', 'ABONO', 'SALDO']:
@@ -489,7 +504,10 @@ elif eleccion == "🛒 VENTAS":
                 if not df_resumen.empty:
                     # Formatear columnas de fecha
                     if 'fecha venta' in df_resumen.columns:
-                        df_resumen['fecha venta'] = pd.to_datetime(df_resumen['fecha venta'], dayfirst=True, errors='ignore').astype(str).str.replace(' 00:00:00', '')
+                        try:
+                            df_resumen['fecha venta'] = safe_parse_dates(df_resumen['fecha venta']).dt.strftime('%d/%m/%Y')
+                        except Exception:
+                            df_resumen['fecha venta'] = df_resumen['fecha venta'].astype(str).str.replace(' 00:00:00', '')
 
                     # Convertir a flotantes reales
                     columnas_dinero = ['total (antes descuento)', 'efectivo', 'tarjeta crédito', 'tarjeta débito', 'transferencia', 'deposito', 'total real']
@@ -669,7 +687,10 @@ elif eleccion == "🛒 VENTAS":
 
                     # Formatear a datetime/string si existe
                     if 'FECHA' in df_v_vista.columns:
-                        df_v_vista['FECHA'] = pd.to_datetime(df_v_vista['FECHA'], dayfirst=True, errors='ignore').astype(str).str.replace(' 00:00:00', '')
+                        try:
+                            df_v_vista['FECHA'] = safe_parse_dates(df_v_vista['FECHA']).dt.strftime('%d/%m/%Y')
+                        except Exception:
+                            df_v_vista['FECHA'] = df_v_vista['FECHA'].astype(str).str.replace(' 00:00:00', '')
 
                     # Convertir a float
                     if 'PRECIO UNITARIO' in df_v_vista.columns:
@@ -720,7 +741,10 @@ elif eleccion == "🛒 VENTAS":
                 # Formato a fechas si existe
                 if 'Fecha del cargo' in df_mp_vista.columns:
                     # Intenta convertir a datetime y luego a string, ignorando errores si es texto
-                    df_mp_vista['Fecha del cargo'] = pd.to_datetime(df_mp_vista['Fecha del cargo'], dayfirst=True, errors='ignore').astype(str).str.replace(' 00:00:00', '')
+                    try:
+                        df_mp_vista['Fecha del cargo'] = safe_parse_dates(df_mp_vista['Fecha del cargo']).dt.strftime('%d/%m/%Y')
+                    except Exception:
+                        df_mp_vista['Fecha del cargo'] = df_mp_vista['Fecha del cargo'].astype(str).str.replace(' 00:00:00', '')
 
                 # Formato a dinero
                 cc_mp = {}
