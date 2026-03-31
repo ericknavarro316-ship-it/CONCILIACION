@@ -150,9 +150,8 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
     st.markdown("Carga tus archivos de forma individual o un archivo consolidado.")
 
     # Pestañas para subir Excel o PDF
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab3, tab4 = st.tabs([
         "Carga Consolidada (Mega Excel)",
-        "Carga de Bancos",
         "Carga de Ventas",
         "Carga de CFDI"
     ])
@@ -189,35 +188,6 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                 st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
             else:
                 st.warning("⚠️ Sube un archivo consolidado primero.")
-
-    with tab2:
-        st.markdown("### Carga de Bancos (Individual)")
-        st.markdown("Sube archivos de estados de cuenta (Excel o PDF).")
-        archivo_banco_excel = st.file_uploader("📂 Cargar Banco (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="banco_excel")
-        archivo_banco_pdf = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'], accept_multiple_files=True, key="banco_pdf")
-
-        if st.button("Procesar Bancos", type="primary", key="btn_bancos"):
-            procesados = False
-            if archivo_banco_excel:
-                for archivo in archivo_banco_excel:
-                    with st.spinner(f"Procesando {archivo.name}..."):
-                        bancos = limpiar_modulo_bancos(archivo)
-                        for nombre_cuenta, df_banco in bancos.items():
-                            if nombre_cuenta == "MP_DETALLE":
-                                save_df_to_sql(df_banco, "AUX_MP_DETALLE")
-                            else:
-                                save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
-                procesados = True
-
-            if archivo_banco_pdf:
-                for pdf in archivo_banco_pdf:
-                    parse_bank_pdf(pdf)
-                procesados = True
-
-            if procesados:
-                st.success("✅ ¡Bancos guardados en la Base de Datos SQL!")
-            else:
-                 st.warning("Sube un archivo de banco primero.")
 
     with tab3:
         st.markdown("### Carga de Notas de Venta y Reporte Resumen")
@@ -271,7 +241,116 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
 # ==========================================================
 elif eleccion == "🏦 BANCOS":
     st.title(":material/account_balance: Módulo BANCOS")
-    tablas = [t for t in get_all_tables() if t.startswith("BANCO_")]
+
+    # 1. Selector principal
+    tipo_vista = st.radio("Selecciona la vista:", ["Estados de Cuenta", "Movimientos Operativos"], horizontal=True)
+    st.divider()
+
+    # 2. Ingesta de Bancos (integrada)
+    with st.expander(f"📥 Cargar archivos para {tipo_vista}", expanded=False):
+        if tipo_vista == "Estados de Cuenta":
+            st.markdown("Sube archivos de **Estados de Cuenta** (PDF o Excel).")
+            archivo_est_excel = st.file_uploader("📂 Cargar Estado de Cuenta (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="est_excel")
+            archivo_est_pdf = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'], accept_multiple_files=True, key="est_pdf")
+
+            if st.button("Procesar Estados de Cuenta", type="primary"):
+                procesados = False
+
+                if archivo_est_excel:
+                    for archivo in archivo_est_excel:
+                        with st.spinner(f"Procesando {archivo.name}..."):
+                            # Guardar copia física
+                            dir_guardado = os.path.join("PROCESADOS", "BANCOS", "ESTADOS_CUENTA")
+                            os.makedirs(dir_guardado, exist_ok=True)
+                            ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                            with open(ruta_guardado, "wb") as f:
+                                f.write(archivo.getbuffer())
+
+                            bancos = limpiar_modulo_bancos(archivo)
+                            for nombre_cuenta, df_banco in bancos.items():
+                                if nombre_cuenta == "MP_DETALLE" or "MP_ESTADO_CUENTA" in nombre_cuenta:
+                                    save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
+                                else:
+                                    # Asegurar que tenga EST_ en el nombre
+                                    nombre_final = nombre_cuenta if "_EST_" in nombre_cuenta else nombre_cuenta.replace("_DET_", "_EST_")
+                                    if "_EST_" not in nombre_final:
+                                         partes = nombre_final.split("_", 1)
+                                         if len(partes) == 2:
+                                             nombre_final = f"{partes[0]}_EST_{partes[1]}"
+                                         else:
+                                             nombre_final = f"{nombre_final}_EST"
+                                    save_df_to_sql(df_banco, f"BANCO_{nombre_final}")
+                    procesados = True
+
+                if archivo_est_pdf:
+                    for pdf in archivo_est_pdf:
+                        # Guardar copia física
+                        dir_guardado = os.path.join("PROCESADOS", "BANCOS", "ESTADOS_CUENTA")
+                        os.makedirs(dir_guardado, exist_ok=True)
+                        ruta_guardado = os.path.join(dir_guardado, pdf.name)
+                        with open(ruta_guardado, "wb") as f:
+                            f.write(pdf.getbuffer())
+                        # parse_bank_pdf ya guarda en SQLite con nombre BANCO_BBVA_EST_...
+                        parse_bank_pdf(pdf)
+                    procesados = True
+
+                if procesados:
+                    st.success("✅ ¡Estados de Cuenta guardados en la Base de Datos SQL y archivados!")
+                    import time
+                    time.sleep(1.5)
+                    st.rerun()
+                else:
+                    st.warning("Sube un archivo primero.")
+
+        else: # Movimientos Operativos
+            st.markdown("Sube archivos de **Movimientos Operativos** (Excel).")
+            archivo_det_excel = st.file_uploader("📂 Cargar Movimientos (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="det_excel")
+
+            if st.button("Procesar Movimientos", type="primary"):
+                if archivo_det_excel:
+                    for archivo in archivo_det_excel:
+                        with st.spinner(f"Procesando {archivo.name}..."):
+                            # Guardar copia física
+                            dir_guardado = os.path.join("PROCESADOS", "BANCOS", "MOVIMIENTOS")
+                            os.makedirs(dir_guardado, exist_ok=True)
+                            ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                            with open(ruta_guardado, "wb") as f:
+                                f.write(archivo.getbuffer())
+
+                            bancos = limpiar_modulo_bancos(archivo)
+                            for nombre_cuenta, df_banco in bancos.items():
+                                if nombre_cuenta == "MP_DETALLE":
+                                    save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                                elif "MP_ESTADO_CUENTA" in nombre_cuenta:
+                                    # Omitir estados de cuenta si se suben por error aquí, o guardarlos donde corresponde
+                                    save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
+                                else:
+                                    # Asegurar que tenga DET_ en el nombre
+                                    nombre_final = nombre_cuenta if "_DET_" in nombre_cuenta else nombre_cuenta.replace("_EST_", "_DET_")
+                                    if "_DET_" not in nombre_final:
+                                         partes = nombre_final.split("_", 1)
+                                         if len(partes) == 2:
+                                             nombre_final = f"{partes[0]}_DET_{partes[1]}"
+                                         else:
+                                             nombre_final = f"{nombre_final}_DET"
+                                    save_df_to_sql(df_banco, f"BANCO_{nombre_final}")
+                    st.success("✅ ¡Movimientos guardados en la Base de Datos SQL y archivados!")
+                    import time
+                    time.sleep(1.5)
+                    st.rerun()
+                else:
+                    st.warning("Sube un archivo de Excel primero.")
+
+    st.divider()
+
+    # 3. Filtrar tablas según la vista seleccionada
+    todas_las_tablas = get_all_tables()
+    if tipo_vista == "Estados de Cuenta":
+        tablas = [t for t in todas_las_tablas if t.startswith("BANCO_") and ("_EST_" in t or "ESTADO_CUENTA" in t)]
+    else:
+        # Movimientos: Todo lo que sea BANCO_ y NO sea EST, además de AUX_MP_DETALLE
+        tablas = [t for t in todas_las_tablas if (t.startswith("BANCO_") and "_EST_" not in t and "ESTADO_CUENTA" not in t) or t == "AUX_MP_DETALLE"]
+
 
     if not tablas:
         st.warning("La BD está vacía o no hay bancos procesados.")
@@ -311,8 +390,36 @@ elif eleccion == "🏦 BANCOS":
                 st.info("La tabla seleccionada no contiene registros.")
                 return
 
-            # Aplicar filtros globales usando la columna 'FECHA'
-            df_filtrado = render_filtros_globales(df, col_fecha='FECHA', key_prefix=key_prefix)
+            # --- TRANSFORMACIÓN VISUAL PARA MP_DETALLE ---
+            if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
+                # Mapear las columnas analíticas de MP a las 10 estándar solo para la vista
+                if 'Fecha del cargo' in df.columns:
+                    df['FECHA'] = df['Fecha del cargo']
+                if 'Detalle' in df.columns:
+                    df['CONCEPTO'] = df['Detalle']
+                if 'Número del cargo' in df.columns:
+                    df['REFERENCE'] = df['Número del cargo']
+                elif 'Número de la operación' in df.columns:
+                    df['REFERENCE'] = df['Número de la operación']
+
+                # Transformar montos (Valor del cargo)
+                if 'Valor del cargo' in df.columns:
+                    df['monto_num'] = pd.to_numeric(df['Valor del cargo'].astype(str).str.replace(',', ''), errors='coerce')
+                    df['ABONO'] = df['monto_num'].apply(lambda x: x if pd.notnull(x) and x > 0 else 0)
+                    df['CARGO'] = df['monto_num'].apply(lambda x: abs(x) if pd.notnull(x) and x < 0 else 0)
+                    df = df.drop(columns=['monto_num'])
+
+                # Crear las columnas faltantes
+                for col_req in ['SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']:
+                    if col_req not in df.columns:
+                        df[col_req] = None
+
+            # Aplicar filtros globales usando la columna 'FECHA' (o la que se haya mapeado)
+            col_fecha_uso = 'FECHA' if 'FECHA' in df.columns else None
+            if col_fecha_uso:
+                df_filtrado = render_filtros_globales(df, col_fecha=col_fecha_uso, key_prefix=key_prefix)
+            else:
+                df_filtrado = df
 
             # --- UI: MÉTRICAS RESUMEN ---
             # Calcular totales del dataframe filtrado
@@ -334,6 +441,11 @@ elif eleccion == "🏦 BANCOS":
 
             # --- UI: TABLA DE DATOS ---
             df_mostrar = df_filtrado.copy()
+
+            # Si es MP_DETALLE, forzamos a mostrar solo las 10 columnas
+            if cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel:
+                columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
+                df_mostrar = df_mostrar[[c for c in columnas_orden if c in df_mostrar.columns]]
 
             # Reordenar columnas a 10 columnas estándar si existen
             columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
@@ -473,20 +585,17 @@ elif eleccion == "🛒 VENTAS":
     tablas_todas = get_all_tables()
     # Check what tables are available
     tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_RESUMEN"]
-    tabla_mp_detalle = "AUX_MP_DETALLE" if "AUX_MP_DETALLE" in tablas_todas else None
     tabla_resumen = "VENTAS_RESUMEN" if "VENTAS_RESUMEN" in tablas_todas else None
 
-    if not tablas_ventas and not tabla_mp_detalle and not tabla_resumen:
+    if not tablas_ventas and not tabla_resumen:
         st.warning("La BD está vacía. Carga tu Excel o CSV en 'Ingesta' primero.")
     else:
         # Configurar pestañas de acuerdo a lo que exista
         tabs_names = []
         if tabla_resumen:
             tabs_names.append("📈 Resumen de Ventas (CSV)")
-        if tablas_ventas or tabla_mp_detalle:
+        if tablas_ventas:
             tabs_names.append("🛒 Notas de Ventas (Detalle)")
-        if tabla_mp_detalle:
-            tabs_names.append("🔵 MP Detalle (Cobros)")
 
         tabs = st.tabs(tabs_names)
 
@@ -641,7 +750,7 @@ elif eleccion == "🛒 VENTAS":
                     st.info("La tabla de resumen está vacía.")
             tab_idx += 1
 
-        if tablas_ventas or tabla_mp_detalle:
+        if tablas_ventas:
             with tabs[tab_idx]:
 
                 if tablas_ventas:
@@ -708,52 +817,6 @@ elif eleccion == "🛒 VENTAS":
                 else:
                     st.info("No hay bloques de notas de ventas cargados.")
             tab_idx += 1
-
-        if tabla_mp_detalle:
-            with tabs[tab_idx]:
-                st.subheader("Detalle Analítico de Mercado Pago")
-                st.markdown("Tabla auxiliar que muestra el desglose de los cobros y operaciones de Mercado Pago. Útil para conciliar luego contra el Estado de Cuenta global y las Ventas.")
-
-                df_mp_aux_raw = get_df_from_sql("AUX_MP_DETALLE")
-
-                # Aplicar filtros globales
-                df_mp_aux = render_filtros_globales(df_mp_aux_raw, col_fecha='Fecha del cargo', key_prefix='mp_detalle')
-
-                # Columnas solicitadas: Fecha del cargo, Detalle, Valor del cargo, Operación relacionada, Nombre de sucursal, Valor de la operación, ID VENTA
-                cols_requeridas = ['Fecha del cargo', 'Detalle', 'Valor del cargo', 'Operación relacionada', 'Nombre de sucursal', 'Valor de la operación']
-
-                # Verificar y crear columnas faltantes si el Excel tenía otro formato
-                for col in cols_requeridas:
-                    if col not in df_mp_aux.columns:
-                        df_mp_aux[col] = ""
-
-                # Crear columna ID VENTA si no existe
-                if 'ID VENTA' not in df_mp_aux.columns:
-                    df_mp_aux['ID VENTA'] = ""
-
-                # Filtrar y ordenar
-                df_mp_vista = df_mp_aux[cols_requeridas + ['ID VENTA']].copy()
-
-                # Limpieza visual
-                df_mp_vista = df_mp_vista.fillna("")
-                df_mp_vista = df_mp_vista.replace("None", "").replace("NaT", "")
-
-                # Formato a fechas si existe
-                if 'Fecha del cargo' in df_mp_vista.columns:
-                    # Intenta convertir a datetime y luego a string, ignorando errores si es texto
-                    try:
-                        df_mp_vista['Fecha del cargo'] = safe_parse_dates(df_mp_vista['Fecha del cargo']).dt.strftime('%d/%m/%Y')
-                    except Exception:
-                        df_mp_vista['Fecha del cargo'] = df_mp_vista['Fecha del cargo'].astype(str).str.replace(' 00:00:00', '')
-
-                # Formato a dinero
-                cc_mp = {}
-                for col_moneda in ['Valor del cargo', 'Valor de la operación']:
-                    if col_moneda in df_mp_vista.columns:
-                        df_mp_vista[col_moneda] = pd.to_numeric(df_mp_vista[col_moneda], errors='coerce')
-                        cc_mp[col_moneda] = st.column_config.NumberColumn(col_moneda, format="$%.2f")
-
-                st.dataframe(df_mp_vista, use_container_width=True, hide_index=True, column_config=cc_mp)
 
 
 # ==========================================================
