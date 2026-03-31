@@ -136,10 +136,10 @@ def parse_bank_pdf(file_obj):
         df = df[['FECHA', 'CONCEPTO', 'REFERENCE', 'CARGO', 'ABONO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']]
 
         # Guardar en SQLite
-        # Si logramos extraer la cuenta, usamos su terminación para nombrar la tabla (ej. BANCO_BBVA_21387)
-        # Si no, caemos en el nombre del archivo.
+        # Si logramos extraer la cuenta, usamos su terminación para nombrar la tabla (ej. BANCO_BBVA_EST_21387)
+        # EST = Estado de Cuenta (oficial) para separarlo del Detalle en Excel
         if cuenta_extracted:
-            nombre_tabla = f"BANCO_BBVA_{cuenta_extracted}"
+            nombre_tabla = f"BANCO_BBVA_EST_{cuenta_extracted}"
         else:
             nombre_limpio = re.sub(r'[^a-zA-Z0-9]', '_', file_obj.name.split('.')[0]).upper()
             nombre_tabla = f"BANCO_PDF_{nombre_limpio}"

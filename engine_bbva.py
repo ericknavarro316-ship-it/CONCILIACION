@@ -19,10 +19,14 @@ def run_bbva_crosscheck():
 
     # 2. Leer Cuentas Bancarias BBVA
     tablas = get_all_tables()
-    cuentas_bbva = {t: get_df_from_sql(t) for t in tablas if t.startswith("BANCO_") and t.replace("BANCO_", "").isdigit()}
+    cuentas_bbva = {t: get_df_from_sql(t) for t in tablas if t.startswith("BANCO_") and (
+        t.replace("BANCO_", "").isdigit() or
+        t.startswith("BANCO_BBVA_EST_") or
+        t.startswith("BANCO_BBVA_DET_")
+    )}
 
     if not cuentas_bbva:
-         return {"error": "No se encontraron tablas de cuentas bancarias (BANCO_XXXXX)."}
+         return {"error": "No se encontraron tablas de cuentas bancarias (BANCO_XXXXX o BANCO_BBVA_...)."}
 
     # 3. Agrupar Ventas por ID
     df_ventas['precio_real'] = pd.to_numeric(df_ventas['precio_real'], errors='coerce')

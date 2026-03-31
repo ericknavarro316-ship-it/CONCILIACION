@@ -4,7 +4,11 @@ from database_sqlite import get_df_from_sql, save_df_to_sql, get_all_tables
 def run_o01_preclasificar_bancos():
     """Identifica patrones de texto en el Concepto de los bancos para pre-clasificar cargos y abonos"""
     tablas = get_all_tables()
-    bancos = [t for t in tablas if t.startswith("BANCO_") and t.replace("BANCO_", "").isdigit()]
+    bancos = [t for t in tablas if t.startswith("BANCO_") and (
+        t.replace("BANCO_", "").isdigit() or
+        t.startswith("BANCO_BBVA_EST_") or
+        t.startswith("BANCO_BBVA_DET_")
+    )]
 
     # Lista de patrones comunes (ejemplo extraído y expandible)
     patrones_comunes = {
@@ -53,7 +57,11 @@ def run_o07_conciliar_pagos_e():
     df_pagos['cuenta_bancaria_cruce'] = None
 
     tablas = get_all_tables()
-    bancos = [t for t in tablas if t.startswith("BANCO_") and t.replace("BANCO_", "").isdigit()]
+    bancos = [t for t in tablas if t.startswith("BANCO_") and (
+        t.replace("BANCO_", "").isdigit() or
+        t.startswith("BANCO_BBVA_EST_") or
+        t.startswith("BANCO_BBVA_DET_")
+    )]
 
     col_total = next((col for col in ['Monto', 'Total', 'Total Pago'] if col in df_pagos.columns), None)
     if not col_total:
