@@ -583,16 +583,19 @@ elif eleccion == "🏦 BANCOS":
             df_mostrar = df_filtrado.copy()
 
             if es_mp_detalle:
-                # Dejamos las columnas analíticas de MP, no filtramos a 10
-                columnas_orden = ['Fecha del cargo', 'Detalle', 'Valor del cargo', 'Operación relacionada', 'Nombre de sucursal', 'Valor de la operación', 'ID VENTA']
-                # Si en el archivo subido faltan algunas de estas, las rellenamos vacías
+                # Mostrar solo las columnas analíticas de MP solicitadas + las nuevas (EST MP, COMISION, OBSERVACION)
+                columnas_orden = ['Fecha del cargo', 'Detalle', 'Valor del cargo', 'Operación relacionada', 'Nombre de sucursal', 'Valor de la operación', 'ID VENTA', 'EST MP', 'COMISION', 'OBSERVACION']
+
+                # Rellenar con vacío las columnas que no existan
                 for c in columnas_orden:
                     if c not in df_mostrar.columns:
                         df_mostrar[c] = ""
-                # Si hay más columnas originales las dejamos al final
-                otras_cols = [c for c in df_mostrar.columns if c not in columnas_orden]
-                df_mostrar = df_mostrar[columnas_orden + otras_cols]
-                col_conceptos_editables = ['Detalle', 'Nombre de sucursal', 'ID VENTA']
+
+                # Ocultar estrictamente el resto de columnas que trae Mercado Pago por defecto
+                df_mostrar = df_mostrar[columnas_orden]
+
+                # Definir qué columnas puede editar manualmente el usuario
+                col_conceptos_editables = ['Detalle', 'Nombre de sucursal', 'ID VENTA', 'EST MP', 'COMISION', 'OBSERVACION']
             else:
                 # Reordenar columnas a 10 columnas estándar si existen
                 columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
