@@ -147,63 +147,39 @@ if st.sidebar.button(":material/logout: Cerrar Sesión"):
 if eleccion == "📥 Ingesta (Excel / PDF)":
     st.title(":material/cloud_upload: Procesamiento de Archivos (ETL)")
 
-    st.markdown("Carga tus archivos de forma individual o un archivo consolidado.")
+    st.markdown("Carga tu archivo de mega conciliación con todas las sábanas de trabajo (Bancos, Ventas, CFDI).")
 
-    # Pestañas para subir Excel o PDF
-    tab1, tab4 = st.tabs([
-        "Carga Consolidada (Mega Excel)",
-        "Carga de CFDI"
-    ])
+    st.markdown("### Carga de Archivo Consolidado")
+    st.markdown("Sube un solo archivo Excel con todas las hojas consolidadas.")
+    archivo_subido = st.file_uploader("📂 Cargar Mega Excel", type=['xlsx', 'xlsm'], key="consolidado")
 
-    with tab1:
-        st.markdown("### Carga de Archivo Consolidado")
-        st.markdown("Sube un solo archivo Excel con todas las hojas (Bancos, Ventas, CFDI).")
-        archivo_subido = st.file_uploader("📂 Cargar Mega Excel", type=['xlsx', 'xlsm'], key="consolidado")
+    if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado"):
+        if archivo_subido is not None:
+            with st.spinner("Procesando Bancos..."):
+                bancos = limpiar_modulo_bancos(archivo_subido)
+                for nombre_cuenta, df_banco in bancos.items():
+                    # MP_DETALLE is an auxiliary detail table, not a standard bank statement.
+                    # We save it without the BANCO_ prefix to isolate it from the "BANCOS" UI.
+                    if nombre_cuenta == "MP_DETALLE":
+                        save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                    else:
+                        save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
 
-        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado"):
-            if archivo_subido is not None:
-                with st.spinner("Procesando Bancos..."):
-                    bancos = limpiar_modulo_bancos(archivo_subido)
-                    for nombre_cuenta, df_banco in bancos.items():
-                        # MP_DETALLE is an auxiliary detail table, not a standard bank statement.
-                        # We save it without the BANCO_ prefix to isolate it from the "BANCOS" UI.
-                        if nombre_cuenta == "MP_DETALLE":
-                            save_df_to_sql(df_banco, "AUX_MP_DETALLE")
-                        else:
-                            save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
+            with st.spinner("Procesando CFDI..."):
+                cfdis = limpiar_modulo_cfdi(archivo_subido)
+                for nombre_cfdi, df_cfdi in cfdis.items():
+                    # Evitar prefijo doble "CFDI_CFDI_"
+                    nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
+                    save_df_to_sql(df_cfdi, nombre_tabla)
 
-                with st.spinner("Procesando CFDI..."):
-                    cfdis = limpiar_modulo_cfdi(archivo_subido)
-                    for nombre_cfdi, df_cfdi in cfdis.items():
-                        # Evitar prefijo doble "CFDI_CFDI_"
-                        nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
-                        save_df_to_sql(df_cfdi, nombre_tabla)
+            with st.spinner("Procesando Ventas..."):
+                ventas = limpiar_modulo_ventas_v2(archivo_subido)
+                for nombre_venta, df_venta in ventas.items():
+                    save_df_to_sql(df_venta, nombre_venta)
 
-                with st.spinner("Procesando Ventas..."):
-                    ventas = limpiar_modulo_ventas_v2(archivo_subido)
-                    for nombre_venta, df_venta in ventas.items():
-                        save_df_to_sql(df_venta, nombre_venta)
-
-                st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
-            else:
-                st.warning("⚠️ Sube un archivo consolidado primero.")
-
-    with tab4:
-        st.markdown("### Carga de CFDI (Individual)")
-        st.markdown("Sube los reportes del SAT (Ingresos/Egresos).")
-        archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="cfdi")
-
-        if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
-            if archivo_cfdi:
-                for archivo in archivo_cfdi:
-                    with st.spinner(f"Procesando {archivo.name}..."):
-                        cfdis = limpiar_modulo_cfdi(archivo)
-                        for nombre_cfdi, df_cfdi in cfdis.items():
-                            nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
-                            save_df_to_sql(df_cfdi, nombre_tabla)
-                st.success("✅ ¡CFDI guardados en la Base de Datos SQL!")
-            else:
-                st.warning("⚠️ Sube un archivo CFDI primero.")
+            st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
+        else:
+            st.warning("⚠️ Sube un archivo consolidado primero.")
 
 # ==========================================================
 # MÓDULOS DE VISUALIZACIÓN BÁSICA
@@ -774,12 +750,41 @@ elif eleccion == "🏦 BANCOS":
 elif eleccion == "📄 CFDI (Facturas)":
     st.title(":material/receipt_long: Módulo CFDI")
 
+    # 1. Ingesta de CFDI (integrada)
+    with st.expander("📥 Cargar archivos CFDI (Excel)", expanded=False):
+        st.markdown("Sube los **reportes del SAT (Ingresos/Egresos)** en formato Excel.")
+        archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="cfdi")
+
+        if st.button("Procesar Archivos CFDI", type="primary", key="btn_cfdi_integrado"):
+            import os
+            if archivo_cfdi:
+                for archivo in archivo_cfdi:
+                    with st.spinner(f"Procesando {archivo.name}..."):
+                        dir_guardado = os.path.join("PROCESADOS", "CFDI")
+                        os.makedirs(dir_guardado, exist_ok=True)
+                        ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                        with open(ruta_guardado, "wb") as f:
+                            f.write(archivo.getbuffer())
+
+                        cfdis = limpiar_modulo_cfdi(archivo)
+                        for nombre_cfdi, df_cfdi in cfdis.items():
+                            nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
+                            save_df_to_sql(df_cfdi, nombre_tabla)
+                st.success("✅ ¡CFDI guardados en la Base de Datos SQL y archivados!")
+                import time
+                time.sleep(1.5)
+                st.rerun()
+            else:
+                st.warning("⚠️ Sube un archivo CFDI primero.")
+
+    st.divider()
+
     tablas_todas = get_all_tables()
     tablas_cfdi_ingresos = [t for t in tablas_todas if t.startswith("CFDI_I_") or t == "PAGOS_I"]
     tablas_cfdi_egresos = [t for t in tablas_todas if t.startswith("CFDI_E_") or t == "PAGOS_E"]
 
     if not tablas_cfdi_ingresos and not tablas_cfdi_egresos:
-        st.warning("La BD está vacía o no hay CFDI/Pagos procesados.")
+        st.warning("La BD está vacía o no hay CFDI/Pagos procesados. Usa el botón superior para subir tus archivos.")
     else:
         # Top-level filter for INGRESOS vs EGRESOS
         tipo_cfdi = st.radio("Selecciona Categoría:", ["INGRESOS", "EGRESOS"], horizontal=True)
@@ -857,6 +862,43 @@ elif eleccion == "📄 CFDI (Facturas)":
 
             df_mostrar = df_mostrar.fillna("")
             df_mostrar = df_mostrar.replace("None", "").replace("NaT", "")
+
+            # --- UI: BOTONES DE ACCIÓN CFDI ---
+            st.divider()
+            col_cbtn1, col_cbtn2 = st.columns([8, 2])
+            with col_cbtn1:
+                from io import BytesIO
+                def to_excel_cfdi(df_to_export):
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df_to_export.to_excel(writer, index=False, sheet_name='Export')
+                    return output.getvalue()
+
+                st.download_button(
+                    label=f"📥 Exportar a Excel ({bloque_cfdi})",
+                    data=to_excel_cfdi(df_mostrar),
+                    file_name=f"{bloque_cfdi}_Exportado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"export_{bloque_cfdi}"
+                )
+
+            with col_cbtn2:
+                if st.button("🗑️ Eliminar Tabla", key=f"del_{bloque_cfdi}", type="secondary"):
+                    st.session_state[f"confirm_del_{bloque_cfdi}"] = True
+
+                if st.session_state.get(f"confirm_del_{bloque_cfdi}", False):
+                    st.warning("¿Estás seguro?")
+                    c_yes, c_no = st.columns(2)
+                    if c_yes.button("✅ Sí, borrar", key=f"yes_{bloque_cfdi}", type="primary"):
+                        if drop_table_from_sql(bloque_cfdi):
+                            st.success(f"Tabla {bloque_cfdi} eliminada.")
+                            st.session_state[f"confirm_del_{bloque_cfdi}"] = False
+                            import time
+                            time.sleep(1.5)
+                            st.rerun()
+                    if c_no.button("❌ No", key=f"no_{bloque_cfdi}"):
+                        st.session_state[f"confirm_del_{bloque_cfdi}"] = False
+                        st.rerun()
 
             st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
 

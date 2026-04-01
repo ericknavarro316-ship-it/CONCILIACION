@@ -1,6 +1,6 @@
 from playwright.sync_api import sync_playwright
 
-def verify_ventas_ui():
+def verify_cfdi_ui():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(viewport={'width': 1920, 'height': 1080})
@@ -11,19 +11,19 @@ def verify_ventas_ui():
             import time
             time.sleep(5)
 
-            # Click on VENTAS in sidebar using JS evaluate
+            # Click on CFDI in sidebar using JS evaluate
             page.evaluate('''() => {
                 const labels = Array.from(document.querySelectorAll('label'));
-                const ventasLabel = labels.find(l => l.innerText && l.innerText.includes('VENTAS'));
-                if(ventasLabel) ventasLabel.click();
+                const cfdiLabel = labels.find(l => l.innerText && l.innerText.includes('CFDI'));
+                if(cfdiLabel) cfdiLabel.click();
             }''')
             time.sleep(3)
 
-            # Take screenshot of the new Ventas layout (empty state or populated)
-            page.screenshot(path="/home/jules/verification/ventas_layout.png", full_page=True)
+            # Take screenshot of the new CFDI layout (empty state or populated)
+            page.screenshot(path="/home/jules/verification/cfdi_layout.png", full_page=True)
 
         finally:
             browser.close()
 
 if __name__ == "__main__":
-    verify_ventas_ui()
+    verify_cfdi_ui()
