@@ -2,7 +2,6 @@ from playwright.sync_api import sync_playwright
 
 def verify_bancos_ui():
     with sync_playwright() as p:
-        # Increase window size significantly to make sure we can see everything
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(viewport={'width': 1920, 'height': 1080})
         page = context.new_page()
@@ -13,7 +12,7 @@ def verify_bancos_ui():
             time.sleep(5)
 
             # The sidebar starts collapsed `initial_sidebar_state="collapsed"`
-            # If standard clicks fail, let's force the click via javascript
+            # Force click to BANCOS via JS
             page.evaluate('''() => {
                 const labels = Array.from(document.querySelectorAll('label'));
                 const bancosLabel = labels.find(l => l.innerText && l.innerText.includes('BANCOS'));
@@ -29,17 +28,14 @@ def verify_bancos_ui():
             }''')
             time.sleep(2)
 
-            # Now click on one of the banks tabs (should be the second tab)
+            # Click on a bank tab
             page.evaluate('''() => {
                 const tabs = Array.from(document.querySelectorAll('button[role="tab"]'));
                 if(tabs.length > 1) tabs[1].click();
             }''')
             time.sleep(2)
 
-            # Take screenshot of bank panel to see graphics
-            page.screenshot(path="/home/jules/verification/bancos_graphics.png", full_page=True)
-
-            # Click the Edit button
+            # Click "Editar Manualmente"
             page.evaluate('''() => {
                 const buttons = Array.from(document.querySelectorAll('button'));
                 const editBtn = buttons.find(b => b.innerText && b.innerText.includes('Editar Manualmente'));
@@ -47,8 +43,16 @@ def verify_bancos_ui():
             }''')
             time.sleep(2)
 
-            # Take screenshot of bank panel to see editor
-            page.screenshot(path="/home/jules/verification/bancos_editor.png", full_page=True)
+            # Try to expand "Asignacion Masiva"
+            page.evaluate('''() => {
+                const summaries = Array.from(document.querySelectorAll('summary'));
+                const masivaExp = summaries.find(s => s.innerText && s.innerText.includes('Asignación Masiva'));
+                if(masivaExp) masivaExp.click();
+            }''')
+            time.sleep(2)
+
+            # Take screenshot of bank panel to see editor and masiva features
+            page.screenshot(path="/home/jules/verification/bancos_masiva.png", full_page=True)
 
         finally:
             browser.close()

@@ -496,6 +496,37 @@ elif eleccion == "🏦 BANCOS":
             if missing_concepts > 0 or missing_dates > 0:
                 st.warning(f"⚠️ **Calidad de Datos:** Tienes {missing_concepts} movimientos sin 'Concepto/Detalle' y {missing_dates} sin 'Fecha' en este periodo. Esto podría dificultar la conciliación.")
 
+            # --- UI: ALERTA DE DESCUADRE ---
+            if not es_mp_detalle and 'SALDO' in df_filtrado.columns and not df_filtrado.empty:
+                try:
+                    saldos_validos = pd.to_numeric(df_filtrado['SALDO'], errors='coerce').dropna()
+                    if len(saldos_validos) > 1:
+                        # Asumiendo que el df está ordenado cronológicamente (viejo arriba, nuevo abajo)
+                        # El saldo "inicial" antes del primer movimiento se puede deducir o tomar el primero
+                        # Si el orden es (nuevo arriba, viejo abajo) tomamos iloc[-1]. Asumimos (viejo arriba) por Excel genérico.
+                        # Para ser seguros, sumamos (Abonos - Cargos) y vemos si la diferencia coincide entre primer y último saldo
+
+                        primer_saldo = saldos_validos.iloc[0]
+                        ultimo_saldo = saldos_validos.iloc[-1]
+
+                        # Sin embargo, el "primer saldo" del mes en un estado de cuenta a menudo YA incluye
+                        # el primer cargo/abono de esa fila. Así que la fórmula real:
+                        # Saldo Inicial (previo al mes) = Primer_Saldo_del_Periodo - Primer_Abono + Primer_Cargo
+                        idx_primer_saldo = saldos_validos.index[0]
+                        primer_abono = pd.to_numeric(df_filtrado['ABONO'], errors='coerce').fillna(0).loc[idx_primer_saldo]
+                        primer_cargo = pd.to_numeric(df_filtrado['CARGO'], errors='coerce').fillna(0).loc[idx_primer_saldo]
+
+                        saldo_inicial_real = primer_saldo - primer_abono + primer_cargo
+                        saldo_final_calculado = saldo_inicial_real + tot_abono - tot_cargo
+
+                        diferencia = abs(saldo_final_calculado - ultimo_saldo)
+
+                        # Si la diferencia es mayor a $1 peso, podría haber un descuadre (ej. filas borradas, PDF mal leído)
+                        if diferencia > 1.0:
+                            st.error(f"⚖️ **Posible Descuadre Detectado:** El Saldo Final reportado es **${ultimo_saldo:,.2f}**, pero según la suma de movimientos debería ser **${saldo_final_calculado:,.2f}** (Diferencia: **${diferencia:,.2f}**). Verifica si faltan páginas o registros.")
+                except Exception as e:
+                    pass
+
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("🟢 Total Abonos", f"${tot_abono:,.2f}")
             m2.metric("🔴 Total Cargos", f"${tot_cargo:,.2f}")
@@ -621,18 +652,19 @@ elif eleccion == "🏦 BANCOS":
                 except Exception:
                     df_mostrar['Fecha del cargo'] = pd.to_datetime(df_mostrar['Fecha del cargo'], errors='coerce').dt.strftime('%d/%m/%Y')
 
-            # Formatear montos para que se vean como moneda ($)
-            for col_moneda in ['CARGO', 'ABONO', 'SALDO', 'Valor del cargo', 'Valor de la operación']:
-                if col_moneda in df_mostrar.columns:
-                    # Convertir a float y luego a string formateado limpiando posibles comas previas de MP
-                    try:
-                        temp_num = pd.to_numeric(df_mostrar[col_moneda].astype(str).str.replace(',', ''), errors='coerce')
-                        df_mostrar[col_moneda] = temp_num.apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-                    except:
-                        pass
+            # Función para colorear montos
+            def color_negative_red(val):
+                if pd.isna(val) or val == "":
+                    return ""
 
-            # Reemplazar el literal 'NaT' por cadena vacía
-            df_mostrar = df_mostrar.replace("NaT", "")
+                # Intentar limpiar el texto para ver si es negativo
+                val_str = str(val).replace('$', '').replace(',', '')
+                try:
+                    num = float(val_str)
+                    color = 'red' if num < 0 else 'green' if num > 0 else 'black'
+                    return f'color: {color}'
+                except:
+                    return ""
 
             # --- UI: EDICIÓN MANUAL ---
             # Mostramos un editor interactivo en lugar de un dataframe estático
@@ -647,14 +679,81 @@ elif eleccion == "🏦 BANCOS":
                 if st.button("✏️ Editar Manualmente", key=f"btn_edit_{key_prefix}", help="Activa el modo de edición de celdas."):
                     st.session_state[f"edit_{key_prefix}"] = not st.session_state[f"edit_{key_prefix}"]
 
+            # Al usar data_editor y formatters (.style), Streamlit 1.30+ puede quejarse si los tipos no coinciden.
+            # Convertimos a strings bonitos y usamos Dataframe/Editor nativos.
+            cc_format = {}
+            for col_moneda in ['CARGO', 'ABONO', 'SALDO', 'Valor del cargo', 'Valor de la operación']:
+                if col_moneda in df_mostrar.columns:
+                    try:
+                        # Lo mantenemos como numérico en el dataframe subyacente para permitir ordenamiento y style
+                        temp_num = pd.to_numeric(df_mostrar[col_moneda].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
+                        df_mostrar[col_moneda] = temp_num
+                        cc_format[col_moneda] = st.column_config.NumberColumn(col_moneda, format="$%.2f")
+                    except:
+                        pass
+
+            # Reemplazar el literal 'NaT' por cadena vacía para fechas (las de tipo moneda ahora son numéricas o nulas)
+            df_mostrar = df_mostrar.replace("NaT", "")
+
+            # Configurar un styled dataframe para la vista (no aplica a data_editor directamente, pero sí a dataframe de lectura)
+            cols_to_style = [c for c in ['CARGO', 'ABONO', 'Valor del cargo', 'Valor de la operación'] if c in df_mostrar.columns]
+
+            # Preparamos el Styler para la lectura (Si no es MP DETALLE, CARGO lo mostramos rojo y ABONO verde, si es MP, según el signo)
+            def style_bancos(val, col_name):
+                if pd.isna(val) or val == "":
+                    return ""
+                try:
+                    num = float(val)
+                    if col_name == 'CARGO':
+                         return 'color: #d32f2f;' if num > 0 else '' # Rojo si hay cargo
+                    elif col_name == 'ABONO':
+                         return 'color: #2e7d32;' if num > 0 else '' # Verde si hay abono
+                    elif col_name == 'Valor del cargo':
+                         return 'color: #d32f2f;' if num < 0 else 'color: #2e7d32;' if num > 0 else '' # MP: Rojo neg, verde pos
+                    return ""
+                except:
+                    return ""
+
             if st.session_state[f"edit_{key_prefix}"]:
                 nombres_editables_txt = " / ".join(col_conceptos_editables)
                 st.info(f"💡 Modo de Edición Activado: Doble clic en **{nombres_editables_txt}** para editar. Presiona Enter para confirmar y luego haz clic en Guardar.")
+
+                # --- UI: ASIGNACIÓN MASIVA DE CONCEPTOS ---
+                with st.expander("⚡ Asignación Masiva", expanded=False):
+                    st.markdown("Aplica un mismo valor a todas las filas actualmente visibles en esta tabla. *(Útil si filtraste por un texto específico en el buscador superior)*.")
+                    col_masiva1, col_masiva2, col_masiva3 = st.columns([1, 2, 1])
+                    with col_masiva1:
+                        columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}")
+                    with col_masiva2:
+                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}")
+                    with col_masiva3:
+                        st.write("") # Espaciador
+                        st.write("")
+                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary"):
+                            if len(df_filtrado) > 0:
+                                df_crudo_masivo = get_df_from_sql(cuenta_sel)
+                                # Asegurar que las columnas nuevas existan en el df original antes de guardar
+                                for c in col_conceptos_editables:
+                                    if c not in df_crudo_masivo.columns:
+                                        df_crudo_masivo[c] = ""
+
+                                # Asignamos el nuevo valor a las filas visibles basándonos en sus índices originales
+                                for idx in df_filtrado.index:
+                                    df_crudo_masivo.at[idx, columna_masiva] = valor_masivo
+
+                                if update_table_from_df(df_crudo_masivo, cuenta_sel):
+                                    st.success(f"✅ ¡{len(df_filtrado)} filas actualizadas correctamente!")
+                                    import time
+                                    time.sleep(1.5)
+                                    st.rerun()
+                            else:
+                                st.warning("No hay filas visibles para modificar.")
 
                 edited_df = st.data_editor(
                     df_mostrar,
                     use_container_width=True,
                     hide_index=True,
+                    column_config=cc_format,
                     disabled=[c for c in df_mostrar.columns if c not in col_conceptos_editables],
                     key=f"editor_{key_prefix}"
                 )
@@ -663,10 +762,15 @@ elif eleccion == "🏦 BANCOS":
                 if st.button("💾 Guardar Cambios en BD", key=f"save_edit_{key_prefix}", type="primary"):
                     df_crudo = get_df_from_sql(cuenta_sel)
 
+                    # Asegurar que las columnas nuevas existan en el df original antes de intentar asignarlas
+                    for c in col_conceptos_editables:
+                        if c not in df_crudo.columns:
+                            df_crudo[c] = ""
+
                     for i in range(len(df_filtrado)):
                         idx_original = df_filtrado.index[i]
                         for c_edit in col_conceptos_editables:
-                             if c_edit in edited_df.columns and c_edit in df_crudo.columns:
+                             if c_edit in edited_df.columns:
                                   df_crudo.at[idx_original, c_edit] = edited_df[c_edit].iloc[i]
 
                     # Guardar a SQL
@@ -677,8 +781,12 @@ elif eleccion == "🏦 BANCOS":
                         st.session_state[f"edit_{key_prefix}"] = False
                         st.rerun()
             else:
-                # Mostrar dataframe estilizado (Solo Lectura)
-                st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+                # Mostrar dataframe estilizado (Solo Lectura) usando Pandas Styler
+                st.dataframe(df_mostrar.style.map(lambda v: style_bancos(v, 'CARGO'), subset=['CARGO'] if 'CARGO' in cols_to_style else [])
+                                           .map(lambda v: style_bancos(v, 'ABONO'), subset=['ABONO'] if 'ABONO' in cols_to_style else [])
+                                           .map(lambda v: style_bancos(v, 'Valor del cargo'), subset=['Valor del cargo'] if 'Valor del cargo' in cols_to_style else [])
+                                           .format(na_rep=""),
+                             use_container_width=True, hide_index=True, column_config=cc_format)
 
 
         # Llenar cada pestaña de banco dinámicamente (desplazadas +1 por el resumen)
