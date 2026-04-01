@@ -56,43 +56,38 @@ def run_o01_preclasificar_bancos():
         # Determine which rows to process (only empty observations AND are cargos)
         mask_to_process = (df_banco['OBSERVACION'] == "") & (df_banco['CARGO'] > 0)
 
-        if not mask_to_process.any():
-            # Still update the table to remove duplicates and the old column if they existed
-            df_banco = df_banco.drop_duplicates()
-            update_table_from_df(df_banco, cuenta_nombre)
-            continue
+        if mask_to_process.any():
+            concepto_series = df_banco.loc[mask_to_process, col_concepto].astype(str).str.upper()
 
-        concepto_series = df_banco.loc[mask_to_process, col_concepto].astype(str).str.upper()
+            condiciones = []
+            opciones = []
 
-        condiciones = []
-        opciones = []
+            for clave, categoria in patrones_comunes.items():
+                condiciones.append(concepto_series.str.contains(clave, regex=False, na=False))
+                opciones.append(categoria)
 
-        for clave, categoria in patrones_comunes.items():
-            condiciones.append(concepto_series.str.contains(clave, regex=False, na=False))
-            opciones.append(categoria)
+            # Apply np.select
+            if condiciones:
+                # Default is empty string
+                new_categories = np.select(condiciones, opciones, default="")
 
-        # Apply np.select
-        if condiciones:
-            # Default is empty string
-            new_categories = np.select(condiciones, opciones, default="")
+                # Create a mask for rows that got a new categorization
+                mask_newly_classified = (new_categories != "")
 
-            # Create a mask for rows that got a new categorization
-            mask_newly_classified = (new_categories != "")
+                if mask_newly_classified.any():
+                    # Assign to df
+                    df_banco.loc[mask_to_process, 'OBSERVACION'] = new_categories
 
-            if mask_newly_classified.any():
-                # Assign to df
-                df_banco.loc[mask_to_process, 'OBSERVACION'] = new_categories
-
-                # Count matches
-                total_clasificados += mask_newly_classified.sum()
+                    # Count matches
+                    total_clasificados += mask_newly_classified.sum()
 
         # --- Special rule for TRASPASOS ---
         # "TRASPASO CUENTAS PROPIAS ➔ TRASPASO CUENTAS PROPIAS | "últimos 5 datos de la cuenta"
         # (viene después de CUENTA: ejemplo "CUENTA: 0121923773" se tendría que poner "23773",
         # además quiero que este dato este en la columna "UUID COMPL." )
 
-        # Find rows that match the keyword and have CARGO > 0 and haven't been classified yet
-        mask_traspasos = df_banco[col_concepto].astype(str).str.upper().str.contains('TRASPASO CUENTAS PROPIAS', regex=False, na=False) & (df_banco['CARGO'] > 0) & (df_banco['OBSERVACION'] == "")
+        # Find rows that match the keyword and haven't been classified yet (applies to both CARGOS and ABONOS)
+        mask_traspasos = df_banco[col_concepto].astype(str).str.upper().str.contains('TRASPASO CUENTAS PROPIAS', regex=False, na=False) & (df_banco['OBSERVACION'] == "")
 
         if mask_traspasos.any():
             if 'UUID COMPL.' not in df_banco.columns:
