@@ -1,14 +1,12 @@
 import pandas as pd
+import numpy as np
 from database_sqlite import get_df_from_sql, save_df_to_sql, get_all_tables
 
 def run_o01_preclasificar_bancos():
     """Identifica patrones de texto en el Concepto de los bancos para pre-clasificar cargos y abonos"""
     tablas = get_all_tables()
-    bancos = [t for t in tablas if t.startswith("BANCO_") and (
-        t.replace("BANCO_", "").isdigit() or
-        t.startswith("BANCO_BBVA_EST_") or
-        t.startswith("BANCO_BBVA_DET_")
-    )]
+    # Now it dynamically selects any table with BANCO_ prefix to be inclusive
+    bancos = [t for t in tablas if t.startswith("BANCO_")]
 
     # Lista de patrones comunes (ejemplo extraído y expandible)
     patrones_comunes = {
@@ -24,25 +22,48 @@ def run_o01_preclasificar_bancos():
 
     for cuenta_nombre in bancos:
         df_banco = get_df_from_sql(cuenta_nombre)
-        if 'DESCRIPCION' not in df_banco.columns:
+
+        # Priority column is CONCEPTO, fallback to DESCRIPCION
+        col_concepto = 'CONCEPTO' if 'CONCEPTO' in df_banco.columns else 'DESCRIPCION' if 'DESCRIPCION' in df_banco.columns else None
+
+        if not col_concepto:
             continue
 
         if 'CATEGORIA_PREVIA' not in df_banco.columns:
              df_banco['CATEGORIA_PREVIA'] = None
 
-        for index, row in df_banco.iterrows():
-            if pd.notna(row['CATEGORIA_PREVIA']):
-                continue
+        # Determine which rows to process
+        mask_to_process = df_banco['CATEGORIA_PREVIA'].isna()
+        if not mask_to_process.any():
+            continue
 
-            concepto = str(row['DESCRIPCION']).upper()
+        concepto_series = df_banco.loc[mask_to_process, col_concepto].astype(str).str.upper()
 
-            for clave, categoria in patrones_comunes.items():
-                if clave in concepto:
-                    df_banco.at[index, 'CATEGORIA_PREVIA'] = categoria
-                    total_clasificados += 1
-                    break
+        condiciones = []
+        opciones = []
 
-        save_df_to_sql(df_banco, cuenta_nombre)
+        for clave, categoria in patrones_comunes.items():
+            condiciones.append(concepto_series.str.contains(clave, regex=False, na=False))
+            opciones.append(categoria)
+
+        # Apply np.select
+        if condiciones:
+            # Default is the existing CATEGORIA_PREVIA or None (actually pd.NA or similar, we'll keep None)
+            new_categories = np.select(condiciones, opciones, default=None)
+
+            # Create a mask for rows that got a new categorization
+            mask_newly_classified = (new_categories != None) & (pd.notna(new_categories))
+
+            if mask_newly_classified.any():
+                # Assign to df
+                # new_categories is an array same size as concepto_series
+                df_banco.loc[mask_to_process, 'CATEGORIA_PREVIA'] = new_categories
+
+                # Count matches
+                total_clasificados += mask_newly_classified.sum()
+
+                # Save only if modified
+                save_df_to_sql(df_banco, cuenta_nombre)
 
     return {"success": True, "matches": total_clasificados}
 
