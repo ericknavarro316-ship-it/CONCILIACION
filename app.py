@@ -150,9 +150,8 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
     st.markdown("Carga tus archivos de forma individual o un archivo consolidado.")
 
     # Pestañas para subir Excel o PDF
-    tab1, tab3, tab4 = st.tabs([
+    tab1, tab4 = st.tabs([
         "Carga Consolidada (Mega Excel)",
-        "Carga de Ventas",
         "Carga de CFDI"
     ])
 
@@ -188,36 +187,6 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                 st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
             else:
                 st.warning("⚠️ Sube un archivo consolidado primero.")
-
-    with tab3:
-        st.markdown("### Carga de Notas de Venta y Reporte Resumen")
-        st.markdown("Sube los archivos que contengan las ventas registradas o el reporte de resumen (CSV).")
-        archivo_ventas = st.file_uploader("📂 Cargar Notas de Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
-        archivo_ventas_csv = st.file_uploader("📂 Cargar Reporte de Ventas (CSV con ;)", type=['csv'], accept_multiple_files=True, key="ventas_csv")
-
-        if st.button("Procesar Ventas y Resumen", type="primary", key="btn_ventas"):
-            procesados_ventas = False
-
-            if archivo_ventas:
-                for archivo in archivo_ventas:
-                    with st.spinner(f"Procesando Notas de Venta de {archivo.name}..."):
-                        ventas = limpiar_modulo_ventas_v2(archivo)
-                        for nombre_venta, df_venta in ventas.items():
-                            save_df_to_sql(df_venta, nombre_venta)
-                procesados_ventas = True
-
-            if archivo_ventas_csv:
-                for archivo in archivo_ventas_csv:
-                    with st.spinner(f"Procesando Resumen de Ventas CSV de {archivo.name}..."):
-                        ventas_resumen = limpiar_reporte_ventas_csv(archivo)
-                        for nombre_venta, df_venta in ventas_resumen.items():
-                            save_df_to_sql(df_venta, nombre_venta)
-                procesados_ventas = True
-
-            if procesados_ventas:
-                st.success("✅ ¡Ventas y Resumen guardados en la Base de Datos SQL!")
-            else:
-                st.warning("⚠️ Sube al menos un archivo de ventas o reporte CSV primero.")
 
     with tab4:
         st.markdown("### Carga de CFDI (Individual)")
@@ -496,6 +465,37 @@ elif eleccion == "🏦 BANCOS":
             if missing_concepts > 0 or missing_dates > 0:
                 st.warning(f"⚠️ **Calidad de Datos:** Tienes {missing_concepts} movimientos sin 'Concepto/Detalle' y {missing_dates} sin 'Fecha' en este periodo. Esto podría dificultar la conciliación.")
 
+            # --- UI: ALERTA DE DESCUADRE ---
+            if not es_mp_detalle and 'SALDO' in df_filtrado.columns and not df_filtrado.empty:
+                try:
+                    saldos_validos = pd.to_numeric(df_filtrado['SALDO'], errors='coerce').dropna()
+                    if len(saldos_validos) > 1:
+                        # Asumiendo que el df está ordenado cronológicamente (viejo arriba, nuevo abajo)
+                        # El saldo "inicial" antes del primer movimiento se puede deducir o tomar el primero
+                        # Si el orden es (nuevo arriba, viejo abajo) tomamos iloc[-1]. Asumimos (viejo arriba) por Excel genérico.
+                        # Para ser seguros, sumamos (Abonos - Cargos) y vemos si la diferencia coincide entre primer y último saldo
+
+                        primer_saldo = saldos_validos.iloc[0]
+                        ultimo_saldo = saldos_validos.iloc[-1]
+
+                        # Sin embargo, el "primer saldo" del mes en un estado de cuenta a menudo YA incluye
+                        # el primer cargo/abono de esa fila. Así que la fórmula real:
+                        # Saldo Inicial (previo al mes) = Primer_Saldo_del_Periodo - Primer_Abono + Primer_Cargo
+                        idx_primer_saldo = saldos_validos.index[0]
+                        primer_abono = pd.to_numeric(df_filtrado['ABONO'], errors='coerce').fillna(0).loc[idx_primer_saldo]
+                        primer_cargo = pd.to_numeric(df_filtrado['CARGO'], errors='coerce').fillna(0).loc[idx_primer_saldo]
+
+                        saldo_inicial_real = primer_saldo - primer_abono + primer_cargo
+                        saldo_final_calculado = saldo_inicial_real + tot_abono - tot_cargo
+
+                        diferencia = abs(saldo_final_calculado - ultimo_saldo)
+
+                        # Si la diferencia es mayor a $1 peso, podría haber un descuadre (ej. filas borradas, PDF mal leído)
+                        if diferencia > 1.0:
+                            st.error(f"⚖️ **Posible Descuadre Detectado:** El Saldo Final reportado es **${ultimo_saldo:,.2f}**, pero según la suma de movimientos debería ser **${saldo_final_calculado:,.2f}** (Diferencia: **${diferencia:,.2f}**). Verifica si faltan páginas o registros.")
+                except Exception as e:
+                    pass
+
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("🟢 Total Abonos", f"${tot_abono:,.2f}")
             m2.metric("🔴 Total Cargos", f"${tot_cargo:,.2f}")
@@ -583,16 +583,19 @@ elif eleccion == "🏦 BANCOS":
             df_mostrar = df_filtrado.copy()
 
             if es_mp_detalle:
-                # Dejamos las columnas analíticas de MP, no filtramos a 10
-                columnas_orden = ['Fecha del cargo', 'Detalle', 'Valor del cargo', 'Operación relacionada', 'Nombre de sucursal', 'Valor de la operación', 'ID VENTA']
-                # Si en el archivo subido faltan algunas de estas, las rellenamos vacías
+                # Mostrar solo las columnas analíticas de MP solicitadas + las nuevas (EST MP, COMISION, OBSERVACION)
+                columnas_orden = ['Fecha del cargo', 'Detalle', 'Valor del cargo', 'Operación relacionada', 'Nombre de sucursal', 'Valor de la operación', 'ID VENTA', 'EST MP', 'COMISION', 'OBSERVACION']
+
+                # Rellenar con vacío las columnas que no existan
                 for c in columnas_orden:
                     if c not in df_mostrar.columns:
                         df_mostrar[c] = ""
-                # Si hay más columnas originales las dejamos al final
-                otras_cols = [c for c in df_mostrar.columns if c not in columnas_orden]
-                df_mostrar = df_mostrar[columnas_orden + otras_cols]
-                col_conceptos_editables = ['Detalle', 'Nombre de sucursal', 'ID VENTA']
+
+                # Ocultar estrictamente el resto de columnas que trae Mercado Pago por defecto
+                df_mostrar = df_mostrar[columnas_orden]
+
+                # Definir qué columnas puede editar manualmente el usuario
+                col_conceptos_editables = ['Detalle', 'Nombre de sucursal', 'ID VENTA', 'EST MP', 'COMISION', 'OBSERVACION']
             else:
                 # Reordenar columnas a 10 columnas estándar si existen
                 columnas_orden = ['FECHA', 'CONCEPTO', 'REFERENCE', 'ABONO', 'CARGO', 'SALDO', 'OBSERVACION', 'UUID COMPL.', 'UUID MADRE', 'ID VENTA']
@@ -618,18 +621,19 @@ elif eleccion == "🏦 BANCOS":
                 except Exception:
                     df_mostrar['Fecha del cargo'] = pd.to_datetime(df_mostrar['Fecha del cargo'], errors='coerce').dt.strftime('%d/%m/%Y')
 
-            # Formatear montos para que se vean como moneda ($)
-            for col_moneda in ['CARGO', 'ABONO', 'SALDO', 'Valor del cargo', 'Valor de la operación']:
-                if col_moneda in df_mostrar.columns:
-                    # Convertir a float y luego a string formateado limpiando posibles comas previas de MP
-                    try:
-                        temp_num = pd.to_numeric(df_mostrar[col_moneda].astype(str).str.replace(',', ''), errors='coerce')
-                        df_mostrar[col_moneda] = temp_num.apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-                    except:
-                        pass
+            # Función para colorear montos
+            def color_negative_red(val):
+                if pd.isna(val) or val == "":
+                    return ""
 
-            # Reemplazar el literal 'NaT' por cadena vacía
-            df_mostrar = df_mostrar.replace("NaT", "")
+                # Intentar limpiar el texto para ver si es negativo
+                val_str = str(val).replace('$', '').replace(',', '')
+                try:
+                    num = float(val_str)
+                    color = 'red' if num < 0 else 'green' if num > 0 else 'black'
+                    return f'color: {color}'
+                except:
+                    return ""
 
             # --- UI: EDICIÓN MANUAL ---
             # Mostramos un editor interactivo en lugar de un dataframe estático
@@ -644,14 +648,81 @@ elif eleccion == "🏦 BANCOS":
                 if st.button("✏️ Editar Manualmente", key=f"btn_edit_{key_prefix}", help="Activa el modo de edición de celdas."):
                     st.session_state[f"edit_{key_prefix}"] = not st.session_state[f"edit_{key_prefix}"]
 
+            # Al usar data_editor y formatters (.style), Streamlit 1.30+ puede quejarse si los tipos no coinciden.
+            # Convertimos a strings bonitos y usamos Dataframe/Editor nativos.
+            cc_format = {}
+            for col_moneda in ['CARGO', 'ABONO', 'SALDO', 'Valor del cargo', 'Valor de la operación']:
+                if col_moneda in df_mostrar.columns:
+                    try:
+                        # Lo mantenemos como numérico en el dataframe subyacente para permitir ordenamiento y style
+                        temp_num = pd.to_numeric(df_mostrar[col_moneda].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
+                        df_mostrar[col_moneda] = temp_num
+                        cc_format[col_moneda] = st.column_config.NumberColumn(col_moneda, format="$%.2f")
+                    except:
+                        pass
+
+            # Reemplazar el literal 'NaT' por cadena vacía para fechas (las de tipo moneda ahora son numéricas o nulas)
+            df_mostrar = df_mostrar.replace("NaT", "")
+
+            # Configurar un styled dataframe para la vista (no aplica a data_editor directamente, pero sí a dataframe de lectura)
+            cols_to_style = [c for c in ['CARGO', 'ABONO', 'Valor del cargo', 'Valor de la operación'] if c in df_mostrar.columns]
+
+            # Preparamos el Styler para la lectura (Si no es MP DETALLE, CARGO lo mostramos rojo y ABONO verde, si es MP, según el signo)
+            def style_bancos(val, col_name):
+                if pd.isna(val) or val == "":
+                    return ""
+                try:
+                    num = float(val)
+                    if col_name == 'CARGO':
+                         return 'color: #d32f2f;' if num > 0 else '' # Rojo si hay cargo
+                    elif col_name == 'ABONO':
+                         return 'color: #2e7d32;' if num > 0 else '' # Verde si hay abono
+                    elif col_name == 'Valor del cargo':
+                         return 'color: #d32f2f;' if num < 0 else 'color: #2e7d32;' if num > 0 else '' # MP: Rojo neg, verde pos
+                    return ""
+                except:
+                    return ""
+
             if st.session_state[f"edit_{key_prefix}"]:
                 nombres_editables_txt = " / ".join(col_conceptos_editables)
                 st.info(f"💡 Modo de Edición Activado: Doble clic en **{nombres_editables_txt}** para editar. Presiona Enter para confirmar y luego haz clic en Guardar.")
+
+                # --- UI: ASIGNACIÓN MASIVA DE CONCEPTOS ---
+                with st.expander("⚡ Asignación Masiva", expanded=False):
+                    st.markdown("Aplica un mismo valor a todas las filas actualmente visibles en esta tabla. *(Útil si filtraste por un texto específico en el buscador superior)*.")
+                    col_masiva1, col_masiva2, col_masiva3 = st.columns([1, 2, 1])
+                    with col_masiva1:
+                        columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}")
+                    with col_masiva2:
+                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}")
+                    with col_masiva3:
+                        st.write("") # Espaciador
+                        st.write("")
+                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary"):
+                            if len(df_filtrado) > 0:
+                                df_crudo_masivo = get_df_from_sql(cuenta_sel)
+                                # Asegurar que las columnas nuevas existan en el df original antes de guardar
+                                for c in col_conceptos_editables:
+                                    if c not in df_crudo_masivo.columns:
+                                        df_crudo_masivo[c] = ""
+
+                                # Asignamos el nuevo valor a las filas visibles basándonos en sus índices originales
+                                for idx in df_filtrado.index:
+                                    df_crudo_masivo.at[idx, columna_masiva] = valor_masivo
+
+                                if update_table_from_df(df_crudo_masivo, cuenta_sel):
+                                    st.success(f"✅ ¡{len(df_filtrado)} filas actualizadas correctamente!")
+                                    import time
+                                    time.sleep(1.5)
+                                    st.rerun()
+                            else:
+                                st.warning("No hay filas visibles para modificar.")
 
                 edited_df = st.data_editor(
                     df_mostrar,
                     use_container_width=True,
                     hide_index=True,
+                    column_config=cc_format,
                     disabled=[c for c in df_mostrar.columns if c not in col_conceptos_editables],
                     key=f"editor_{key_prefix}"
                 )
@@ -660,10 +731,15 @@ elif eleccion == "🏦 BANCOS":
                 if st.button("💾 Guardar Cambios en BD", key=f"save_edit_{key_prefix}", type="primary"):
                     df_crudo = get_df_from_sql(cuenta_sel)
 
+                    # Asegurar que las columnas nuevas existan en el df original antes de intentar asignarlas
+                    for c in col_conceptos_editables:
+                        if c not in df_crudo.columns:
+                            df_crudo[c] = ""
+
                     for i in range(len(df_filtrado)):
                         idx_original = df_filtrado.index[i]
                         for c_edit in col_conceptos_editables:
-                             if c_edit in edited_df.columns and c_edit in df_crudo.columns:
+                             if c_edit in edited_df.columns:
                                   df_crudo.at[idx_original, c_edit] = edited_df[c_edit].iloc[i]
 
                     # Guardar a SQL
@@ -674,8 +750,12 @@ elif eleccion == "🏦 BANCOS":
                         st.session_state[f"edit_{key_prefix}"] = False
                         st.rerun()
             else:
-                # Mostrar dataframe estilizado (Solo Lectura)
-                st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+                # Mostrar dataframe estilizado (Solo Lectura) usando Pandas Styler
+                st.dataframe(df_mostrar.style.map(lambda v: style_bancos(v, 'CARGO'), subset=['CARGO'] if 'CARGO' in cols_to_style else [])
+                                           .map(lambda v: style_bancos(v, 'ABONO'), subset=['ABONO'] if 'ABONO' in cols_to_style else [])
+                                           .map(lambda v: style_bancos(v, 'Valor del cargo'), subset=['Valor del cargo'] if 'Valor del cargo' in cols_to_style else [])
+                                           .format(na_rep=""),
+                             use_container_width=True, hide_index=True, column_config=cc_format)
 
 
         # Llenar cada pestaña de banco dinámicamente (desplazadas +1 por el resumen)
@@ -783,13 +863,62 @@ elif eleccion == "📄 CFDI (Facturas)":
 elif eleccion == "🛒 VENTAS":
     st.title(":material/point_of_sale: Módulo VENTAS")
 
+    # 1. Ingesta de Ventas (integrada)
+    with st.expander("📥 Cargar archivos de Ventas (Excel/CSV)", expanded=False):
+        st.markdown("Sube los archivos que contengan las **notas de ventas detalladas (Excel)** o el **reporte resumen global (CSV)**.")
+
+        archivo_ventas = st.file_uploader("📂 Cargar Notas de Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
+        archivo_ventas_csv = st.file_uploader("📂 Cargar Reporte de Ventas (CSV con ;)", type=['csv'], accept_multiple_files=True, key="ventas_csv")
+
+        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado"):
+            procesados_ventas = False
+            import os
+
+            if archivo_ventas:
+                for archivo in archivo_ventas:
+                    with st.spinner(f"Procesando Notas de Venta de {archivo.name}..."):
+                        dir_guardado = os.path.join("PROCESADOS", "VENTAS", "NOTAS")
+                        os.makedirs(dir_guardado, exist_ok=True)
+                        ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                        with open(ruta_guardado, "wb") as f:
+                            f.write(archivo.getbuffer())
+
+                        ventas = limpiar_modulo_ventas_v2(archivo)
+                        for nombre_venta, df_venta in ventas.items():
+                            save_df_to_sql(df_venta, nombre_venta)
+                procesados_ventas = True
+
+            if archivo_ventas_csv:
+                for archivo in archivo_ventas_csv:
+                    with st.spinner(f"Procesando Resumen de Ventas CSV de {archivo.name}..."):
+                        dir_guardado = os.path.join("PROCESADOS", "VENTAS", "RESUMEN")
+                        os.makedirs(dir_guardado, exist_ok=True)
+                        ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                        with open(ruta_guardado, "wb") as f:
+                            f.write(archivo.getbuffer())
+
+                        ventas_resumen = limpiar_reporte_ventas_csv(archivo)
+                        for nombre_venta, df_venta in ventas_resumen.items():
+                            save_df_to_sql(df_venta, nombre_venta)
+                procesados_ventas = True
+
+            if procesados_ventas:
+                st.success("✅ ¡Ventas y Resumen guardados en la Base de Datos SQL y archivados!")
+                import time
+                time.sleep(1.5)
+                st.rerun()
+            else:
+                st.warning("⚠️ Sube al menos un archivo de ventas o reporte CSV primero.")
+
+    st.divider()
+
     tablas_todas = get_all_tables()
     # Check what tables are available
     tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_RESUMEN"]
     tabla_resumen = "VENTAS_RESUMEN" if "VENTAS_RESUMEN" in tablas_todas else None
 
     if not tablas_ventas and not tabla_resumen:
-        st.warning("La BD está vacía. Carga tu Excel o CSV en 'Ingesta' primero.")
+        st.warning("La BD está vacía o no hay tablas de ventas procesadas. Usa el botón superior para subir tus archivos.")
     else:
         # Configurar pestañas de acuerdo a lo que exista
         tabs_names = []
@@ -946,6 +1075,43 @@ elif eleccion == "🛒 VENTAS":
                         if col in df_vista_final_resumen.columns:
                             cc_resumen[col] = st.column_config.NumberColumn(col, format="$%.2f")
 
+                    # Export & Delete UI para Resumen
+                    st.divider()
+                    col_vbtn1, col_vbtn2 = st.columns([8, 2])
+                    with col_vbtn1:
+                        from io import BytesIO
+                        def to_excel_ventas(df_to_export):
+                            output = BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                df_to_export.to_excel(writer, index=False, sheet_name='Export')
+                            return output.getvalue()
+
+                        st.download_button(
+                            label="📥 Exportar Resumen a Excel",
+                            data=to_excel_ventas(df_vista_final_resumen),
+                            file_name="Ventas_Resumen_Exportado.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="export_ventas_resumen"
+                        )
+
+                    with col_vbtn2:
+                        if st.button("🗑️ Eliminar Resumen", key="del_ventas_resumen", type="secondary"):
+                            st.session_state["confirm_del_ventas_resumen"] = True
+
+                        if st.session_state.get("confirm_del_ventas_resumen", False):
+                            st.warning("¿Estás seguro?")
+                            c_yes, c_no = st.columns(2)
+                            if c_yes.button("✅ Sí, borrar", key="yes_ventas_resumen", type="primary"):
+                                if drop_table_from_sql("VENTAS_RESUMEN"):
+                                    st.success("Tabla de resumen eliminada.")
+                                    st.session_state["confirm_del_ventas_resumen"] = False
+                                    import time
+                                    time.sleep(1.5)
+                                    st.rerun()
+                            if c_no.button("❌ No", key="no_ventas_resumen"):
+                                st.session_state["confirm_del_ventas_resumen"] = False
+                                st.rerun()
+
                     st.dataframe(df_vista_final_resumen, use_container_width=True, hide_index=True, column_config=cc_resumen)
                 else:
                     st.info("La tabla de resumen está vacía.")
@@ -1012,6 +1178,43 @@ elif eleccion == "🛒 VENTAS":
                     cc_v = {}
                     if 'PRECIO UNITARIO' in df_v_vista.columns:
                         cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO', format="$%.2f")
+
+                    # Export & Delete UI para Ventas
+                    st.divider()
+                    col_vbtn3, col_vbtn4 = st.columns([8, 2])
+                    with col_vbtn3:
+                        from io import BytesIO
+                        def to_excel_ventas_det(df_to_export):
+                            output = BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                df_to_export.to_excel(writer, index=False, sheet_name='Export')
+                            return output.getvalue()
+
+                        st.download_button(
+                            label=f"📥 Exportar Notas a Excel ({bloque})",
+                            data=to_excel_ventas_det(df_v_vista),
+                            file_name=f"{bloque}_Exportado.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"export_{bloque}"
+                        )
+
+                    with col_vbtn4:
+                        if st.button(f"🗑️ Eliminar Bloque {bloque}", key=f"del_{bloque}", type="secondary"):
+                            st.session_state[f"confirm_del_{bloque}"] = True
+
+                        if st.session_state.get(f"confirm_del_{bloque}", False):
+                            st.warning("¿Estás seguro?")
+                            c_yes, c_no = st.columns(2)
+                            if c_yes.button("✅ Sí, borrar", key=f"yes_{bloque}", type="primary"):
+                                if drop_table_from_sql(bloque):
+                                    st.success(f"Bloque {bloque} eliminado.")
+                                    st.session_state[f"confirm_del_{bloque}"] = False
+                                    import time
+                                    time.sleep(1.5)
+                                    st.rerun()
+                            if c_no.button("❌ No", key=f"no_{bloque}"):
+                                st.session_state[f"confirm_del_{bloque}"] = False
+                                st.rerun()
 
                     # Mostrar tabla
                     st.dataframe(df_v_vista, use_container_width=True, hide_index=True, column_config=cc_v)
