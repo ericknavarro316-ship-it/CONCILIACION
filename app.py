@@ -150,9 +150,8 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
     st.markdown("Carga tus archivos de forma individual o un archivo consolidado.")
 
     # Pestañas para subir Excel o PDF
-    tab1, tab3, tab4 = st.tabs([
+    tab1, tab4 = st.tabs([
         "Carga Consolidada (Mega Excel)",
-        "Carga de Ventas",
         "Carga de CFDI"
     ])
 
@@ -188,36 +187,6 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                 st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
             else:
                 st.warning("⚠️ Sube un archivo consolidado primero.")
-
-    with tab3:
-        st.markdown("### Carga de Notas de Venta y Reporte Resumen")
-        st.markdown("Sube los archivos que contengan las ventas registradas o el reporte de resumen (CSV).")
-        archivo_ventas = st.file_uploader("📂 Cargar Notas de Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
-        archivo_ventas_csv = st.file_uploader("📂 Cargar Reporte de Ventas (CSV con ;)", type=['csv'], accept_multiple_files=True, key="ventas_csv")
-
-        if st.button("Procesar Ventas y Resumen", type="primary", key="btn_ventas"):
-            procesados_ventas = False
-
-            if archivo_ventas:
-                for archivo in archivo_ventas:
-                    with st.spinner(f"Procesando Notas de Venta de {archivo.name}..."):
-                        ventas = limpiar_modulo_ventas_v2(archivo)
-                        for nombre_venta, df_venta in ventas.items():
-                            save_df_to_sql(df_venta, nombre_venta)
-                procesados_ventas = True
-
-            if archivo_ventas_csv:
-                for archivo in archivo_ventas_csv:
-                    with st.spinner(f"Procesando Resumen de Ventas CSV de {archivo.name}..."):
-                        ventas_resumen = limpiar_reporte_ventas_csv(archivo)
-                        for nombre_venta, df_venta in ventas_resumen.items():
-                            save_df_to_sql(df_venta, nombre_venta)
-                procesados_ventas = True
-
-            if procesados_ventas:
-                st.success("✅ ¡Ventas y Resumen guardados en la Base de Datos SQL!")
-            else:
-                st.warning("⚠️ Sube al menos un archivo de ventas o reporte CSV primero.")
 
     with tab4:
         st.markdown("### Carga de CFDI (Individual)")
@@ -894,13 +863,62 @@ elif eleccion == "📄 CFDI (Facturas)":
 elif eleccion == "🛒 VENTAS":
     st.title(":material/point_of_sale: Módulo VENTAS")
 
+    # 1. Ingesta de Ventas (integrada)
+    with st.expander("📥 Cargar archivos de Ventas (Excel/CSV)", expanded=False):
+        st.markdown("Sube los archivos que contengan las **notas de ventas detalladas (Excel)** o el **reporte resumen global (CSV)**.")
+
+        archivo_ventas = st.file_uploader("📂 Cargar Notas de Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
+        archivo_ventas_csv = st.file_uploader("📂 Cargar Reporte de Ventas (CSV con ;)", type=['csv'], accept_multiple_files=True, key="ventas_csv")
+
+        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado"):
+            procesados_ventas = False
+            import os
+
+            if archivo_ventas:
+                for archivo in archivo_ventas:
+                    with st.spinner(f"Procesando Notas de Venta de {archivo.name}..."):
+                        dir_guardado = os.path.join("PROCESADOS", "VENTAS", "NOTAS")
+                        os.makedirs(dir_guardado, exist_ok=True)
+                        ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                        with open(ruta_guardado, "wb") as f:
+                            f.write(archivo.getbuffer())
+
+                        ventas = limpiar_modulo_ventas_v2(archivo)
+                        for nombre_venta, df_venta in ventas.items():
+                            save_df_to_sql(df_venta, nombre_venta)
+                procesados_ventas = True
+
+            if archivo_ventas_csv:
+                for archivo in archivo_ventas_csv:
+                    with st.spinner(f"Procesando Resumen de Ventas CSV de {archivo.name}..."):
+                        dir_guardado = os.path.join("PROCESADOS", "VENTAS", "RESUMEN")
+                        os.makedirs(dir_guardado, exist_ok=True)
+                        ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                        with open(ruta_guardado, "wb") as f:
+                            f.write(archivo.getbuffer())
+
+                        ventas_resumen = limpiar_reporte_ventas_csv(archivo)
+                        for nombre_venta, df_venta in ventas_resumen.items():
+                            save_df_to_sql(df_venta, nombre_venta)
+                procesados_ventas = True
+
+            if procesados_ventas:
+                st.success("✅ ¡Ventas y Resumen guardados en la Base de Datos SQL y archivados!")
+                import time
+                time.sleep(1.5)
+                st.rerun()
+            else:
+                st.warning("⚠️ Sube al menos un archivo de ventas o reporte CSV primero.")
+
+    st.divider()
+
     tablas_todas = get_all_tables()
     # Check what tables are available
     tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_RESUMEN"]
     tabla_resumen = "VENTAS_RESUMEN" if "VENTAS_RESUMEN" in tablas_todas else None
 
     if not tablas_ventas and not tabla_resumen:
-        st.warning("La BD está vacía. Carga tu Excel o CSV en 'Ingesta' primero.")
+        st.warning("La BD está vacía o no hay tablas de ventas procesadas. Usa el botón superior para subir tus archivos.")
     else:
         # Configurar pestañas de acuerdo a lo que exista
         tabs_names = []
@@ -1057,6 +1075,43 @@ elif eleccion == "🛒 VENTAS":
                         if col in df_vista_final_resumen.columns:
                             cc_resumen[col] = st.column_config.NumberColumn(col, format="$%.2f")
 
+                    # Export & Delete UI para Resumen
+                    st.divider()
+                    col_vbtn1, col_vbtn2 = st.columns([8, 2])
+                    with col_vbtn1:
+                        from io import BytesIO
+                        def to_excel_ventas(df_to_export):
+                            output = BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                df_to_export.to_excel(writer, index=False, sheet_name='Export')
+                            return output.getvalue()
+
+                        st.download_button(
+                            label="📥 Exportar Resumen a Excel",
+                            data=to_excel_ventas(df_vista_final_resumen),
+                            file_name="Ventas_Resumen_Exportado.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="export_ventas_resumen"
+                        )
+
+                    with col_vbtn2:
+                        if st.button("🗑️ Eliminar Resumen", key="del_ventas_resumen", type="secondary"):
+                            st.session_state["confirm_del_ventas_resumen"] = True
+
+                        if st.session_state.get("confirm_del_ventas_resumen", False):
+                            st.warning("¿Estás seguro?")
+                            c_yes, c_no = st.columns(2)
+                            if c_yes.button("✅ Sí, borrar", key="yes_ventas_resumen", type="primary"):
+                                if drop_table_from_sql("VENTAS_RESUMEN"):
+                                    st.success("Tabla de resumen eliminada.")
+                                    st.session_state["confirm_del_ventas_resumen"] = False
+                                    import time
+                                    time.sleep(1.5)
+                                    st.rerun()
+                            if c_no.button("❌ No", key="no_ventas_resumen"):
+                                st.session_state["confirm_del_ventas_resumen"] = False
+                                st.rerun()
+
                     st.dataframe(df_vista_final_resumen, use_container_width=True, hide_index=True, column_config=cc_resumen)
                 else:
                     st.info("La tabla de resumen está vacía.")
@@ -1123,6 +1178,43 @@ elif eleccion == "🛒 VENTAS":
                     cc_v = {}
                     if 'PRECIO UNITARIO' in df_v_vista.columns:
                         cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO', format="$%.2f")
+
+                    # Export & Delete UI para Ventas
+                    st.divider()
+                    col_vbtn3, col_vbtn4 = st.columns([8, 2])
+                    with col_vbtn3:
+                        from io import BytesIO
+                        def to_excel_ventas_det(df_to_export):
+                            output = BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                df_to_export.to_excel(writer, index=False, sheet_name='Export')
+                            return output.getvalue()
+
+                        st.download_button(
+                            label=f"📥 Exportar Notas a Excel ({bloque})",
+                            data=to_excel_ventas_det(df_v_vista),
+                            file_name=f"{bloque}_Exportado.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"export_{bloque}"
+                        )
+
+                    with col_vbtn4:
+                        if st.button(f"🗑️ Eliminar Bloque {bloque}", key=f"del_{bloque}", type="secondary"):
+                            st.session_state[f"confirm_del_{bloque}"] = True
+
+                        if st.session_state.get(f"confirm_del_{bloque}", False):
+                            st.warning("¿Estás seguro?")
+                            c_yes, c_no = st.columns(2)
+                            if c_yes.button("✅ Sí, borrar", key=f"yes_{bloque}", type="primary"):
+                                if drop_table_from_sql(bloque):
+                                    st.success(f"Bloque {bloque} eliminado.")
+                                    st.session_state[f"confirm_del_{bloque}"] = False
+                                    import time
+                                    time.sleep(1.5)
+                                    st.rerun()
+                            if c_no.button("❌ No", key=f"no_{bloque}"):
+                                st.session_state[f"confirm_del_{bloque}"] = False
+                                st.rerun()
 
                     # Mostrar tabla
                     st.dataframe(df_v_vista, use_container_width=True, hide_index=True, column_config=cc_v)
