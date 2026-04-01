@@ -579,7 +579,7 @@ elif eleccion == "🏦 BANCOS":
                 df_mostrar = df_mostrar[cols_existentes + otras_cols]
                 col_conceptos_editables = ['CONCEPTO', 'OBSERVACION']
 
-            # Reemplazar explícitamente "None" para limpiar la UI. NO usar fillna("") en numéricos
+            # Reemplazar explícitamente "None" para limpiar la UI.
             df_mostrar = df_mostrar.replace("None", "")
 
             # Asegurar que las fechas se vean bonitas
@@ -731,7 +731,7 @@ elif eleccion == "🏦 BANCOS":
                         format_dict[c] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
 
                 # Reemplazar explicitly in the dataframe just in case
-                # We do NOT fillna("") here because the formatting lambda needs pd.notnull(x) to correctly identify NaNs.
+                # Asegurar que todas las columnas en general no muestren NaNs literales
                 df_mostrar = df_mostrar.replace("None", "")
 
                 st.dataframe(df_mostrar.style.map(lambda v: style_bancos(v, 'CARGO'), subset=['CARGO'] if 'CARGO' in cols_to_style else [])
@@ -885,7 +885,7 @@ elif eleccion == "📄 CFDI (Facturas)":
 
             df_mostrar = df_mostrar.replace("None", "").replace("NaT", "")
 
-            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+            st.dataframe(df_mostrar.style.format(na_rep=""), use_container_width=True, hide_index=True)
 
 elif eleccion == "🛒 VENTAS":
     st.title(":material/point_of_sale: Módulo VENTAS")
@@ -1329,8 +1329,8 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
         if not df.empty and 'estado_cruce' in df.columns: df_alertas_mp = df[df['estado_cruce'] == 'PENDIENTE']
 
     tab_a, tab_b = st.tabs(["Pendientes BBVA", "Pendientes MP"])
-    with tab_a: st.dataframe(df_alertas_bbva, use_container_width=True)
-    with tab_b: st.dataframe(df_alertas_mp, use_container_width=True)
+    with tab_a: st.dataframe(df_alertas_bbva.style.format(na_rep=""), use_container_width=True)
+    with tab_b: st.dataframe(df_alertas_mp.style.format(na_rep=""), use_container_width=True)
 
 # ==========================================================
 # 💸 ANÁLISIS EGRESOS
@@ -1352,7 +1352,7 @@ elif eleccion == "💸 CRUCE EGRESOS":
          if not df_egresos.empty and 'estado_cruce_egreso' in df_egresos.columns:
              pendientes = df_egresos[df_egresos['estado_cruce_egreso'] == 'PENDIENTE BANCARIO']
              st.metric("Total Facturas Gasto Sin Salida de Banco Visible", len(pendientes))
-             st.dataframe(pendientes, use_container_width=True)
+             st.dataframe(pendientes.style.format(na_rep=""), use_container_width=True)
 
 # ==========================================================
 # 📊 DASHBOARD Y REPORTES
