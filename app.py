@@ -97,7 +97,7 @@ def render_filtros_globales(df, col_fecha, key_prefix):
                 fecha_hasta = None
 
         with col3:
-            busqueda = st.text_input("🔍 Buscar (Texto libre):", "", key=f"buscar_{key_prefix}")
+            busqueda = st.text_input("🔍 Buscar (Texto libre):", "", key=f"buscar_{key_prefix}", placeholder="Ej. concepto, monto o UUID", help="Filtra los resultados buscando este texto en cualquier columna de la tabla.")
 
     # --- APLICAR FILTROS ---
     if mes_sel != "Todos":
