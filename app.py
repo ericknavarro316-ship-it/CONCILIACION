@@ -391,9 +391,9 @@ elif eleccion == "🏦 BANCOS":
 
                 # Configuración de columnas para que se vean bien los dineros
                 cc_resumen_global = {
-                    "Total Abonos": st.column_config.NumberColumn("Total Abonos", format="$%.2f"),
-                    "Total Cargos": st.column_config.NumberColumn("Total Cargos", format="$%.2f"),
-                    "Último Saldo": st.column_config.NumberColumn("Último Saldo", format="$%.2f")
+                    "Total Abonos": st.column_config.NumberColumn("Total Abonos", format="$%,.2f"),
+                    "Total Cargos": st.column_config.NumberColumn("Total Cargos", format="$%,.2f"),
+                    "Último Saldo": st.column_config.NumberColumn("Último Saldo", format="$%,.2f")
                 }
                 st.dataframe(df_resumen, use_container_width=True, hide_index=True, column_config=cc_resumen_global)
 
@@ -633,7 +633,7 @@ elif eleccion == "🏦 BANCOS":
                         # Lo mantenemos como numérico en el dataframe subyacente para permitir ordenamiento y style
                         temp_num = pd.to_numeric(df_mostrar[col_moneda].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
                         df_mostrar[col_moneda] = temp_num
-                        cc_format[col_moneda] = st.column_config.NumberColumn(col_moneda, format="$%.2f")
+                        cc_format[col_moneda] = st.column_config.NumberColumn(col_moneda, format="$%,.2f")
                     except:
                         pass
 
@@ -1115,7 +1115,7 @@ elif eleccion == "🛒 VENTAS":
                     cc_resumen = {}
                     for col in cols_dinero_formateadas:
                         if col in df_vista_final_resumen.columns:
-                            cc_resumen[col] = st.column_config.NumberColumn(col, format="$%.2f")
+                            cc_resumen[col] = st.column_config.NumberColumn(col, format="$%,.2f")
 
                     # Export & Delete UI para Resumen
                     st.divider()
@@ -1219,7 +1219,7 @@ elif eleccion == "🛒 VENTAS":
 
                     cc_v = {}
                     if 'PRECIO UNITARIO' in df_v_vista.columns:
-                        cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO', format="$%.2f")
+                        cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO', format="$%,.2f")
 
                     # Export & Delete UI para Ventas
                     st.divider()

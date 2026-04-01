@@ -56,3 +56,23 @@ h1, h2, h3 {
     border-radius: 4px;
     border: 1px solid #e0e0e0;
 }
+
+/* Reducir el ancho de la barra lateral (sidebar) */
+[data-testid="stSidebar"] {
+    min-width: 250px !important;
+    max-width: 300px !important;
+}
+
+/* Permitir que los valores de las métricas se ajusten al espacio en lugar de cortarse (...) */
+[data-testid="stMetricValue"] {
+    font-size: 1.5rem !important; /* Ligeramente más pequeño para que quepa mejor */
+    white-space: normal !important; /* Permite salto de línea si es muy largo */
+    word-break: break-all !important; /* Evita que los números largos se desborden */
+}
+
+/* Permitir que las etiquetas de las métricas también se ajusten */
+[data-testid="stMetricLabel"] {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
