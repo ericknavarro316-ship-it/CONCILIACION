@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from database_sqlite import get_df_from_sql, save_df_to_sql, get_all_tables
+from database_sqlite import get_df_from_sql, update_table_from_df, get_all_tables
 
 def run_o01_preclasificar_bancos():
     """Identifica patrones de texto en el Concepto de los bancos para pre-clasificar cargos y abonos"""
@@ -29,12 +29,23 @@ def run_o01_preclasificar_bancos():
         if not col_concepto:
             continue
 
-        if 'CATEGORIA_PREVIA' not in df_banco.columns:
-             df_banco['CATEGORIA_PREVIA'] = None
+        # Clean up the old erroneous column if it exists
+        if 'CATEGORIA_PREVIA' in df_banco.columns:
+            df_banco = df_banco.drop(columns=['CATEGORIA_PREVIA'])
 
-        # Determine which rows to process
-        mask_to_process = df_banco['CATEGORIA_PREVIA'].isna()
+        if 'OBSERVACION' not in df_banco.columns:
+             df_banco['OBSERVACION'] = ""
+
+        # Replace literal "None" or np.nan with empty strings in OBSERVACION
+        df_banco['OBSERVACION'] = df_banco['OBSERVACION'].fillna("").astype(str).replace({'None': '', 'nan': '', '<NA>': ''})
+
+        # Determine which rows to process (only empty observations)
+        mask_to_process = (df_banco['OBSERVACION'] == "")
+
         if not mask_to_process.any():
+            # Still update the table to remove duplicates and the old column if they existed
+            df_banco = df_banco.drop_duplicates()
+            update_table_from_df(df_banco, cuenta_nombre)
             continue
 
         concepto_series = df_banco.loc[mask_to_process, col_concepto].astype(str).str.upper()
@@ -48,22 +59,24 @@ def run_o01_preclasificar_bancos():
 
         # Apply np.select
         if condiciones:
-            # Default is the existing CATEGORIA_PREVIA or None (actually pd.NA or similar, we'll keep None)
-            new_categories = np.select(condiciones, opciones, default=None)
+            # Default is empty string
+            new_categories = np.select(condiciones, opciones, default="")
 
             # Create a mask for rows that got a new categorization
-            mask_newly_classified = (new_categories != None) & (pd.notna(new_categories))
+            mask_newly_classified = (new_categories != "")
 
             if mask_newly_classified.any():
                 # Assign to df
-                # new_categories is an array same size as concepto_series
-                df_banco.loc[mask_to_process, 'CATEGORIA_PREVIA'] = new_categories
+                df_banco.loc[mask_to_process, 'OBSERVACION'] = new_categories
 
                 # Count matches
                 total_clasificados += mask_newly_classified.sum()
 
-                # Save only if modified
-                save_df_to_sql(df_banco, cuenta_nombre)
+        # Drop duplicates caused by previous save_df_to_sql bug
+        df_banco = df_banco.drop_duplicates()
+
+        # Save explicitly overwriting the whole table
+        update_table_from_df(df_banco, cuenta_nombre)
 
     return {"success": True, "matches": total_clasificados}
 
@@ -123,8 +136,12 @@ def run_o07_conciliar_pagos_e():
 
             if match_encontrado: break
 
-    save_df_to_sql(df_pagos, "CFDI_PAGOS_E_CRUZADO")
+    # Remove duplicates before saving if there were any
+    df_pagos = df_pagos.drop_duplicates()
+    update_table_from_df(df_pagos, "CFDI_PAGOS_E_CRUZADO")
+
     for cuenta_nombre, df_banco in cuentas_bbva.items():
-        save_df_to_sql(df_banco, cuenta_nombre) # Se sobreescribe la cruda para agregar la columna
+        df_banco = df_banco.drop_duplicates()
+        update_table_from_df(df_banco, cuenta_nombre) # Se sobreescribe la cruda para agregar la columna
 
     return {"success": True, "matches": match_count}
