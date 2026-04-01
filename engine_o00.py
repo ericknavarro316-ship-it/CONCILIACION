@@ -10,12 +10,19 @@ def run_o01_preclasificar_bancos():
 
     # Lista de patrones comunes (ejemplo extraído y expandible)
     patrones_comunes = {
-        'COMISION': 'COMISIONES BANCARIAS',
-        'IVA': 'IMPUESTOS',
-        'TRASPASO': 'TRASPASO ENTRE CUENTAS PROPIAS',
-        'NOMINA': 'NOMINA',
-        'SPEI ENVIADO': 'PAGO PROVEEDORES',
-        'PAGO DE IMPUESTOS': 'IMPUESTOS SAT'
+        'PUNTO DE VENTA': 'ND-COMISION',
+        'TDC INTER': 'ND-COMISION',
+        'NAL. AMEX': 'ND-COMISION',
+        'SECRETARIA DE LA HAC': '3% NOMINA GDL',
+        'GOBIERNO DEL ESTADO/GUIA': '3% NOMINA PUE',
+        'RECIBO NO./': 'ND-SEGURO',
+        'EFECTIVALE S DE RL': 'EFECTIVALE',
+        'PREST.': 'PRESTAMO',
+        'PAGO DE NOMINA': 'NOMINA',
+        'ADOBE 2': 'ND-SUSCRIPCION',
+        'FACEBOOK': 'FACEBOOK',
+        'SAT/GUIA': 'IMPUESTOS FEDERALES',
+        'PAGO SUA': 'PAGO SUA'
     }
 
     total_clasificados = 0
@@ -29,6 +36,10 @@ def run_o01_preclasificar_bancos():
         if not col_concepto:
             continue
 
+        # Ensure CARGO column exists to filter
+        if 'CARGO' not in df_banco.columns:
+            continue
+
         # Clean up the old erroneous column if it exists
         if 'CATEGORIA_PREVIA' in df_banco.columns:
             df_banco = df_banco.drop(columns=['CATEGORIA_PREVIA'])
@@ -39,8 +50,11 @@ def run_o01_preclasificar_bancos():
         # Replace literal "None" or np.nan with empty strings in OBSERVACION
         df_banco['OBSERVACION'] = df_banco['OBSERVACION'].fillna("").astype(str).replace({'None': '', 'nan': '', '<NA>': ''})
 
-        # Determine which rows to process (only empty observations)
-        mask_to_process = (df_banco['OBSERVACION'] == "")
+        # Convert CARGO to numeric to ensure filtering works
+        df_banco['CARGO'] = pd.to_numeric(df_banco['CARGO'], errors='coerce')
+
+        # Determine which rows to process (only empty observations AND are cargos)
+        mask_to_process = (df_banco['OBSERVACION'] == "") & (df_banco['CARGO'] > 0)
 
         if not mask_to_process.any():
             # Still update the table to remove duplicates and the old column if they existed
@@ -71,6 +85,41 @@ def run_o01_preclasificar_bancos():
 
                 # Count matches
                 total_clasificados += mask_newly_classified.sum()
+
+        # --- Special rule for TRASPASOS ---
+        # "TRASPASO CUENTAS PROPIAS ➔ TRASPASO CUENTAS PROPIAS | "últimos 5 datos de la cuenta"
+        # (viene después de CUENTA: ejemplo "CUENTA: 0121923773" se tendría que poner "23773",
+        # además quiero que este dato este en la columna "UUID COMPL." )
+
+        # Find rows that match the keyword and have CARGO > 0 and haven't been classified yet
+        mask_traspasos = df_banco[col_concepto].astype(str).str.upper().str.contains('TRASPASO CUENTAS PROPIAS', regex=False, na=False) & (df_banco['CARGO'] > 0) & (df_banco['OBSERVACION'] == "")
+
+        if mask_traspasos.any():
+            if 'UUID COMPL.' not in df_banco.columns:
+                df_banco['UUID COMPL.'] = ""
+
+            # Extract the account number after "CUENTA: " (capture 5 to 20 digits to be safe)
+            # The regex looks for "CUENTA:" followed by optional spaces, then captures digits.
+            extracted_accounts = df_banco.loc[mask_traspasos, col_concepto].astype(str).str.extract(r'CUENTA:\s*(\d+)', expand=False)
+
+            # Loop through the matches to get the last 5 digits and apply formatting
+            for idx, val in extracted_accounts.items():
+                if pd.notna(val) and len(str(val)) >= 5:
+                    last_5 = str(val)[-5:]
+                    new_obs = f'TRASPASO CUENTAS PROPIAS | {last_5}'
+
+                    df_banco.at[idx, 'OBSERVACION'] = new_obs
+                    df_banco.at[idx, 'UUID COMPL.'] = last_5
+                    # Do not double-count matches if it was already processed, just add to sum safely
+                    # We assume these are new matches if not caught by the dictionary
+                    total_clasificados += 1
+                elif pd.notna(val) and len(str(val)) > 0:
+                    # Fallback if account number is less than 5 digits long
+                    last_5 = str(val)
+                    new_obs = f'TRASPASO CUENTAS PROPIAS | {last_5}'
+                    df_banco.at[idx, 'OBSERVACION'] = new_obs
+                    df_banco.at[idx, 'UUID COMPL.'] = last_5
+                    total_clasificados += 1
 
         # Drop duplicates caused by previous save_df_to_sql bug
         df_banco = df_banco.drop_duplicates()
