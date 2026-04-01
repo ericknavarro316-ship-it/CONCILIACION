@@ -415,11 +415,17 @@ elif eleccion == "🏦 BANCOS":
 
                 # Configuración de columnas para que se vean bien los dineros
                 cc_resumen_global = {
-                    "Total Abonos": st.column_config.NumberColumn("Total Abonos", format="$%.2f"),
-                    "Total Cargos": st.column_config.NumberColumn("Total Cargos", format="$%.2f"),
-                    "Último Saldo": st.column_config.NumberColumn("Último Saldo", format="$%.2f")
+                    "Total Abonos": st.column_config.NumberColumn("Total Abonos"),
+                    "Total Cargos": st.column_config.NumberColumn("Total Cargos"),
+                    "Último Saldo": st.column_config.NumberColumn("Último Saldo")
                 }
-                st.dataframe(df_resumen, use_container_width=True, hide_index=True, column_config=cc_resumen_global)
+
+                # Format to strings with commas and dollar signs using Pandas Styler
+                st.dataframe(df_resumen.style.format({
+                    "Total Abonos": "${:,.2f}",
+                    "Total Cargos": "${:,.2f}",
+                    "Último Saldo": "${:,.2f}"
+                }, na_rep=""), use_container_width=True, hide_index=True, column_config=cc_resumen_global)
 
 
         # Función auxiliar para renderizar el panel de control de un banco
@@ -492,7 +498,11 @@ elif eleccion == "🏦 BANCOS":
 
                         # Si la diferencia es mayor a $1 peso, podría haber un descuadre (ej. filas borradas, PDF mal leído)
                         if diferencia > 1.0:
-                            st.error(f"⚖️ **Posible Descuadre Detectado:** El Saldo Final reportado es **${ultimo_saldo:,.2f}**, pero según la suma de movimientos debería ser **${saldo_final_calculado:,.2f}** (Diferencia: **${diferencia:,.2f}**). Verifica si faltan páginas o registros.")
+                            if not st.session_state.get(f"warned_descuadre_{cuenta_sel}", False):
+                                st.toast(f"⚖️ **Posible Descuadre Detectado en {cuenta_sel}:** Diferencia de **${diferencia:,.2f}**.", icon="⚠️")
+                                st.session_state[f"warned_descuadre_{cuenta_sel}"] = True
+                            with st.expander("⚠️ Alerta de Posible Descuadre"):
+                                st.error(f"El Saldo Final reportado es **${ultimo_saldo:,.2f}**, pero según la suma de movimientos debería ser **${saldo_final_calculado:,.2f}** (Diferencia: **${diferencia:,.2f}**). Verifica si faltan páginas o registros.")
                 except Exception as e:
                     pass
 
@@ -542,42 +552,7 @@ elif eleccion == "🏦 BANCOS":
 
             st.divider()
 
-            col_btn1, col_btn2 = st.columns([8, 2])
-            with col_btn1:
-                from io import BytesIO
 
-                # Función para generar excel de descarga
-                def to_excel(df_to_export):
-                    output = BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        df_to_export.to_excel(writer, index=False, sheet_name='Export')
-                    return output.getvalue()
-
-                st.download_button(
-                    label="📥 Exportar a Excel",
-                    data=to_excel(df_filtrado),
-                    file_name=f"{cuenta_sel}_Exportado.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"export_{key_prefix}"
-                )
-
-            with col_btn2:
-                if st.button("🗑️ Eliminar Tabla", key=f"del_{key_prefix}", type="secondary", help="Borra definitivamente esta cuenta/tabla de la base de datos."):
-                    st.session_state[f"confirm_del_{key_prefix}"] = True
-
-                if st.session_state.get(f"confirm_del_{key_prefix}", False):
-                    st.warning("¿Estás seguro?")
-                    c_yes, c_no = st.columns(2)
-                    if c_yes.button("✅ Sí, borrar", key=f"yes_{key_prefix}", type="primary"):
-                        if drop_table_from_sql(cuenta_sel):
-                            st.success(f"Tabla {cuenta_sel} eliminada.")
-                            st.session_state[f"confirm_del_{key_prefix}"] = False
-                            import time
-                            time.sleep(1.5)
-                            st.rerun()
-                    if c_no.button("❌ No", key=f"no_{key_prefix}"):
-                        st.session_state[f"confirm_del_{key_prefix}"] = False
-                        st.rerun()
 
             # --- UI: TABLA DE DATOS ---
             df_mostrar = df_filtrado.copy()
@@ -643,10 +618,7 @@ elif eleccion == "🏦 BANCOS":
                 st.session_state[f"edit_{key_prefix}"] = False
 
             # Botón para activar/desactivar modo edición
-            col_edit1, col_edit2 = st.columns([8, 2])
-            with col_edit2:
-                if st.button("✏️ Editar Manualmente", key=f"btn_edit_{key_prefix}", help="Activa el modo de edición de celdas."):
-                    st.session_state[f"edit_{key_prefix}"] = not st.session_state[f"edit_{key_prefix}"]
+
 
             # Al usar data_editor y formatters (.style), Streamlit 1.30+ puede quejarse si los tipos no coinciden.
             # Convertimos a strings bonitos y usamos Dataframe/Editor nativos.
@@ -657,7 +629,7 @@ elif eleccion == "🏦 BANCOS":
                         # Lo mantenemos como numérico en el dataframe subyacente para permitir ordenamiento y style
                         temp_num = pd.to_numeric(df_mostrar[col_moneda].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
                         df_mostrar[col_moneda] = temp_num
-                        cc_format[col_moneda] = st.column_config.NumberColumn(col_moneda, format="$%.2f")
+                        cc_format[col_moneda] = st.column_config.NumberColumn(col_moneda)
                     except:
                         pass
 
@@ -751,11 +723,62 @@ elif eleccion == "🏦 BANCOS":
                         st.rerun()
             else:
                 # Mostrar dataframe estilizado (Solo Lectura) usando Pandas Styler
+                # Create format dict for money columns
+                format_dict = {}
+                for c in ['CARGO', 'ABONO', 'SALDO', 'Valor del cargo', 'Valor de la operación']:
+                    if c in df_mostrar.columns:
+                        format_dict[c] = "${:,.2f}"
+
                 st.dataframe(df_mostrar.style.map(lambda v: style_bancos(v, 'CARGO'), subset=['CARGO'] if 'CARGO' in cols_to_style else [])
                                            .map(lambda v: style_bancos(v, 'ABONO'), subset=['ABONO'] if 'ABONO' in cols_to_style else [])
                                            .map(lambda v: style_bancos(v, 'Valor del cargo'), subset=['Valor del cargo'] if 'Valor del cargo' in cols_to_style else [])
-                                           .format(na_rep=""),
+                                           .format(format_dict, na_rep=""),
                              use_container_width=True, hide_index=True, column_config=cc_format)
+
+            st.divider()
+            # Botones de Acción Múltiple
+            col_act1, col_act2, col_act3 = st.columns(3)
+
+            with col_act1:
+                from io import BytesIO
+                def to_excel(df_to_export):
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df_to_export.to_excel(writer, index=False, sheet_name='Export')
+                    return output.getvalue()
+
+                st.download_button(
+                    label="📥 Exportar a Excel",
+                    data=to_excel(df_filtrado),
+                    file_name=f"{cuenta_sel}_Exportado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"export_{key_prefix}",
+                    use_container_width=True
+                )
+
+            with col_act2:
+                btn_text = "❌ Cancelar Edición" if st.session_state.get(f"edit_{key_prefix}") else "✏️ Editar Manualmente"
+                if st.button(btn_text, key=f"btn_edit_{key_prefix}", help="Activa el modo de edición de celdas.", use_container_width=True):
+                    st.session_state[f"edit_{key_prefix}"] = not st.session_state.get(f"edit_{key_prefix}", False)
+                    st.rerun()
+
+            with col_act3:
+                if st.button("🗑️ Eliminar Tabla", key=f"del_{key_prefix}", type="secondary", help="Borra definitivamente esta cuenta/tabla de la base de datos.", use_container_width=True):
+                    st.session_state[f"confirm_del_{key_prefix}"] = True
+
+                if st.session_state.get(f"confirm_del_{key_prefix}", False):
+                    st.warning("¿Estás seguro?")
+                    c_yes, c_no = st.columns(2)
+                    if c_yes.button("✅ Sí", key=f"yes_{key_prefix}", type="primary"):
+                        if drop_table_from_sql(cuenta_sel):
+                            st.success(f"Tabla {cuenta_sel} eliminada.")
+                            st.session_state[f"confirm_del_{key_prefix}"] = False
+                            import time
+                            time.sleep(1.5)
+                            st.rerun()
+                    if c_no.button("❌ No", key=f"no_{key_prefix}"):
+                        st.session_state[f"confirm_del_{key_prefix}"] = False
+                        st.rerun()
 
 
         # Llenar cada pestaña de banco dinámicamente (desplazadas +1 por el resumen)
@@ -1071,13 +1094,15 @@ elif eleccion == "🛒 VENTAS":
                     # Column Config
                     cols_dinero_formateadas = ['Total (antes descuento)', 'Efectivo', 'Tarjeta Crédito', 'Transferencia', 'Total Real']
                     cc_resumen = {}
+                    format_dict_resumen = {}
                     for col in cols_dinero_formateadas:
                         if col in df_vista_final_resumen.columns:
-                            cc_resumen[col] = st.column_config.NumberColumn(col, format="$%.2f")
+                            cc_resumen[col] = st.column_config.NumberColumn(col)
+                            format_dict_resumen[col] = "${:,.2f}"
 
                     # Export & Delete UI para Resumen
                     st.divider()
-                    col_vbtn1, col_vbtn2 = st.columns([8, 2])
+                    col_vbtn1, col_vbtn2 = st.columns(2)
                     with col_vbtn1:
                         from io import BytesIO
                         def to_excel_ventas(df_to_export):
@@ -1112,7 +1137,7 @@ elif eleccion == "🛒 VENTAS":
                                 st.session_state["confirm_del_ventas_resumen"] = False
                                 st.rerun()
 
-                    st.dataframe(df_vista_final_resumen, use_container_width=True, hide_index=True, column_config=cc_resumen)
+                    st.dataframe(df_vista_final_resumen.style.format(format_dict_resumen, na_rep=""), use_container_width=True, hide_index=True, column_config=cc_resumen)
                 else:
                     st.info("La tabla de resumen está vacía.")
             tab_idx += 1
@@ -1176,12 +1201,14 @@ elif eleccion == "🛒 VENTAS":
                     df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
 
                     cc_v = {}
+                    format_dict_v = {}
                     if 'PRECIO UNITARIO' in df_v_vista.columns:
-                        cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO', format="$%.2f")
+                        cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO')
+                        format_dict_v['PRECIO UNITARIO'] = "${:,.2f}"
 
                     # Export & Delete UI para Ventas
                     st.divider()
-                    col_vbtn3, col_vbtn4 = st.columns([8, 2])
+                    col_vbtn3, col_vbtn4 = st.columns(2)
                     with col_vbtn3:
                         from io import BytesIO
                         def to_excel_ventas_det(df_to_export):
@@ -1217,7 +1244,7 @@ elif eleccion == "🛒 VENTAS":
                                 st.rerun()
 
                     # Mostrar tabla
-                    st.dataframe(df_v_vista, use_container_width=True, hide_index=True, column_config=cc_v)
+                    st.dataframe(df_v_vista.style.format(format_dict_v, na_rep=""), use_container_width=True, hide_index=True, column_config=cc_v)
                 else:
                     st.info("No hay bloques de notas de ventas cargados.")
             tab_idx += 1
