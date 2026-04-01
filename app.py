@@ -579,8 +579,7 @@ elif eleccion == "🏦 BANCOS":
                 df_mostrar = df_mostrar[cols_existentes + otras_cols]
                 col_conceptos_editables = ['CONCEPTO', 'OBSERVACION']
 
-            # Reemplazar explícitamente "None" y nulls con cadena vacía para limpiar la UI
-            df_mostrar = df_mostrar.fillna("")
+            # Reemplazar explícitamente "None" para limpiar la UI. NO usar fillna("") en numéricos
             df_mostrar = df_mostrar.replace("None", "")
 
             # Asegurar que las fechas se vean bonitas
@@ -723,11 +722,17 @@ elif eleccion == "🏦 BANCOS":
                         st.rerun()
             else:
                 # Mostrar dataframe estilizado (Solo Lectura) usando Pandas Styler
-                # Create format dict for money columns
+                # Create format dict for money columns using a lambda for safer formatting and coercion to numeric
                 format_dict = {}
                 for c in ['CARGO', 'ABONO', 'SALDO', 'Valor del cargo', 'Valor de la operación']:
                     if c in df_mostrar.columns:
-                        format_dict[c] = "${:,.2f}"
+                        # Ensure string representations of empty are actual nans
+                        df_mostrar[c] = pd.to_numeric(df_mostrar[c].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
+                        format_dict[c] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
+
+                # Reemplazar explicitly in the dataframe just in case
+                # We do NOT fillna("") here because the formatting lambda needs pd.notnull(x) to correctly identify NaNs.
+                df_mostrar = df_mostrar.replace("None", "")
 
                 st.dataframe(df_mostrar.style.map(lambda v: style_bancos(v, 'CARGO'), subset=['CARGO'] if 'CARGO' in cols_to_style else [])
                                            .map(lambda v: style_bancos(v, 'ABONO'), subset=['ABONO'] if 'ABONO' in cols_to_style else [])
@@ -878,7 +883,6 @@ elif eleccion == "📄 CFDI (Facturas)":
             # Filtrar solo las columnas solicitadas
             df_mostrar = df_mostrar[cols_deseadas]
 
-            df_mostrar = df_mostrar.fillna("")
             df_mostrar = df_mostrar.replace("None", "").replace("NaT", "")
 
             st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
@@ -981,7 +985,6 @@ elif eleccion == "🛒 VENTAS":
                     df_numerico = df_resumen.copy()
 
                     # Limpieza visual
-                    df_resumen = df_resumen.fillna("")
                     df_resumen = df_resumen.replace("None", "").replace("NaT", "")
 
                     # --- VISTA DE COLUMNAS EXACTA ---
@@ -1097,8 +1100,13 @@ elif eleccion == "🛒 VENTAS":
                     format_dict_resumen = {}
                     for col in cols_dinero_formateadas:
                         if col in df_vista_final_resumen.columns:
+                            # Convertir strings "None" o NaNs y asegurar formato numérico real
+                            df_vista_final_resumen[col] = pd.to_numeric(df_vista_final_resumen[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
                             cc_resumen[col] = st.column_config.NumberColumn(col)
-                            format_dict_resumen[col] = "${:,.2f}"
+                            format_dict_resumen[col] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
+
+                    df_vista_final_resumen = df_vista_final_resumen.replace("None", "")
+
 
                     # Export & Delete UI para Resumen
                     st.divider()
@@ -1197,14 +1205,16 @@ elif eleccion == "🛒 VENTAS":
                     if 'PRECIO UNITARIO' in df_v_vista.columns:
                         df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'], errors='coerce')
 
-                    df_v_vista = df_v_vista.fillna("")
                     df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
 
                     cc_v = {}
                     format_dict_v = {}
                     if 'PRECIO UNITARIO' in df_v_vista.columns:
+                        df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
                         cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO')
-                        format_dict_v['PRECIO UNITARIO'] = "${:,.2f}"
+                        format_dict_v['PRECIO UNITARIO'] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
+
+                    df_v_vista = df_v_vista.replace("None", "")
 
                     # Export & Delete UI para Ventas
                     st.divider()
