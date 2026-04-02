@@ -26,18 +26,68 @@ st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon=
 
 # Modal para Expedientes
 @st.dialog("📁 Expediente de Venta", width="large")
-def abrir_expediente(id_venta):
-    st.write(f"Gestionando documentos para: **{id_venta}**")
-
+def abrir_expediente(id_venta_raw):
     import os
     import shutil
+    import subprocess
+    import platform
+    import pandas as pd
+    import re
+
+    # Sanitizar id_venta para evitar Path Traversal vulnerabilities
+    id_venta = re.sub(r'[^a-zA-Z0-9_\-]', '', str(id_venta_raw))
+    if not id_venta:
+        st.error("ID de venta inválido.")
+        return
+
+    def open_local_path(path):
+        """Abre un archivo o carpeta usando la aplicación por defecto del sistema."""
+        try:
+            if platform.system() == 'Windows':
+                os.startfile(path)
+            elif platform.system() == 'Darwin':
+                subprocess.call(['open', path])
+            else:
+                subprocess.call(['xdg-open', path])
+        except Exception as e:
+            st.error(f"No se pudo abrir: {e}")
+
+    # Determinar la ruta base de la carpeta
+    ruta_base = os.path.join("EXPEDIENTES", "MANUAL", id_venta) # Fallback
+    tablas_todas = get_all_tables()
+    tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_SERIES"]
+
+    for tb in tablas_ventas:
+        df_tb = get_df_from_sql(tb)
+        col_id = 'id_venta' if 'id_venta' in df_tb.columns else 'ID VENTA' if 'ID VENTA' in df_tb.columns else None
+        col_fecha = 'fecha' if 'fecha' in df_tb.columns else 'FECHA' if 'FECHA' in df_tb.columns else None
+
+        if col_id and col_fecha and not df_tb.empty:
+            fila_match = df_tb[df_tb[col_id].astype(str).str.strip() == id_venta]
+            if not fila_match.empty:
+                banco_folder = tb.replace('VENTAS_', '')
+                fecha_val = fila_match.iloc[0][col_fecha]
+                mes_folder = "GENERAL"
+                try:
+                    dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                    if pd.notna(dt_fecha):
+                        mes_folder = dt_fecha.strftime("%Y_%m")
+                except: pass
+                ruta_base = os.path.join("EXPEDIENTES", "VENTAS", mes_folder, banco_folder, id_venta)
+                break
+
+    # Header
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.write(f"Gestionando documentos para: **{id_venta}**")
+    with col_h2:
+        if os.path.exists(ruta_base):
+            if st.button("📂 Abrir Carpeta", help="Abre la carpeta física en Windows/Mac."):
+                open_local_path(ruta_base)
 
     # Buscar si existe en la base de datos de expedientes
     df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
-
     if df_exp.empty:
-        # Create empty df structure to avoid crash
-        import pandas as pd
         df_exp = pd.DataFrame(columns=["ID_VENTA", "NOMBRE_ARCHIVO", "TIPO_DOCUMENTO", "RUTA_LOCAL"])
 
     archivos_venta = df_exp[df_exp['ID_VENTA'] == id_venta] if not df_exp.empty else pd.DataFrame()
@@ -50,8 +100,12 @@ def abrir_expediente(id_venta):
             with col1:
                 st.write(f"📄 {row['NOMBRE_ARCHIVO']} ({row['TIPO_DOCUMENTO']})")
             with col2:
-                # Botón visual de estatus
-                st.button("Abrir", key=f"abrir_{idx}", disabled=True, help="Funcionalidad de previsualización en desarrollo.")
+                # Botón Funcional
+                if st.button("Abrir", key=f"abrir_{idx}", help="Abre el archivo con tu lector de PDF o imágenes."):
+                    if os.path.exists(row['RUTA_LOCAL']):
+                        open_local_path(row['RUTA_LOCAL'])
+                    else:
+                        st.error("El archivo físico ya no existe en esa ruta.")
     else:
         st.info("Aún no hay documentos para esta venta. Sube los archivos arrastrándolos aquí abajo.")
 
@@ -60,35 +114,7 @@ def abrir_expediente(id_venta):
     uploaded_files = st.file_uploader("Arrastra aquí PDF, XML, PNG, JPG...", accept_multiple_files=True, key=f"uploader_{id_venta}")
 
     if uploaded_files and st.button("💾 Guardar Archivos"):
-        import datetime
         from database_sqlite import update_table_from_df
-        import re
-
-        # Buscar la ruta dinámica interrogando a las tablas de ventas
-        tablas_todas = get_all_tables()
-        tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_SERIES"]
-
-        ruta_base = os.path.join("EXPEDIENTES", "MANUAL", id_venta) # Fallback
-
-        for tb in tablas_ventas:
-            df_tb = get_df_from_sql(tb)
-            col_id = 'id_venta' if 'id_venta' in df_tb.columns else 'ID VENTA' if 'ID VENTA' in df_tb.columns else None
-            col_fecha = 'fecha' if 'fecha' in df_tb.columns else 'FECHA' if 'FECHA' in df_tb.columns else None
-
-            if col_id and col_fecha and not df_tb.empty:
-                fila_match = df_tb[df_tb[col_id].astype(str).str.strip() == id_venta]
-                if not fila_match.empty:
-                    # Lo encontramos
-                    banco_folder = tb.replace('VENTAS_', '')
-                    fecha_val = fila_match.iloc[0][col_fecha]
-                    mes_folder = "GENERAL"
-                    try:
-                        dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
-                        if pd.notna(dt_fecha):
-                            mes_folder = dt_fecha.strftime("%Y_%m")
-                    except: pass
-                    ruta_base = os.path.join("EXPEDIENTES", "VENTAS", mes_folder, banco_folder, id_venta)
-                    break
 
         os.makedirs(ruta_base, exist_ok=True)
 
@@ -1198,11 +1224,9 @@ elif eleccion == "🛒 VENTAS":
         df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
 
         cc_v = {}
-        format_dict_v = {}
         if 'PRECIO UNITARIO' in df_v_vista.columns:
             df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
-            cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO')
-            format_dict_v['PRECIO UNITARIO'] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
+            cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO', format="$%.2f")
 
         df_v_vista = df_v_vista.replace("None", "")
 
@@ -1256,9 +1280,9 @@ elif eleccion == "🛒 VENTAS":
             df_v_vista['ID VENTA'] = df_v_vista['LINK_EXPEDIENTE']
             df_v_vista = df_v_vista.drop(columns=['LINK_EXPEDIENTE'])
 
-        # Mostrar tabla estándar con hipervínculos y Styler
+        # Mostrar tabla estándar con hipervínculos (Sin Styler para evitar conflicto con column_config)
         st.dataframe(
-            df_v_vista.style.format(format_dict_v, na_rep=""),
+            df_v_vista,
             use_container_width=True,
             hide_index=True,
             column_config=cc_v
