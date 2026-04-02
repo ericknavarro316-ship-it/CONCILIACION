@@ -16,6 +16,19 @@ def update_table_from_df(df, table_name):
         return False
 
     df_copy = df.copy()
+
+    # Desduplicar nombres de columnas para evitar el error 'DataFrame' object has no attribute 'dtype'
+    seen = {}
+    new_cols = []
+    for c in df_copy.columns:
+        if c in seen:
+            seen[c] += 1
+            new_cols.append(f"{c}_{seen[c]}")
+        else:
+            seen[c] = 0
+            new_cols.append(c)
+    df_copy.columns = new_cols
+
     for col in df_copy.columns:
         if str(df_copy[col].dtype).startswith('datetime'):
             df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -42,6 +55,18 @@ def save_df_to_sql(df, table_name):
         return
 
     df_copy = df.copy()
+
+    # Desduplicar nombres de columnas para evitar el error 'DataFrame' object has no attribute 'dtype'
+    seen = {}
+    new_cols = []
+    for c in df_copy.columns:
+        if c in seen:
+            seen[c] += 1
+            new_cols.append(f"{c}_{seen[c]}")
+        else:
+            seen[c] = 0
+            new_cols.append(c)
+    df_copy.columns = new_cols
 
     # SQLite tiene un límite de enteros de 8 bytes (hasta 9,223,372,036,854,775,807).
     # Las transacciones de bancos/MercadoPago suelen tener IDs gigantes que rompen este límite.
