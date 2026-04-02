@@ -33,9 +33,10 @@ def run_mp_crosscheck():
          return {"error": f"No se encontró la columna de 'Operación relacionada' o ID en AUX_MP_DETALLE. Columnas actuales: {df_mp_detalle.columns.tolist()}"}
 
     # Asegurar columna de sucursal ban en ventas
-    if 'sucursal ban' not in df_ventas.columns and 'sucursal_ban' not in df_ventas.columns:
-        df_ventas['sucursal_ban'] = ''
-    col_sucursal = 'sucursal_ban' if 'sucursal_ban' in df_ventas.columns else 'sucursal ban'
+    # Use 'SUCURSAL BAN' explicitly as app.py expects it for UI rendering
+    if 'SUCURSAL BAN' not in df_ventas.columns:
+        df_ventas['SUCURSAL BAN'] = ''
+    col_sucursal = 'SUCURSAL BAN'
 
     # Asegurar columna ID VENTA en banco
     if 'ID VENTA' not in df_mp_detalle.columns and 'ID_VENTA' not in df_mp_detalle.columns:
@@ -92,9 +93,13 @@ def run_mp_crosscheck():
 
     # 4. Guardar resultados en SQL
     save_df_to_sql(df_ventas, "VENTAS_MP_CRUZADO")
+    # Para que se refleje en la UI de "Módulo VENTAS" que no lee _CRUZADO
+    from database_sqlite import update_table_from_df
+    update_table_from_df(df_ventas, "VENTAS_MP")
+
     # Es muy importante guardar con el nombre original AUX_MP_DETALLE para que se mantenga en el UI o como se espere
     # Revisando el app.py, se espera "AUX_MP_DETALLE"
-    save_df_to_sql(df_mp_detalle, "AUX_MP_DETALLE")
+    update_table_from_df(df_mp_detalle, "AUX_MP_DETALLE")
 
     return {
         "success": True,
