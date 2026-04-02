@@ -7,7 +7,7 @@ from modulo_bancos_fix import limpiar_mp
 from modulo_bancos import limpiar_modulo_bancos
 from modulo_cfdi import limpiar_modulo_cfdi
 from modulo_ventas_ajustado import limpiar_modulo_ventas_v2
-from modulo_ventas_resumen import limpiar_reporte_ventas_csv
+from modulo_ventas_resumen import limpiar_reporte_series_csv
 from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables, drop_table_from_sql, update_table_from_df
 
 # Motores de análisis
@@ -892,10 +892,10 @@ elif eleccion == "🛒 VENTAS":
 
     # 1. Ingesta de Ventas (integrada)
     with st.expander("📥 Cargar archivos de Ventas (Excel/CSV)", expanded=False):
-        st.markdown("Sube los archivos que contengan las **notas de ventas detalladas (Excel)** o el **reporte resumen global (CSV)**.")
+        st.markdown("Sube los archivos que contengan las **notas de ventas detalladas (Excel)** y el **archivo de Series (CSV)** para rellenar los números de serie.")
 
         archivo_ventas = st.file_uploader("📂 Cargar Notas de Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
-        archivo_ventas_csv = st.file_uploader("📂 Cargar Reporte de Ventas (CSV con ;)", type=['csv'], accept_multiple_files=True, key="ventas_csv")
+        archivo_ventas_csv = st.file_uploader("📂 Cargar Reporte de Series (CSV con ;)", type=['csv'], accept_multiple_files=True, key="ventas_csv", help="Archivo CSV que contiene ID Venta, Producto y Número de Serie.")
 
         if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado"):
             procesados_ventas = False
@@ -917,347 +917,198 @@ elif eleccion == "🛒 VENTAS":
 
             if archivo_ventas_csv:
                 for archivo in archivo_ventas_csv:
-                    with st.spinner(f"Procesando Resumen de Ventas CSV de {archivo.name}..."):
-                        dir_guardado = os.path.join("PROCESADOS", "VENTAS", "RESUMEN")
+                    with st.spinner(f"Procesando Reporte de Series CSV de {archivo.name}..."):
+                        dir_guardado = os.path.join("PROCESADOS", "VENTAS", "SERIES")
                         os.makedirs(dir_guardado, exist_ok=True)
                         ruta_guardado = os.path.join(dir_guardado, archivo.name)
                         with open(ruta_guardado, "wb") as f:
                             f.write(archivo.getbuffer())
 
-                        ventas_resumen = limpiar_reporte_ventas_csv(archivo)
-                        for nombre_venta, df_venta in ventas_resumen.items():
+                        ventas_series = limpiar_reporte_series_csv(archivo)
+                        for nombre_venta, df_venta in ventas_series.items():
                             save_df_to_sql(df_venta, nombre_venta)
                 procesados_ventas = True
 
             if procesados_ventas:
-                st.success("✅ ¡Ventas y Resumen guardados en la Base de Datos SQL y archivados!")
+                st.success("✅ ¡Ventas y Series guardadas en la Base de Datos SQL y archivadas!")
                 import time
                 time.sleep(1.5)
                 st.rerun()
             else:
-                st.warning("⚠️ Sube al menos un archivo de ventas o reporte CSV primero.")
+                st.warning("⚠️ Sube al menos un archivo de ventas o reporte de series CSV primero.")
 
     st.divider()
 
     tablas_todas = get_all_tables()
     # Check what tables are available
-    tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_RESUMEN"]
-    tabla_resumen = "VENTAS_RESUMEN" if "VENTAS_RESUMEN" in tablas_todas else None
+    tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_SERIES"]
 
-    if not tablas_ventas and not tabla_resumen:
+    if not tablas_ventas:
         st.warning("La BD está vacía o no hay tablas de ventas procesadas. Usa el botón superior para subir tus archivos.")
     else:
-        # Configurar pestañas de acuerdo a lo que exista
-        tabs_names = []
-        if tabla_resumen:
-            tabs_names.append("📈 Resumen de Ventas (CSV)")
-        if tablas_ventas:
-            tabs_names.append("🛒 Notas de Ventas (Detalle)")
+        # Cross-reference logic block
+        if "VENTAS_SERIES" in tablas_todas:
+            col_cruce1, col_cruce2 = st.columns([2, 1])
+            with col_cruce1:
+                 st.info("💡 Detectamos un archivo de Series cargado en el sistema. Puedes cruzarlo ahora para rellenar los números de serie faltantes en tus Notas de Ventas.")
+            with col_cruce2:
+                 if st.button("🔄 Rellenar Números de Serie", type="primary", use_container_width=True):
+                     df_series = get_df_from_sql("VENTAS_SERIES")
+                     if not df_series.empty and 'ID VENTA' in df_series.columns and 'PRODUCTO' in df_series.columns and 'NUMERO DE SERIE' in df_series.columns:
+                         with st.spinner("Cruzando números de serie..."):
+                             # Convert to string and clean for matching
+                             df_series['ID_MATCH'] = df_series['ID VENTA'].astype(str).str.strip().str.lower()
+                             df_series['PROD_MATCH'] = df_series['PRODUCTO'].astype(str).str.strip().str.lower()
 
-        tabs = st.tabs(tabs_names)
+                             # Crear un índice secuencial para manejar multiplicidad (ej. mismo producto 3 veces en un ticket)
+                             df_series['SEQ_MATCH'] = df_series.groupby(['ID_MATCH', 'PROD_MATCH']).cumcount()
 
-        tab_idx = 0
+                             tot_actualizados = 0
+                             for bloque_venta in tablas_ventas:
+                                 df_v = get_df_from_sql(bloque_venta)
 
-        if tabla_resumen:
-            with tabs[tab_idx]:
-                st.subheader("Resumen Global de Ventas (Importado de CSV)")
-                df_resumen_raw = get_df_from_sql("VENTAS_RESUMEN")
+                                 # Standardize column names if needed
+                                 col_id = 'id_venta' if 'id_venta' in df_v.columns else 'ID VENTA'
+                                 col_prod = 'producto' if 'producto' in df_v.columns else 'PRODUCTO'
 
-                # Aplicar filtros globales
-                df_resumen = render_filtros_globales(df_resumen_raw, col_fecha='fecha venta', key_prefix='resumen_ventas')
+                                 if col_id in df_v.columns and col_prod in df_v.columns:
+                                     df_v['ID_MATCH'] = df_v[col_id].astype(str).str.strip().str.lower()
+                                     df_v['PROD_MATCH'] = df_v[col_prod].astype(str).str.strip().str.lower()
 
-                # Formatear la tabla del CSV para la vista
-                if not df_resumen.empty:
-                    # Formatear columnas de fecha
-                    if 'fecha venta' in df_resumen.columns:
-                        try:
-                            df_resumen['fecha venta'] = safe_parse_dates(df_resumen['fecha venta']).dt.strftime('%d/%m/%Y')
-                        except Exception:
-                            df_resumen['fecha venta'] = df_resumen['fecha venta'].astype(str).str.replace(' 00:00:00', '')
+                                     # Crear el mismo índice secuencial en la tabla destino
+                                     df_v['SEQ_MATCH'] = df_v.groupby(['ID_MATCH', 'PROD_MATCH']).cumcount()
 
-                    # Convertir a flotantes reales
-                    columnas_dinero = ['total (antes descuento)', 'efectivo', 'tarjeta crédito', 'tarjeta débito', 'transferencia', 'deposito', 'total real']
-                    for col in columnas_dinero:
-                        if col in df_resumen.columns:
-                            df_resumen[col] = pd.to_numeric(df_resumen[col], errors='coerce')
+                                     if 'NUMERO DE SERIE' not in df_v.columns:
+                                         df_v['NUMERO DE SERIE'] = ""
 
-                    # El respaldo numérico es directamente el df ahora
-                    df_numerico = df_resumen.copy()
+                                     # Hacemos un left join incluyendo SEQ_MATCH para alinear 1-a-1
+                                     df_merged = pd.merge(df_v, df_series[['ID_MATCH', 'PROD_MATCH', 'SEQ_MATCH', 'NUMERO DE SERIE']],
+                                                          on=['ID_MATCH', 'PROD_MATCH', 'SEQ_MATCH'],
+                                                          how='left', suffixes=('', '_new'))
 
-                    # Limpieza visual
-                    df_resumen = df_resumen.replace("None", "").replace("NaT", "")
+                                     # Actualizamos los vacíos con los nuevos valores encontrados
+                                     mask = df_merged['NUMERO DE SERIE_new'].notna() & (df_merged['NUMERO DE SERIE_new'] != "")
+                                     df_merged.loc[mask, 'NUMERO DE SERIE'] = df_merged.loc[mask, 'NUMERO DE SERIE_new']
 
-                    # --- VISTA DE COLUMNAS EXACTA ---
-                    # Mapear a mayúsculas o nombres específicos según solicitud
-                    map_cols_resumen = {
-                        'id venta': 'ID Venta',
-                        'fecha venta': 'Fecha Venta',
-                        'total (antes descuento)': 'Total (antes descuento)',
-                        'forma pago': 'Forma pago',
-                        'efectivo': 'Efectivo',
-                        'tarjeta crédito': 'Tarjeta Crédito',
-                        'transferencia': 'Transferencia',
-                        'cliente': 'Cliente',
-                        'tipo cliente': 'Tipo cliente',
-                        'sucursal': 'Sucursal'
-                    }
+                                     tot_actualizados += mask.sum()
 
-                    for col_old, col_new in map_cols_resumen.items():
-                        if col_old in df_resumen.columns:
-                            df_resumen = df_resumen.rename(columns={col_old: col_new})
+                                     # Limpieza antes de guardar
+                                     df_merged = df_merged.drop(columns=['ID_MATCH', 'PROD_MATCH', 'SEQ_MATCH', 'NUMERO DE SERIE_new'], errors='ignore')
 
-                    # Agregar columnas que se obtendrán por conciliación en el futuro
-                    columnas_futuras = ['NUMERO DE TRANSACCION', 'SUCURSAL BAN', 'UUID', 'OBSERVACION']
-                    for c in columnas_futuras:
-                        if c not in df_resumen.columns:
-                            df_resumen[c] = ""
+                                     update_table_from_df(df_merged, bloque_venta)
 
-                    # Ordenar y seleccionar solo las columnas de la vista
-                    cols_vista_resumen = [
-                        'ID Venta', 'Fecha Venta', 'Total (antes descuento)', 'Forma pago',
-                        'NUMERO DE TRANSACCION', 'Efectivo', 'Tarjeta Crédito', 'Transferencia',
-                        'Cliente', 'Tipo cliente', 'Sucursal', 'SUCURSAL BAN', 'UUID', 'OBSERVACION'
-                    ]
+                             if tot_actualizados > 0:
+                                 st.success(f"✅ ¡Cruce exitoso! Se rellenaron {tot_actualizados} números de serie en las notas de ventas.")
+                             else:
+                                 st.warning("⚠️ No se encontraron coincidencias exactas de ID Venta + Producto para rellenar.")
+                     else:
+                         st.error("El archivo de series no contiene las columnas necesarias (ID Venta, Producto, Número de Serie).")
+            st.divider()
 
-                    # Asegurarse de que existan (por si el CSV no las tenía)
-                    for c in cols_vista_resumen:
-                        if c not in df_resumen.columns:
-                            df_resumen[c] = ""
+        # Mostrar Pestaña Única de Notas de Ventas
+        st.subheader("🛒 Notas de Ventas (Detalle)")
 
-                    df_vista_final_resumen = df_resumen[cols_vista_resumen].copy()
+        bloque = st.selectbox("Selecciona bloque operativo:", tablas_ventas)
+        df_v_raw = get_df_from_sql(bloque)
 
-                    # Métricas Generales (Monto Total, Efectivo Total, Tarjetas)
-                    st.markdown("#### Métricas de Resumen")
+        # Aplicar filtros globales (la columna es fecha o FECHA)
+        col_fecha_v = 'fecha' if 'fecha' in df_v_raw.columns else 'FECHA'
+        df_v = render_filtros_globales(df_v_raw, col_fecha=col_fecha_v, key_prefix=f"ventas_{bloque}")
 
-                    # Asegurar números para la suma usando df_numerico (antes de formatear como texto)
-                    monto_total = pd.to_numeric(df_numerico['total real'], errors='coerce').sum() if 'total real' in df_numerico.columns else 0
-                    efectivo_total = pd.to_numeric(df_numerico['efectivo'], errors='coerce').sum() if 'efectivo' in df_numerico.columns else 0
+        # Formatear columnas para visualizacion
+        mapa_cols = {
+            'id_venta': 'ID VENTA',
+            'fecha': 'FECHA',
+            'sucursal': 'SUCURSAL',
+            'producto': 'PRODUCTO',
+            'precio_unitario': 'PRECIO UNITARIO',
+            'nombre cliente': 'nombre cliente',
+            'bancos_cobro': 'BANCOS COBRO',
+            'numero_transaccion': 'NUMERO TRANSACCION',
+        }
 
-                    credito = pd.to_numeric(df_numerico['tarjeta crédito'], errors='coerce').sum() if 'tarjeta crédito' in df_numerico.columns else 0
-                    debito = pd.to_numeric(df_numerico['tarjeta débito'], errors='coerce').sum() if 'tarjeta débito' in df_numerico.columns else 0
-                    tarjetas_total = credito + debito
+        # Renombrar si existen en la BD original
+        for col_old, col_new in mapa_cols.items():
+            if col_old in df_v.columns:
+                df_v = df_v.rename(columns={col_old: col_new})
 
-                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                    col_m1.metric("💰 Total Real Acumulado", f"${monto_total:,.2f}")
-                    col_m2.metric("💵 Total Efectivo", f"${efectivo_total:,.2f}")
-                    col_m3.metric("💳 Total Tarjetas (Crédito+Débito)", f"${tarjetas_total:,.2f}")
-                    col_m4.metric("📊 Total Operaciones", len(df_vista_final_resumen))
+        # Crear columnas nuevas vacias (placeholders de conciliacion)
+        if 'NUMERO DE SERIE' not in df_v.columns:
+            df_v['NUMERO DE SERIE'] = ""
+        if 'SUCURSAL BAN' not in df_v.columns:
+            df_v['SUCURSAL BAN'] = ""
 
-                    st.divider()
-                    st.markdown("#### Análisis Gráfico")
-                    col_graf1, col_graf2 = st.columns(2)
+        # Columnas finales a mostrar
+        cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN']
 
-                    with col_graf1:
-                        # Gráfica de Métodos de Pago
-                        st.markdown("**Composición de Ingresos**")
-                        datos_pastel = pd.DataFrame({
-                            "Método": ["Efectivo", "Tarjetas (Crédito/Débito)"],
-                            "Total": [efectivo_total, tarjetas_total]
-                        })
-                        # Filtrar ceros
-                        datos_pastel = datos_pastel[datos_pastel["Total"] > 0]
-                        if not datos_pastel.empty:
-                            import altair as alt
-                            graf_pastel = alt.Chart(datos_pastel).mark_arc(innerRadius=50).encode(
-                                theta=alt.Theta(field="Total", type="quantitative"),
-                                color=alt.Color(field="Método", type="nominal", legend=alt.Legend(title="Métodos")),
-                                tooltip=['Método', alt.Tooltip('Total:Q', format='$,.2f')]
-                            ).properties(height=250)
-                            st.altair_chart(graf_pastel, use_container_width=True)
-                        else:
-                            st.info("No hay datos de ingresos para graficar.")
+        # Asegurar que existan (por si el excel viene distinto)
+        for c in cols_finales_v:
+            if c not in df_v.columns:
+                df_v[c] = ""
 
-                    with col_graf2:
-                        # Gráfica por Sucursal
-                        st.markdown("**Ventas por Sucursal**")
-                        if 'Sucursal' in df_vista_final_resumen.columns and 'total real' in df_numerico.columns:
-                            df_sucursales = pd.DataFrame({
-                                'Sucursal': df_vista_final_resumen['Sucursal'],
-                                'Total Real': df_numerico['total real']
-                            })
-                            # Rellenar vacíos
-                            df_sucursales['Sucursal'] = df_sucursales['Sucursal'].replace('', 'Sin Sucursal').fillna('Sin Sucursal')
-                            agrupado_sucursal = df_sucursales.groupby('Sucursal')['Total Real'].sum().reset_index()
-                            # Filtrar mayores a 0
-                            agrupado_sucursal = agrupado_sucursal[agrupado_sucursal['Total Real'] > 0]
+        df_v_vista = df_v[cols_finales_v].copy()
 
-                            if not agrupado_sucursal.empty:
-                                graf_barras = alt.Chart(agrupado_sucursal).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
-                                    x=alt.X('Total Real:Q', title='Monto Total', axis=alt.Axis(format='$,.0f')),
-                                    y=alt.Y('Sucursal:N', sort='-x', title=''),
-                                    color=alt.Color('Sucursal:N', legend=None),
-                                    tooltip=['Sucursal', alt.Tooltip('Total Real:Q', format='$,.2f')]
-                                ).properties(height=250)
-                                st.altair_chart(graf_barras, use_container_width=True)
-                            else:
-                                st.info("No hay sucursales con ventas para graficar.")
+        # Formatear a datetime/string si existe
+        if 'FECHA' in df_v_vista.columns:
+            try:
+                df_v_vista['FECHA'] = safe_parse_dates(df_v_vista['FECHA']).dt.strftime('%d/%m/%Y')
+            except Exception:
+                df_v_vista['FECHA'] = df_v_vista['FECHA'].astype(str).str.replace(' 00:00:00', '')
 
-                    st.divider()
+        # Convertir a float
+        if 'PRECIO UNITARIO' in df_v_vista.columns:
+            df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'], errors='coerce')
 
-                    # Column Config
-                    cols_dinero_formateadas = ['Total (antes descuento)', 'Efectivo', 'Tarjeta Crédito', 'Transferencia', 'Total Real']
-                    cc_resumen = {}
-                    format_dict_resumen = {}
-                    for col in cols_dinero_formateadas:
-                        if col in df_vista_final_resumen.columns:
-                            # Convertir strings "None" o NaNs y asegurar formato numérico real
-                            df_vista_final_resumen[col] = pd.to_numeric(df_vista_final_resumen[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
-                            cc_resumen[col] = st.column_config.NumberColumn(col)
-                            format_dict_resumen[col] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
+        df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
 
-                    df_vista_final_resumen = df_vista_final_resumen.replace("None", "")
+        cc_v = {}
+        format_dict_v = {}
+        if 'PRECIO UNITARIO' in df_v_vista.columns:
+            df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
+            cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO')
+            format_dict_v['PRECIO UNITARIO'] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
 
+        df_v_vista = df_v_vista.replace("None", "")
 
-                    # Export & Delete UI para Resumen
-                    st.divider()
-                    col_vbtn1, col_vbtn2 = st.columns(2)
-                    with col_vbtn1:
-                        from io import BytesIO
-                        def to_excel_ventas(df_to_export):
-                            output = BytesIO()
-                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                                df_to_export.to_excel(writer, index=False, sheet_name='Export')
-                            return output.getvalue()
+        # Export & Delete UI para Ventas
+        st.divider()
+        col_vbtn3, col_vbtn4 = st.columns(2)
+        with col_vbtn3:
+            from io import BytesIO
+            def to_excel_ventas_det(df_to_export):
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_to_export.to_excel(writer, index=False, sheet_name='Export')
+                return output.getvalue()
 
-                        st.download_button(
-                            label="📥 Exportar Resumen a Excel",
-                            data=to_excel_ventas(df_vista_final_resumen),
-                            file_name="Ventas_Resumen_Exportado.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="export_ventas_resumen"
-                        )
+            st.download_button(
+                label=f"📥 Exportar Notas a Excel ({bloque})",
+                data=to_excel_ventas_det(df_v_vista),
+                file_name=f"{bloque}_Exportado.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"export_{bloque}"
+            )
 
-                    with col_vbtn2:
-                        if st.button("🗑️ Eliminar Resumen", key="del_ventas_resumen", type="secondary"):
-                            st.session_state["confirm_del_ventas_resumen"] = True
+        with col_vbtn4:
+            if st.button(f"🗑️ Eliminar Bloque {bloque}", key=f"del_{bloque}", type="secondary"):
+                st.session_state[f"confirm_del_{bloque}"] = True
 
-                        if st.session_state.get("confirm_del_ventas_resumen", False):
-                            st.warning("¿Estás seguro?")
-                            c_yes, c_no = st.columns(2)
-                            if c_yes.button("✅ Sí, borrar", key="yes_ventas_resumen", type="primary"):
-                                if drop_table_from_sql("VENTAS_RESUMEN"):
-                                    st.success("Tabla de resumen eliminada.")
-                                    st.session_state["confirm_del_ventas_resumen"] = False
-                                    import time
-                                    time.sleep(1.5)
-                                    st.rerun()
-                            if c_no.button("❌ No", key="no_ventas_resumen"):
-                                st.session_state["confirm_del_ventas_resumen"] = False
-                                st.rerun()
+            if st.session_state.get(f"confirm_del_{bloque}", False):
+                st.warning("¿Estás seguro?")
+                c_yes, c_no = st.columns(2)
+                if c_yes.button("✅ Sí, borrar", key=f"yes_{bloque}", type="primary"):
+                    if drop_table_from_sql(bloque):
+                        st.success(f"Bloque {bloque} eliminado.")
+                        st.session_state[f"confirm_del_{bloque}"] = False
+                        import time
+                        time.sleep(1.5)
+                        st.rerun()
+                if c_no.button("❌ No", key=f"no_{bloque}"):
+                    st.session_state[f"confirm_del_{bloque}"] = False
+                    st.rerun()
 
-                    st.dataframe(df_vista_final_resumen.style.format(format_dict_resumen, na_rep=""), use_container_width=True, hide_index=True, column_config=cc_resumen)
-                else:
-                    st.info("La tabla de resumen está vacía.")
-            tab_idx += 1
-
-        if tablas_ventas:
-            with tabs[tab_idx]:
-
-                if tablas_ventas:
-                    bloque = st.selectbox("Selecciona bloque operativo (Notas Detalle):", tablas_ventas)
-                    df_v_raw = get_df_from_sql(bloque)
-
-                    # Aplicar filtros globales (la columna es fecha o FECHA)
-                    col_fecha_v = 'fecha' if 'fecha' in df_v_raw.columns else 'FECHA'
-                    df_v = render_filtros_globales(df_v_raw, col_fecha=col_fecha_v, key_prefix=f"ventas_{bloque}")
-
-                    # Formatear columnas para visualizacion
-                    mapa_cols = {
-                        'id_venta': 'ID VENTA',
-                        'fecha': 'FECHA',
-                        'sucursal': 'SUCURSAL',
-                        'producto': 'PRODUCTO',
-                        'precio_unitario': 'PRECIO UNITARIO',
-                        'nombre cliente': 'nombre cliente',
-                        'bancos_cobro': 'BANCOS COBRO',
-                        'numero_transaccion': 'NUMERO TRANSACCION',
-                    }
-
-                    # Renombrar si existen en la BD original
-                    for col_old, col_new in mapa_cols.items():
-                        if col_old in df_v.columns:
-                            df_v = df_v.rename(columns={col_old: col_new})
-
-                    # Crear columnas nuevas vacias (placeholders de conciliacion)
-                    if 'NUMERO DE SERIE' not in df_v.columns:
-                        df_v['NUMERO DE SERIE'] = ""
-                    if 'SUCURSAL BAN' not in df_v.columns:
-                        df_v['SUCURSAL BAN'] = ""
-
-                    # Columnas finales a mostrar
-                    cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN']
-
-                    # Asegurar que existan (por si el excel viene distinto)
-                    for c in cols_finales_v:
-                        if c not in df_v.columns:
-                            df_v[c] = ""
-
-                    df_v_vista = df_v[cols_finales_v].copy()
-
-                    # Formatear a datetime/string si existe
-                    if 'FECHA' in df_v_vista.columns:
-                        try:
-                            df_v_vista['FECHA'] = safe_parse_dates(df_v_vista['FECHA']).dt.strftime('%d/%m/%Y')
-                        except Exception:
-                            df_v_vista['FECHA'] = df_v_vista['FECHA'].astype(str).str.replace(' 00:00:00', '')
-
-                    # Convertir a float
-                    if 'PRECIO UNITARIO' in df_v_vista.columns:
-                        df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'], errors='coerce')
-
-                    df_v_vista = df_v_vista.replace("None", "").replace("NaT", "")
-
-                    cc_v = {}
-                    format_dict_v = {}
-                    if 'PRECIO UNITARIO' in df_v_vista.columns:
-                        df_v_vista['PRECIO UNITARIO'] = pd.to_numeric(df_v_vista['PRECIO UNITARIO'].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
-                        cc_v['PRECIO UNITARIO'] = st.column_config.NumberColumn('PRECIO UNITARIO')
-                        format_dict_v['PRECIO UNITARIO'] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
-
-                    df_v_vista = df_v_vista.replace("None", "")
-
-                    # Export & Delete UI para Ventas
-                    st.divider()
-                    col_vbtn3, col_vbtn4 = st.columns(2)
-                    with col_vbtn3:
-                        from io import BytesIO
-                        def to_excel_ventas_det(df_to_export):
-                            output = BytesIO()
-                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                                df_to_export.to_excel(writer, index=False, sheet_name='Export')
-                            return output.getvalue()
-
-                        st.download_button(
-                            label=f"📥 Exportar Notas a Excel ({bloque})",
-                            data=to_excel_ventas_det(df_v_vista),
-                            file_name=f"{bloque}_Exportado.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key=f"export_{bloque}"
-                        )
-
-                    with col_vbtn4:
-                        if st.button(f"🗑️ Eliminar Bloque {bloque}", key=f"del_{bloque}", type="secondary"):
-                            st.session_state[f"confirm_del_{bloque}"] = True
-
-                        if st.session_state.get(f"confirm_del_{bloque}", False):
-                            st.warning("¿Estás seguro?")
-                            c_yes, c_no = st.columns(2)
-                            if c_yes.button("✅ Sí, borrar", key=f"yes_{bloque}", type="primary"):
-                                if drop_table_from_sql(bloque):
-                                    st.success(f"Bloque {bloque} eliminado.")
-                                    st.session_state[f"confirm_del_{bloque}"] = False
-                                    import time
-                                    time.sleep(1.5)
-                                    st.rerun()
-                            if c_no.button("❌ No", key=f"no_{bloque}"):
-                                st.session_state[f"confirm_del_{bloque}"] = False
-                                st.rerun()
-
-                    # Mostrar tabla
-                    st.dataframe(df_v_vista.style.format(format_dict_v, na_rep=""), use_container_width=True, hide_index=True, column_config=cc_v)
-                else:
-                    st.info("No hay bloques de notas de ventas cargados.")
-            tab_idx += 1
+        # Mostrar tabla
+        st.dataframe(df_v_vista.style.format(format_dict_v, na_rep=""), use_container_width=True, hide_index=True, column_config=cc_v)
 
 
 # ==========================================================

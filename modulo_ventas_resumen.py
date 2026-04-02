@@ -1,18 +1,15 @@
 import pandas as pd
 import warnings
-import io
 
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
-def limpiar_reporte_ventas_csv(archivo_csv):
+def limpiar_reporte_series_csv(archivo_csv):
     """
-    Procesa el archivo 'reporte_ventas.csv'.
-    El problema de este archivo es que exporta con ';' como separador de columnas.
-    Los montos monetarios contienen '$' y comas ',' de miles.
-    Excel al abrirlo erróneamente con ',' divide las celdas en varias columnas.
-    Esta función usa pandas con sep=';' para ignorar la coma y leer correctamente la tabla.
+    Procesa el archivo CSV de Series (reemplazando el antiguo reporte de resumen).
+    Este archivo contiene el mapeo entre ID Venta, Producto y su Número de Serie específico.
+    Usa sep=';' para ignorar comas de datos y leer correctamente la tabla.
     """
-    print(f"Cargando Reporte de Ventas (CSV)...")
+    print(f"Cargando Reporte de Series (CSV)...")
 
     # Intentamos leerlo con el separador ;
     try:
@@ -23,43 +20,37 @@ def limpiar_reporte_ventas_csv(archivo_csv):
             archivo_csv.seek(0)
         df = pd.read_csv(archivo_csv, sep=';', encoding='latin1')
 
-    # Limpiamos los nombres de las columnas
+    # Limpiamos los nombres de las columnas para hacer un merge más fácil después
     df.columns = df.columns.str.lower().str.strip()
 
-    # Limpiar columnas de moneda (tienen $ y comas de miles)
-    columnas_moneda = [
-        'total (antes descuento)', 'efectivo', 'tarjeta crédito',
-        'tarjeta débito', 'transferencia', 'deposito', 'total real'
-    ]
-
-    for col in columnas_moneda:
-        if col in df.columns:
-            # Reemplazar $, comas y convertir a float
-            df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False)
-            # Manejar posibles espacios en blanco extra
-            df[col] = df[col].str.strip()
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-    # Asegurarnos de que el ID Venta y fechas estén bien
+    # Asegurarnos de que el ID Venta esté limpio (sin decimales .0)
     if 'id venta' in df.columns:
         df['id venta'] = df['id venta'].astype(str).str.replace(r'\.0$', '', regex=True)
 
-    if 'fecha venta' in df.columns:
-        df['fecha venta'] = pd.to_datetime(df['fecha venta'], errors='coerce')
+    # Renombramos columnas clave a nombres estándar para facilitar el cruce
+    renames = {
+        'id venta': 'ID VENTA',
+        'producto': 'PRODUCTO',
+        'número de serie': 'NUMERO DE SERIE',
+        'numero de serie': 'NUMERO DE SERIE'
+    }
+
+    # Aplicar renombres que existan
+    df = df.rename(columns={k: v for k, v in renames.items() if k in df.columns})
 
     # Agruparlo en un diccionario para la BD
-    return {'VENTAS_RESUMEN': df}
+    return {'VENTAS_SERIES': df}
 
 if __name__ == '__main__':
-    # Datos de prueba simulando el archivo del usuario
-    csv_data = '''ID Venta;"Fecha Venta";"Total (antes descuento)";Estado;"Forma pago";Efectivo;"Tarjeta Crédito";"Tarjeta Débito";Transferencia;Deposito;Cliente;"Tipo cliente";Vendedor;Sucursal;"Total Real"
-28122;"2026-03-27 13:28:24";$6,999.00;activa;efectivo;$7,000.00;$0.00;$0.00;$0.00;$0.00;"Maria Lorena Aceves Hernandez";Distribuidor;"ROCIO VIRIDIANA RODRIGUEZ CASTAÑON";"SUC OBREGON";$7,000.00
-28121;"2026-03-27 13:07:54";$13,999.00;activa;tarjeta_credito;$0.00;$13,999.00;$0.00;$0.00;$0.00;$0.00;"JENIFER CUITACO HERNANDEZ";cliente;"JESSICA GIOVANNA RODRIGUEZ CONTRERAS";"SUC VALLARTA";$13,999.00
-28120;"2026-03-27 12:57:06";$1,000.00;activa;efectivo;$1,000.00;$0.00;$0.00;$0.00;$0.00;"JUAN MAYA SIMON";cliente;"JUAN ALBERTO MARTELL GARCIA";"ALMACEN COLON";$1,000.00'''
+    # Datos de prueba proporcionados por el usuario
+    csv_data = '''Id serie;"Número de Serie";Producto;"Codigo producto";Estatus;"Número de Factura";"Fecha Venta";"ID Venta";Sucursal;"Fecha Registro Serie";"Fecha creacion"
+51044;HG5KTCC15R1016626;"V4 NARANJA";1bb9d710;inactivo;;"2026-02-20 12:32:00";26951;"EKAR OLIMPICO";2026-02-20;"2026-02-20 12:32:00"
+51038;HWM258BK05W000112;"BK05 BLANCO";b5b49b0e;inactivo;;"2026-02-19 15:26:01";26926;"SUC JUAREZ";2026-02-19;"2026-02-19 15:26:02"
+50114;HWM25E9TB0001245;"E9T NEGRO";8bdacd4e;inactivo;;"2026-02-06 13:29:20";26528;"CEDIS 2";2026-02-06;"2026-02-06 13:29:21"'''
 
     import io
-    df_res = limpiar_reporte_ventas_csv(io.StringIO(csv_data))
-    print("Resumen de ventas:")
-    print(df_res['VENTAS_RESUMEN'].head())
+    df_res = limpiar_reporte_series_csv(io.StringIO(csv_data))
+    print("Reporte de Series:")
+    print(df_res['VENTAS_SERIES'].head())
     print("\nTipos de datos:")
-    print(df_res['VENTAS_RESUMEN'].dtypes)
+    print(df_res['VENTAS_SERIES'].dtypes)
