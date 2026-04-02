@@ -889,17 +889,28 @@ elif eleccion == "🏦 BANCOS":
                     if c in df_mostrar.columns:
                         # Ensure string representations of empty are actual nans
                         df_mostrar[c] = pd.to_numeric(df_mostrar[c].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
-                        format_dict[c] = lambda x: f"${float(x):,.2f}" if pd.notnull(x) and str(x).strip() != "" else ""
+                        cc_format[c] = st.column_config.NumberColumn(c, format="$%.2f")
+
+                # Preparar hipervínculos en modo lectura
+                for col_id_pos in ['ID VENTA', 'ID_VENTA_CRUCE']:
+                    if col_id_pos in df_mostrar.columns:
+                        df_mostrar[f'LINK_EXPEDIENTE_{col_id_pos}'] = df_mostrar[col_id_pos].apply(
+                            lambda x: f"/?expediente={x}" if pd.notnull(x) and str(x).strip() != "" else None
+                        )
+                        cc_format[col_id_pos] = st.column_config.LinkColumn(
+                            f"{col_id_pos} (Expediente)",
+                            display_text=r"/\?expediente=(.*)"
+                        )
+                        df_mostrar[col_id_pos] = df_mostrar[f'LINK_EXPEDIENTE_{col_id_pos}']
+                        df_mostrar = df_mostrar.drop(columns=[f'LINK_EXPEDIENTE_{col_id_pos}'])
 
                 # Reemplazar explicitly in the dataframe just in case
                 # Asegurar que todas las columnas en general no muestren NaNs literales
+                df_mostrar = df_mostrar.fillna("")
                 df_mostrar = df_mostrar.replace("None", "")
 
-                st.dataframe(df_mostrar.style.map(lambda v: style_bancos(v, 'CARGO'), subset=['CARGO'] if 'CARGO' in cols_to_style else [])
-                                           .map(lambda v: style_bancos(v, 'ABONO'), subset=['ABONO'] if 'ABONO' in cols_to_style else [])
-                                           .map(lambda v: style_bancos(v, 'Valor del cargo'), subset=['Valor del cargo'] if 'Valor del cargo' in cols_to_style else [])
-                                           .format(format_dict, na_rep=""),
-                             use_container_width=True, hide_index=True, column_config=cc_format)
+                # Se omite el Styler (.style.map) para permitir que los hipervínculos nativos (LinkColumn) funcionen
+                st.dataframe(df_mostrar, use_container_width=True, hide_index=True, column_config=cc_format)
 
             st.divider()
             # Botones de Acción Múltiple
@@ -1359,18 +1370,42 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
 
     tab_a, tab_b = st.tabs(["Pendientes BBVA", "Pendientes MP"])
     with tab_a:
-        st.dataframe(df_alertas_bbva.style.format(na_rep=""), use_container_width=True)
+        cc_pendientes_bbva = {}
+        if not df_alertas_bbva.empty and 'id_venta' in df_alertas_bbva.columns:
+            df_alertas_bbva['LINK_EXPEDIENTE'] = df_alertas_bbva['id_venta'].apply(
+                lambda x: f"/?expediente={x}" if pd.notnull(x) and str(x).strip() != "" else None
+            )
+            cc_pendientes_bbva['id_venta'] = st.column_config.LinkColumn(
+                "ID VENTA (Expediente)",
+                display_text=r"/\?expediente=(.*)"
+            )
+            df_alertas_bbva['id_venta'] = df_alertas_bbva['LINK_EXPEDIENTE']
+            df_alertas_bbva = df_alertas_bbva.drop(columns=['LINK_EXPEDIENTE'])
+
+        st.dataframe(df_alertas_bbva, use_container_width=True, column_config=cc_pendientes_bbva)
 
     with tab_b:
         st.markdown("✍️ **Edita directamente la columna `numero_transaccion`** para corregir las referencias y presiona el botón para guardar.")
         if not df_alertas_mp.empty:
+            # Preparar hipervínculo en id_venta
+            if 'id_venta' in df_alertas_mp.columns:
+                df_alertas_mp['LINK_EXPEDIENTE'] = df_alertas_mp['id_venta'].apply(
+                    lambda x: f"/?expediente={x}" if pd.notnull(x) and str(x).strip() != "" else None
+                )
+
             # Habilitar edición solo para numero_transaccion
             column_config = {}
             for col in df_alertas_mp.columns:
                 if col == "numero_transaccion":
                     column_config[col] = st.column_config.TextColumn("NUMERO TRANSACCION (Editable)", disabled=False)
-                else:
+                elif col == "id_venta":
+                    column_config[col] = st.column_config.LinkColumn("ID VENTA (Expediente)", display_text=r"/\?expediente=(.*)", disabled=True)
+                elif col != "LINK_EXPEDIENTE":
                     column_config[col] = st.column_config.Column(disabled=True)
+
+            if 'id_venta' in df_alertas_mp.columns:
+                df_alertas_mp['id_venta'] = df_alertas_mp['LINK_EXPEDIENTE']
+                df_alertas_mp = df_alertas_mp.drop(columns=['LINK_EXPEDIENTE'])
 
             edited_mp = st.data_editor(
                 df_alertas_mp,
@@ -1390,7 +1425,9 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
                         if not df_original.empty:
                             # Hacer merge o update
                             for idx, fila in cambios.iterrows():
-                                df_original.loc[df_original['id_venta'] == fila['id_venta'], 'numero_transaccion'] = fila['numero_transaccion']
+                                # Restaurar el ID crudo eliminando el prefijo del hipervínculo
+                                raw_id = str(fila['id_venta']).replace("/?expediente=", "") if pd.notna(fila['id_venta']) else fila['id_venta']
+                                df_original.loc[df_original['id_venta'] == raw_id, 'numero_transaccion'] = fila['numero_transaccion']
                             update_table_from_df(df_original, "VENTAS_MP")
                         st.success(f"✅ Se guardaron {len(cambios)} correcciones. ¡Ya puedes volver a intentar el cruce!")
                 else:
