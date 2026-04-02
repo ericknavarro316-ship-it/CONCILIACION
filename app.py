@@ -24,6 +24,110 @@ from pdf_reader import parse_bank_pdf
 
 st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon=":material/account_balance:", initial_sidebar_state="collapsed")
 
+# Modal para Expedientes
+@st.dialog("📁 Expediente de Venta", width="large")
+def abrir_expediente(id_venta):
+    st.write(f"Gestionando documentos para: **{id_venta}**")
+
+    import os
+    import shutil
+
+    # Buscar si existe en la base de datos de expedientes
+    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+
+    if df_exp.empty:
+        # Create empty df structure to avoid crash
+        import pandas as pd
+        df_exp = pd.DataFrame(columns=["ID_VENTA", "NOMBRE_ARCHIVO", "TIPO_DOCUMENTO", "RUTA_LOCAL"])
+
+    archivos_venta = df_exp[df_exp['ID_VENTA'] == id_venta] if not df_exp.empty else pd.DataFrame()
+
+    # Mostrar archivos existentes
+    if not archivos_venta.empty:
+        st.subheader("Documentos Guardados")
+        for idx, row in archivos_venta.iterrows():
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.write(f"📄 {row['NOMBRE_ARCHIVO']} ({row['TIPO_DOCUMENTO']})")
+            with col2:
+                # Botón visual de estatus
+                st.button("Abrir", key=f"abrir_{idx}", disabled=True, help="Funcionalidad de previsualización en desarrollo.")
+    else:
+        st.info("Aún no hay documentos para esta venta. Sube los archivos arrastrándolos aquí abajo.")
+
+    st.divider()
+    st.subheader("Subir Nuevos Archivos")
+    uploaded_files = st.file_uploader("Arrastra aquí PDF, XML, PNG, JPG...", accept_multiple_files=True, key=f"uploader_{id_venta}")
+
+    if uploaded_files and st.button("💾 Guardar Archivos"):
+        import datetime
+        from database_sqlite import update_table_from_df
+        import re
+
+        # Buscar la ruta dinámica interrogando a las tablas de ventas
+        tablas_todas = get_all_tables()
+        tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_SERIES"]
+
+        ruta_base = os.path.join("EXPEDIENTES", "MANUAL", id_venta) # Fallback
+
+        for tb in tablas_ventas:
+            df_tb = get_df_from_sql(tb)
+            col_id = 'id_venta' if 'id_venta' in df_tb.columns else 'ID VENTA' if 'ID VENTA' in df_tb.columns else None
+            col_fecha = 'fecha' if 'fecha' in df_tb.columns else 'FECHA' if 'FECHA' in df_tb.columns else None
+
+            if col_id and col_fecha and not df_tb.empty:
+                fila_match = df_tb[df_tb[col_id].astype(str).str.strip() == id_venta]
+                if not fila_match.empty:
+                    # Lo encontramos
+                    banco_folder = tb.replace('VENTAS_', '')
+                    fecha_val = fila_match.iloc[0][col_fecha]
+                    mes_folder = "GENERAL"
+                    try:
+                        dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                        if pd.notna(dt_fecha):
+                            mes_folder = dt_fecha.strftime("%Y_%m")
+                    except: pass
+                    ruta_base = os.path.join("EXPEDIENTES", "VENTAS", mes_folder, banco_folder, id_venta)
+                    break
+
+        os.makedirs(ruta_base, exist_ok=True)
+
+        nuevos_registros = []
+        for uf in uploaded_files:
+            # Sanitizar nombre de archivo
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
+            ruta_destino = os.path.join(ruta_base, safe_name)
+
+            with open(ruta_destino, "wb") as f:
+                f.write(uf.getbuffer())
+
+            nuevos_registros.append({
+                "ID_VENTA": id_venta,
+                "NOMBRE_ARCHIVO": safe_name,
+                "TIPO_DOCUMENTO": safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO',
+                "RUTA_LOCAL": ruta_destino
+            })
+
+        if nuevos_registros:
+            df_nuevos = pd.DataFrame(nuevos_registros)
+            if df_exp.empty:
+                df_exp = df_nuevos
+            else:
+                df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
+
+            save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
+            st.success("Archivos guardados correctamente.")
+            import time
+            time.sleep(1)
+            st.rerun()
+
+# Interceptar query params para abrir modal
+if "expediente" in st.query_params:
+    id_venta_target = st.query_params["expediente"]
+    # Limpiar el query param para que al cerrar el modal no se vuelva a abrir al refrescar
+    st.query_params.clear()
+    abrir_expediente(id_venta_target)
+
 # 1. ESTILOS CSS
 with open("style.css") as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
@@ -1104,6 +1208,7 @@ elif eleccion == "🛒 VENTAS":
 
         # Export & Delete UI para Ventas
         st.divider()
+
         col_vbtn3, col_vbtn4 = st.columns(2)
         with col_vbtn3:
             from io import BytesIO
@@ -1139,8 +1244,25 @@ elif eleccion == "🛒 VENTAS":
                     st.session_state[f"confirm_del_{bloque}"] = False
                     st.rerun()
 
-        # Mostrar tabla
-        st.dataframe(df_v_vista.style.format(format_dict_v, na_rep=""), use_container_width=True, hide_index=True, column_config=cc_v)
+        # Preparar hipervínculo para abrir Expediente
+        if 'ID VENTA' in df_v_vista.columns:
+            df_v_vista['LINK_EXPEDIENTE'] = df_v_vista['ID VENTA'].apply(
+                lambda x: f"/?expediente={x}" if pd.notnull(x) and str(x).strip() != "" else ""
+            )
+            cc_v['ID VENTA'] = st.column_config.LinkColumn(
+                "ID VENTA (Clic para Expediente)",
+                display_text=r"/\?expediente=(.*)"
+            )
+            df_v_vista['ID VENTA'] = df_v_vista['LINK_EXPEDIENTE']
+            df_v_vista = df_v_vista.drop(columns=['LINK_EXPEDIENTE'])
+
+        # Mostrar tabla estándar con hipervínculos y Styler
+        st.dataframe(
+            df_v_vista.style.format(format_dict_v, na_rep=""),
+            use_container_width=True,
+            hide_index=True,
+            column_config=cc_v
+        )
 
 
 # ==========================================================
