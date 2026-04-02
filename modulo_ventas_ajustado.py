@@ -62,6 +62,39 @@ def limpiar_modulo_ventas_v2(ruta_archivo):
                     (~(mask_mp | mask_bbva | mask_sz | mask_sin_banco))
     bloques_ventas['VENTAS_EFECTIVO'] = df_ventas[mask_efectivo].copy()
 
+    import os
+    from datetime import datetime
+
+    # Auto-generar estructura de carpetas: EXPEDIENTES / VENTAS / MES / BANCO / ID_VENTA
+    for bloque_nombre, df_bloque in bloques_ventas.items():
+        if df_bloque.empty:
+            continue
+
+        banco_folder = bloque_nombre.replace('VENTAS_', '') # Ej. MP, BBVA
+
+        # Determinar columna de fecha e ID
+        col_fecha = 'fecha' if 'fecha' in df_bloque.columns else 'FECHA' if 'FECHA' in df_bloque.columns else None
+        col_id = 'id_venta' if 'id_venta' in df_bloque.columns else 'ID VENTA' if 'ID VENTA' in df_bloque.columns else None
+
+        if col_id:
+            for _, fila in df_bloque.iterrows():
+                id_venta_val = str(fila[col_id]).strip()
+                if not id_venta_val or id_venta_val.lower() == 'nan':
+                    continue
+
+                mes_folder = "GENERAL"
+                if col_fecha and pd.notna(fila[col_fecha]):
+                    try:
+                        # Extraer el mes en texto o número (ej. "02_FEBRERO" o "2024-02")
+                        dt_fecha = pd.to_datetime(fila[col_fecha], errors='coerce')
+                        if pd.notna(dt_fecha):
+                            mes_folder = dt_fecha.strftime("%Y_%m")
+                    except:
+                        pass
+
+                ruta_carpeta = os.path.join("EXPEDIENTES", "VENTAS", mes_folder, banco_folder, id_venta_val)
+                os.makedirs(ruta_carpeta, exist_ok=True)
+
     return bloques_ventas
 
 if __name__ == '__main__':
