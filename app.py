@@ -8,7 +8,7 @@ from modulo_bancos import limpiar_modulo_bancos
 from modulo_cfdi import limpiar_modulo_cfdi
 from modulo_ventas_ajustado import limpiar_modulo_ventas_v2
 from modulo_ventas_resumen import limpiar_reporte_series_csv
-from database_sqlite import save_df_to_sql, get_df_from_sql, get_all_tables, drop_table_from_sql, update_table_from_df
+from database_sqlite import save_df_to_sql, get_df_from_sql, get_filtered_df_from_sql, get_all_tables, drop_table_from_sql, update_table_from_df
 
 # Motores de análisis
 from engine_bbva import run_bbva_crosscheck
@@ -49,24 +49,67 @@ def safe_parse_dates(serie):
 
     return s_iso_full.fillna(s_iso_short).fillna(s_eu)
 
-# 4. HELPER DE FILTROS GLOBALES
-def render_filtros_globales(df, col_fecha, key_prefix):
-    """Renderiza controles de Mes, Fecha y Búsqueda sobre un dataframe, retornando el DF filtrado."""
-    if df.empty:
-        return df
+# 4. HELPER DE FILTROS GLOBALES (OPTIMIZADO CON SQL-FIRST)
+def render_filtros_globales_sql(table_name, col_fecha, key_prefix):
+    """
+    Renderiza controles de filtrado. Extrae únicamente metadatos de fechas (DISTINCT) y luego
+    delega todo el filtro (fechas + texto) a SQL directamente mediante get_filtered_df_from_sql,
+    cargando a memoria (Pandas) solamente los registros estrictamente necesarios.
+    """
+    import sqlite3
 
-    # --- PREPARACIÓN DE DATOS ---
-    df_filtrado = df.copy()
-    if col_fecha and col_fecha in df_filtrado.columns:
-        df_filtrado['FECHA_DT_TMP'] = safe_parse_dates(df_filtrado[col_fecha])
-        # Obtener lista de meses únicos (ej. "2024-01")
-        meses_unicos = df_filtrado['FECHA_DT_TMP'].dt.to_period('M').dropna().unique()
-        lista_meses = ["Todos"] + sorted([str(m) for m in meses_unicos], reverse=True)
-    else:
-        lista_meses = ["Todos"]
-        df_filtrado['FECHA_DT_TMP'] = pd.NaT
+    conn = sqlite3.connect("conciliacion_data.db")
+    cursor = conn.cursor()
 
-    # Determinar el índice por defecto para el mes (mes actual o el más reciente en lugar de "Todos")
+    lista_meses = ["Todos"]
+    min_date = None
+    max_date = None
+
+    # 1. Obtener los límites de fecha rápidamente mediante SQL
+    try:
+        # Asegurarnos de que la columna existe en la tabla (case-insensitive)
+        cursor.execute(f"PRAGMA table_info('{table_name}')")
+        columnas = [row[1] for row in cursor.fetchall()]
+
+        real_col_fecha = None
+        if col_fecha:
+            for c in columnas:
+                if c.lower() == col_fecha.lower():
+                    real_col_fecha = c
+                    break
+
+        if real_col_fecha:
+            # Obtener meses únicos (YYYY-MM) usando substr (sqlite natively supports YYYY-MM-DD strings)
+            cursor.execute(f'''
+                SELECT DISTINCT substr(CAST("{real_col_fecha}" AS TEXT), 1, 7)
+                FROM "{table_name}"
+                WHERE "{real_col_fecha}" IS NOT NULL AND "{real_col_fecha}" != ""
+            ''')
+            meses_raw = [row[0] for row in cursor.fetchall() if row[0] and len(row[0]) == 7]
+
+            if meses_raw:
+                # Ordenar descendente (recientes arriba)
+                lista_meses += sorted(meses_raw, reverse=True)
+
+            # Obtener MIN y MAX para el date_input
+            cursor.execute(f'''
+                SELECT MIN(CAST("{real_col_fecha}" AS TEXT)), MAX(CAST("{real_col_fecha}" AS TEXT))
+                FROM "{table_name}"
+                WHERE "{real_col_fecha}" IS NOT NULL AND "{real_col_fecha}" != ""
+            ''')
+            limites = cursor.fetchone()
+            if limites and limites[0] and limites[1]:
+                min_s = pd.to_datetime(limites[0][:10], errors='coerce')
+                max_s = pd.to_datetime(limites[1][:10], errors='coerce')
+                if not pd.isna(min_s) and not pd.isna(max_s):
+                    min_date = min_s
+                    max_date = max_s
+    except Exception as e:
+        pass
+    finally:
+        conn.close()
+
+    # Determinar el índice por defecto para el mes
     from datetime import datetime
     current_month_str = datetime.now().strftime('%Y-%m')
     default_index = 0
@@ -76,16 +119,13 @@ def render_filtros_globales(df, col_fecha, key_prefix):
         default_index = 1
 
     # --- UI: FILTROS SUPERIORES ---
-    with st.expander("🛠️ Opciones de Filtrado Búsqueda", expanded=True):
+    with st.expander("🛠️ Opciones de Filtrado Búsqueda (Optimizado)", expanded=True):
         col1, col2, col3 = st.columns([1, 1, 2])
 
         with col1:
             mes_sel = st.selectbox("📅 Filtrar por Mes:", lista_meses, index=default_index, key=f"mes_{key_prefix}")
 
         with col2:
-            min_date = df_filtrado['FECHA_DT_TMP'].min() if not pd.isna(df_filtrado['FECHA_DT_TMP'].min()) else None
-            max_date = df_filtrado['FECHA_DT_TMP'].max() if not pd.isna(df_filtrado['FECHA_DT_TMP'].max()) else None
-
             if min_date and max_date:
                 col2_1, col2_2 = st.columns(2)
                 with col2_1:
@@ -97,25 +137,17 @@ def render_filtros_globales(df, col_fecha, key_prefix):
                 fecha_hasta = None
 
         with col3:
-            busqueda = st.text_input("🔍 Buscar (Texto libre):", "", key=f"buscar_{key_prefix}", placeholder="Ej. concepto, monto o UUID", help="Filtra los resultados buscando este texto en cualquier columna de la tabla.")
+            busqueda = st.text_input("🔍 Buscar (Texto libre):", "", key=f"buscar_{key_prefix}", placeholder="Ej. concepto, monto o UUID", help="Búsqueda ultrarrápida usando SQL sobre todas las columnas.")
 
-    # --- APLICAR FILTROS ---
-    if mes_sel != "Todos":
-        df_filtrado = df_filtrado[df_filtrado['FECHA_DT_TMP'].dt.strftime('%Y-%m') == mes_sel]
-
-    if fecha_desde is not None:
-        df_filtrado = df_filtrado[df_filtrado['FECHA_DT_TMP'].dt.date >= fecha_desde]
-    if fecha_hasta is not None:
-        df_filtrado = df_filtrado[df_filtrado['FECHA_DT_TMP'].dt.date <= fecha_hasta]
-
-    if busqueda:
-        busqueda_lower = str(busqueda).lower()
-        mask_busqueda = df_filtrado.astype(str).apply(lambda row: row.str.lower().str.contains(busqueda_lower).any(), axis=1)
-        df_filtrado = df_filtrado[mask_busqueda]
-
-    # Limpiar columna temporal
-    if 'FECHA_DT_TMP' in df_filtrado.columns:
-        df_filtrado = df_filtrado.drop(columns=['FECHA_DT_TMP'])
+    # 2. Descargar datos delegando todo el filtro (fecha y texto) a SQLite
+    df_filtrado = get_filtered_df_from_sql(
+        table_name,
+        search_text=busqueda,
+        col_fecha=col_fecha,
+        mes_sel=mes_sel,
+        fecha_desde=fecha_desde,
+        fecha_hasta=fecha_hasta
+    )
 
     return df_filtrado
 
@@ -430,16 +462,15 @@ elif eleccion == "🏦 BANCOS":
 
         # Función auxiliar para renderizar el panel de control de un banco
         def render_bank_panel(cuenta_sel, key_prefix):
-            df = get_df_from_sql(cuenta_sel)
-            if df.empty:
-                st.info("La tabla seleccionada no contiene registros.")
-                return
-
             es_mp_detalle = cuenta_sel == "AUX_MP_DETALLE" or "MP_DETALLE" in cuenta_sel
-
-            # Aplicar filtros globales usando la columna adecuada
             col_fecha_filtro = 'Fecha del cargo' if es_mp_detalle else 'FECHA'
-            df_filtrado = render_filtros_globales(df, col_fecha=col_fecha_filtro, key_prefix=key_prefix)
+
+            # Usar la nueva función SQL-First
+            df_filtrado = render_filtros_globales_sql(cuenta_sel, col_fecha=col_fecha_filtro, key_prefix=key_prefix)
+
+            if df_filtrado.empty:
+                st.info("La tabla seleccionada no contiene registros o no coincide con los filtros.")
+                return
 
             # --- UI: MÉTRICAS RESUMEN ---
             if es_mp_detalle:
@@ -819,15 +850,14 @@ elif eleccion == "📄 CFDI (Facturas)":
             st.info(f"No hay registros cargados para la categoría {tipo_cfdi}.")
         else:
             bloque_cfdi = st.selectbox("Selecciona bloque fiscal:", tablas_mostrar)
-            df = get_df_from_sql(bloque_cfdi)
 
             # Identificar la columna de fecha para este bloque para los filtros
             col_fecha = 'Fecha Emisión'
             if "PAGOS" in bloque_cfdi:
                 col_fecha = 'Fecha Pago'
 
-            # Aplicar filtros globales
-            df_filtrado = render_filtros_globales(df, col_fecha=col_fecha, key_prefix=f"cfdi_{bloque_cfdi}")
+            # Aplicar filtros globales usando SQL
+            df_filtrado = render_filtros_globales_sql(bloque_cfdi, col_fecha=col_fecha, key_prefix=f"cfdi_{bloque_cfdi}")
 
             df_mostrar = df_filtrado.copy()
 
@@ -1009,11 +1039,13 @@ elif eleccion == "🛒 VENTAS":
         st.subheader("🛒 Notas de Ventas (Detalle)")
 
         bloque = st.selectbox("Selecciona bloque operativo:", tablas_ventas)
-        df_v_raw = get_df_from_sql(bloque)
 
-        # Aplicar filtros globales (la columna es fecha o FECHA)
-        col_fecha_v = 'fecha' if 'fecha' in df_v_raw.columns else 'FECHA'
-        df_v = render_filtros_globales(df_v_raw, col_fecha=col_fecha_v, key_prefix=f"ventas_{bloque}")
+        # La columna suele llamarse FECHA o fecha
+        col_fecha_v = 'FECHA' # Fallback default
+        # Podríamos consultar el schema, o simplemente pasar FECHA, render_filtros es tolerante
+
+        # Aplicar filtros globales SQL-first
+        df_v = render_filtros_globales_sql(bloque, col_fecha=col_fecha_v, key_prefix=f"ventas_{bloque}")
 
         # Formatear columnas para visualizacion
         mapa_cols = {
