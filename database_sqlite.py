@@ -146,6 +146,78 @@ def get_df_from_sql(table_name):
         conn.close()
         return pd.DataFrame()
 
+def get_filtered_df_from_sql(table_name, search_text="", col_fecha=None, mes_sel="Todos", fecha_desde=None, fecha_hasta=None):
+    """
+    Recupera datos de SQL aplicando filtros de fecha y texto en la base de datos.
+    Esto permite que la BD haga el trabajo pesado y reduzca el uso de RAM.
+    """
+    if not os.path.exists(DB_FILE):
+        return pd.DataFrame()
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
+    if not cursor.fetchone():
+        conn.close()
+        return pd.DataFrame()
+
+    try:
+        # Extraer nombres de columnas reales de la tabla
+        cursor.execute(f"PRAGMA table_info('{table_name}')")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if not columns:
+            conn.close()
+            return pd.DataFrame()
+
+        # Asegurarse de que el col_fecha coincida en mayuscula/minuscula
+        real_col_fecha = None
+        if col_fecha:
+            for c in columns:
+                if c.lower() == col_fecha.lower():
+                    real_col_fecha = c
+                    break
+
+        where_clauses = []
+        params = []
+
+        # 1. Filtro de Texto (Buscar en todas las columnas)
+        if search_text:
+            search_text_clean = search_text.replace("'", "''") # Basic sanitization
+            text_conditions = []
+            for col in columns:
+                text_conditions.append(f"LOWER(CAST(\"{col}\" AS TEXT)) LIKE '%{search_text_clean.lower()}%'")
+            where_clauses.append(f"({' OR '.join(text_conditions)})")
+
+        # 2. Filtros de Fecha
+        # Las fechas en SQLite suelen guardarse como 'YYYY-MM-DD HH:MM:SS' por save_df_to_sql
+        # Pero podrían estar como 'YYYY-MM-DD' o cadenas mixtas si hubo errores de parseo
+        if real_col_fecha:
+            if mes_sel != "Todos":
+                # Asumimos que empieza con YYYY-MM
+                where_clauses.append(f"CAST(\"{real_col_fecha}\" AS TEXT) LIKE ?")
+                params.append(f"{mes_sel}%")
+
+            if fecha_desde:
+                where_clauses.append(f"CAST(\"{real_col_fecha}\" AS TEXT) >= ?")
+                params.append(fecha_desde.strftime('%Y-%m-%d'))
+
+            if fecha_hasta:
+                where_clauses.append(f"CAST(\"{real_col_fecha}\" AS TEXT) <= ?")
+                params.append(fecha_hasta.strftime('%Y-%m-%d 23:59:59'))
+
+        query = f"SELECT * FROM '{table_name}'"
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        return df
+    except Exception as e:
+        print(f"Error al recuperar tabla filtrada {table_name}: {e}")
+        conn.close()
+        return pd.DataFrame()
+
 def drop_table_from_sql(table_name):
     """Elimina una tabla específica de la base de datos."""
     if not os.path.exists(DB_FILE):
