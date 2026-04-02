@@ -1212,8 +1212,45 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
         if not df.empty and 'estado_cruce' in df.columns: df_alertas_mp = df[df['estado_cruce'] == 'PENDIENTE']
 
     tab_a, tab_b = st.tabs(["Pendientes BBVA", "Pendientes MP"])
-    with tab_a: st.dataframe(df_alertas_bbva.style.format(na_rep=""), use_container_width=True)
-    with tab_b: st.dataframe(df_alertas_mp.style.format(na_rep=""), use_container_width=True)
+    with tab_a:
+        st.dataframe(df_alertas_bbva.style.format(na_rep=""), use_container_width=True)
+
+    with tab_b:
+        st.markdown("✍️ **Edita directamente la columna `numero_transaccion`** para corregir las referencias y presiona el botón para guardar.")
+        if not df_alertas_mp.empty:
+            # Habilitar edición solo para numero_transaccion
+            column_config = {}
+            for col in df_alertas_mp.columns:
+                if col == "numero_transaccion":
+                    column_config[col] = st.column_config.TextColumn("NUMERO TRANSACCION (Editable)", disabled=False)
+                else:
+                    column_config[col] = st.column_config.Column(disabled=True)
+
+            edited_mp = st.data_editor(
+                df_alertas_mp,
+                use_container_width=True,
+                column_config=column_config,
+                hide_index=True,
+                key="editor_pendientes_mp"
+            )
+
+            if st.button("💾 Guardar Correcciones MP", type="primary"):
+                # Detectar cambios
+                cambios = edited_mp[edited_mp['numero_transaccion'] != df_alertas_mp['numero_transaccion']]
+                if not cambios.empty:
+                    with st.spinner("Guardando..."):
+                        # Actualizar en la DB
+                        df_original = get_df_from_sql("VENTAS_MP")
+                        if not df_original.empty:
+                            # Hacer merge o update
+                            for idx, fila in cambios.iterrows():
+                                df_original.loc[df_original['id_venta'] == fila['id_venta'], 'numero_transaccion'] = fila['numero_transaccion']
+                            update_table_from_df(df_original, "VENTAS_MP")
+                        st.success(f"✅ Se guardaron {len(cambios)} correcciones. ¡Ya puedes volver a intentar el cruce!")
+                else:
+                    st.info("No se detectaron cambios para guardar.")
+        else:
+            st.success("No hay pendientes para Mercado Pago.")
 
 # ==========================================================
 # 💸 ANÁLISIS EGRESOS
