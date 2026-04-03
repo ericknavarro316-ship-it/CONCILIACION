@@ -150,12 +150,131 @@ def abrir_expediente(id_venta_raw):
             time.sleep(1)
             st.rerun()
 
+@st.dialog("📁 Expediente de Egreso", width="large")
+def abrir_expediente_egresos(uuid_raw):
+    import os
+    import subprocess
+    import platform
+    import pandas as pd
+    import re
+
+    # Sanitizar UUID para evitar Path Traversal vulnerabilities
+    uuid_str = str(uuid_raw).strip().upper()
+    if not uuid_str:
+        st.error("UUID inválido.")
+        return
+
+    def open_local_path(path):
+        try:
+            if platform.system() == 'Windows':
+                os.startfile(path)
+            elif platform.system() == 'Darwin':
+                subprocess.call(['open', path])
+            else:
+                subprocess.call(['xdg-open', path])
+        except Exception as e:
+            st.error(f"No se pudo abrir: {e}")
+
+    # Determinar la ruta base de la carpeta
+    ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str) # Fallback
+    tablas_todas = get_all_tables()
+    tablas_egresos = [t for t in tablas_todas if t.startswith("CFDI_E_") or t == "PAGOS_E"]
+
+    for tb in tablas_egresos:
+        df_tb = get_df_from_sql(tb)
+        if 'UUID' in df_tb.columns and not df_tb.empty:
+            fila_match = df_tb[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str]
+            if not fila_match.empty:
+                # Determinar TIPO_COMPROBANTE
+                tipo_comprobante = "OTROS"
+                if "PUE" in tb.upper(): tipo_comprobante = "PUE"
+                elif "PPD" in tb.upper(): tipo_comprobante = "PPD"
+                elif "PAGOS" in tb.upper(): tipo_comprobante = "PAGOS"
+
+                # Determinar MES
+                col_fecha = 'Fecha Pago' if 'PAGOS' in tb.upper() else 'Fecha Emisión'
+                mes_folder = "GENERAL"
+                if col_fecha in fila_match.columns:
+                    fecha_val = fila_match.iloc[0][col_fecha]
+                    try:
+                        dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                        if pd.notna(dt_fecha):
+                            mes_folder = dt_fecha.strftime("%Y_%m")
+                    except: pass
+
+                ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_str)
+                break
+
+    # Header
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.write(f"Gestionando documentos para Factura/Egreso: **{uuid_str}**")
+    with col_h2:
+        if os.path.exists(ruta_base):
+            if st.button("📂 Abrir Carpeta", help="Abre la carpeta física en Windows/Mac."):
+                open_local_path(ruta_base)
+
+    # Buscar si existe en la base de datos de expedientes (Usamos UUID en la columna ID_VENTA temporalmente/genéricamente)
+    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+    if df_exp.empty:
+        df_exp = pd.DataFrame(columns=["ID_VENTA", "NOMBRE_ARCHIVO", "TIPO_DOCUMENTO", "RUTA_LOCAL"])
+
+    archivos_egreso = df_exp[df_exp['ID_VENTA'].astype(str).str.upper() == uuid_str] if not df_exp.empty else pd.DataFrame()
+
+    # Mostrar archivos existentes
+    if not archivos_egreso.empty:
+        st.subheader("Documentos Guardados")
+        for idx, row in archivos_egreso.iterrows():
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.write(f"📄 {row['NOMBRE_ARCHIVO']} ({row['TIPO_DOCUMENTO']})")
+            with col2:
+                if st.button("Abrir", key=f"abrir_e_{idx}", help="Abre el archivo con tu lector de PDF o imágenes."):
+                    if os.path.exists(row['RUTA_LOCAL']):
+                        open_local_path(row['RUTA_LOCAL'])
+                    else:
+                        st.error("El archivo físico ya no existe en esa ruta.")
+    else:
+        st.info("Aún no hay documentos para este Egreso. Sube los archivos arrastrándolos aquí abajo.")
+
+    st.divider()
+    st.subheader("Subir Nuevos Archivos")
+    uploaded_files = st.file_uploader("Arrastra aquí PDF, XML, PNG, JPG...", accept_multiple_files=True, key=f"uploader_e_{uuid_str}")
+
+    if uploaded_files and st.button("💾 Guardar Archivos"):
+        from database_sqlite import update_table_from_df
+        os.makedirs(ruta_base, exist_ok=True)
+        nuevos_registros = []
+        for uf in uploaded_files:
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
+            ruta_destino = os.path.join(ruta_base, safe_name)
+            with open(ruta_destino, "wb") as f:
+                f.write(uf.getbuffer())
+            nuevos_registros.append({
+                "ID_VENTA": uuid_str,  # Reusamos columna para guardar el UUID
+                "NOMBRE_ARCHIVO": safe_name,
+                "TIPO_DOCUMENTO": safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO',
+                "RUTA_LOCAL": ruta_destino
+            })
+        if nuevos_registros:
+            df_nuevos = pd.DataFrame(nuevos_registros)
+            if df_exp.empty: df_exp = df_nuevos
+            else: df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
+            save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
+            st.success("Archivos guardados correctamente.")
+            import time
+            time.sleep(1)
+            st.rerun()
+
 # Interceptar query params para abrir modal
 if "expediente" in st.query_params:
     id_venta_target = st.query_params["expediente"]
-    # Limpiar el query param para que al cerrar el modal no se vuelva a abrir al refrescar
     st.query_params.clear()
     abrir_expediente(id_venta_target)
+elif "expediente_egreso" in st.query_params:
+    uuid_target = st.query_params["expediente_egreso"]
+    st.query_params.clear()
+    abrir_expediente_egresos(uuid_target)
 
 # 1. ESTILOS CSS
 with open("style.css") as f:
@@ -1064,6 +1183,136 @@ elif eleccion == "📄 CFDI (Facturas)":
         tipo_cfdi = st.radio("Selecciona Categoría:", ["INGRESOS", "EGRESOS"], horizontal=True)
         st.divider()
 
+        # Upload files into Expedientes for EGRESOS
+        if tipo_cfdi == "EGRESOS":
+            with st.expander("📥 Cargar Expedientes de Egresos (PDF / ZIP)", expanded=False):
+                st.markdown("Sube múltiples PDFs o un archivo ZIP. El sistema extraerá el UUID del PDF o del nombre de la carpeta en el ZIP para vincularlo a su respectiva factura.")
+
+                archivo_egresos_pdf = st.file_uploader("📂 Cargar Facturas (PDF)", type=['pdf'], accept_multiple_files=True, key="egresos_pdf")
+                archivo_egresos_zip = st.file_uploader("📂 Cargar Expedientes Completos (ZIP)", type=['zip'], accept_multiple_files=True, key="egresos_zip")
+
+                if st.button("Procesar Archivos de Egresos", type="primary"):
+                    import os
+                    import zipfile
+                    import shutil
+
+                    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+                    if df_exp.empty:
+                        df_exp = pd.DataFrame(columns=["ID_VENTA", "NOMBRE_ARCHIVO", "TIPO_DOCUMENTO", "RUTA_LOCAL"])
+
+                    tablas_egresos = [t for t in tablas_todas if t.startswith("CFDI_E_") or t == "PAGOS_E"]
+                    nuevos_registros_expediente = []
+
+                    def process_egreso_file(file_name, file_buffer, is_zip_content=False, file_path_in_zip=""):
+                        uuid_str = None
+
+                        # Si viene de ZIP, intentar extraer UUID del folder padre primero
+                        if is_zip_content and '/' in file_path_in_zip:
+                            parts = file_path_in_zip.split('/')
+                            # Asumimos que el penultimo puede ser el UUID
+                            potential_uuid = parts[-2]
+                            if re.match(r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$', potential_uuid):
+                                uuid_str = potential_uuid.upper()
+
+                        # Si no hay UUID aún y es PDF, escanear el PDF
+                        if not uuid_str and file_name.lower().endswith('.pdf'):
+                            import pdfplumber
+                            try:
+                                with pdfplumber.open(file_buffer) as pdf:
+                                    for page in pdf.pages[:2]:
+                                        text = page.extract_text()
+                                        if text:
+                                            match = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', text)
+                                            if match:
+                                                uuid_str = match.group(0).upper()
+                                                break
+                            except Exception as e:
+                                pass
+
+                        if not uuid_str:
+                            return None
+
+                        # Determinar ruta destino
+                        ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
+                        for tb in tablas_egresos:
+                            df_tb = get_df_from_sql(tb)
+                            if 'UUID' in df_tb.columns and not df_tb.empty:
+                                fila_match = df_tb[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str]
+                                if not fila_match.empty:
+                                    tipo_comprobante = "OTROS"
+                                    if "PUE" in tb.upper(): tipo_comprobante = "PUE"
+                                    elif "PPD" in tb.upper(): tipo_comprobante = "PPD"
+                                    elif "PAGOS" in tb.upper(): tipo_comprobante = "PAGOS"
+
+                                    col_fecha = 'Fecha Pago' if 'PAGOS' in tb.upper() else 'Fecha Emisión'
+                                    mes_folder = "GENERAL"
+                                    if col_fecha in fila_match.columns:
+                                        fecha_val = fila_match.iloc[0][col_fecha]
+                                        try:
+                                            dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                                            if pd.notna(dt_fecha):
+                                                mes_folder = dt_fecha.strftime("%Y_%m")
+                                        except: pass
+
+                                    ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_str)
+                                    break
+
+                        os.makedirs(ruta_base, exist_ok=True)
+                        safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
+                        ruta_destino = os.path.join(ruta_base, safe_name)
+
+                        file_buffer.seek(0)
+                        with open(ruta_destino, "wb") as f:
+                            f.write(file_buffer.read())
+
+                        tipo_doc = safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO'
+
+                        return {
+                            "ID_VENTA": uuid_str,
+                            "NOMBRE_ARCHIVO": safe_name,
+                            "TIPO_DOCUMENTO": tipo_doc,
+                            "RUTA_LOCAL": ruta_destino
+                        }
+
+                    # Procesar PDFs
+                    if archivo_egresos_pdf:
+                        for pdf_file in archivo_egresos_pdf:
+                            with st.spinner(f"Procesando {pdf_file.name}..."):
+                                rec = process_egreso_file(pdf_file.name, pdf_file)
+                                if rec:
+                                    nuevos_registros_expediente.append(rec)
+
+                    # Procesar ZIPs
+                    if archivo_egresos_zip:
+                        from io import BytesIO
+                        for zip_file in archivo_egresos_zip:
+                            with st.spinner(f"Extrayendo ZIP {zip_file.name}..."):
+                                try:
+                                    with zipfile.ZipFile(zip_file) as z:
+                                        for file_info in z.infolist():
+                                            if file_info.is_dir(): continue
+                                            with z.open(file_info) as f:
+                                                file_buffer = BytesIO(f.read())
+                                                file_name = file_info.filename.split('/')[-1]
+                                                rec = process_egreso_file(file_name, file_buffer, is_zip_content=True, file_path_in_zip=file_info.filename)
+                                                if rec:
+                                                    nuevos_registros_expediente.append(rec)
+                                except Exception as e:
+                                    st.error(f"Error procesando ZIP: {e}")
+
+                    if nuevos_registros_expediente:
+                        df_nuevos = pd.DataFrame(nuevos_registros_expediente)
+                        if df_exp.empty: df_exp = df_nuevos
+                        else: df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
+                        save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
+                        st.success(f"✅ Se guardaron {len(nuevos_registros_expediente)} archivos en Expedientes de Egresos.")
+                        import time
+                        time.sleep(1.5)
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ No se identificaron archivos con UUIDs válidos o no se subió nada.")
+            st.divider()
+
         tablas_mostrar = tablas_cfdi_ingresos if tipo_cfdi == "INGRESOS" else tablas_cfdi_egresos
 
         if not tablas_mostrar:
@@ -1150,6 +1399,18 @@ elif eleccion == "📄 CFDI (Facturas)":
                 mask = df_mostrar['LINK_PDF'].str.startswith('/?expediente', na=False)
                 df_mostrar.loc[mask, 'PDF'] = df_mostrar.loc[mask, 'LINK_PDF']
                 df_mostrar = df_mostrar.drop(columns=['LINK_PDF'])
+
+            # Agregar Link para abrir Expediente de Egreso basado en el UUID
+            if tipo_cfdi == "EGRESOS" and 'UUID' in df_mostrar.columns:
+                df_mostrar['LINK_EXPEDIENTE'] = df_mostrar['UUID'].apply(
+                    lambda x: f"/?expediente_egreso={x}" if pd.notnull(x) and str(x).strip() != "" else None
+                )
+                cc_cfdi['UUID'] = st.column_config.LinkColumn(
+                    "UUID (Expediente)",
+                    display_text=r"/\?expediente_egreso=(.*)"
+                )
+                df_mostrar['UUID'] = df_mostrar['LINK_EXPEDIENTE']
+                df_mostrar = df_mostrar.drop(columns=['LINK_EXPEDIENTE'])
 
             st.dataframe(df_mostrar, use_container_width=True, hide_index=True, column_config=cc_cfdi)
 
