@@ -1265,7 +1265,8 @@ elif eleccion == "📄 CFDI (Facturas)":
 
         # Upload files into Expedientes for EGRESOS
         if tipo_cfdi == "EGRESOS":
-            with st.expander("📥 Cargar Expedientes de Egresos (PDF / ZIP)", expanded=False):
+            st.info("💡 **Tip:** Para cargar y guardar comprobantes, abre este menú desplegable:")
+            with st.expander("📥 CARGAR EXPEDIENTES DE EGRESOS (PDF / ZIP)", expanded=False):
                 st.markdown("Sube múltiples PDFs o un archivo ZIP. El sistema extraerá el UUID del PDF o del nombre de la carpeta en el ZIP para vincularlo a su respectiva factura.")
 
                 archivo_egresos_pdf = st.file_uploader("📂 Cargar Facturas (PDF)", type=['pdf'], accept_multiple_files=True, key="egresos_pdf")
@@ -1314,6 +1315,21 @@ elif eleccion == "📄 CFDI (Facturas)":
 
                         # Determinar ruta destino
                         ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
+
+                        # Si no encontramos el UUID, busquemos el nombre del ZIP como posible UUID en el fallback global
+                        if is_zip_content and not uuid_str:
+                            zip_name_raw = file_name.replace('.zip', '').split('/')[-1]
+                            match_global = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', zip_name_raw)
+                            if match_global:
+                                uuid_str = match_global.group(0).upper()
+                                ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
+
+                        if not uuid_str:
+                            # Ultimo recurso: Guardar en una carpeta genérica llamada DESCONOCIDOS si no detectamos nada,
+                            # al menos no perdemos el archivo si el cliente subió algo
+                            ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "DESCONOCIDOS")
+                            uuid_str = "DESCONOCIDO"
+
                         for tb in tablas_egresos:
                             df_tb = get_df_from_sql(tb)
                             if 'UUID' in df_tb.columns and not df_tb.empty:
