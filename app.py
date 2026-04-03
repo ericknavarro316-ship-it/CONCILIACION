@@ -1310,12 +1310,19 @@ elif eleccion == "📄 CFDI (Facturas)":
                             except Exception as e:
                                 pass
 
-                        # Determinar ruta destino
-                        ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
+                        # Si uuid_str sigue nulo, tenemos que inicializarlo antes de usar path.join
+                        if not uuid_str:
+                            uuid_str_temp = "DESCONOCIDO"
+                        else:
+                            uuid_str_temp = uuid_str
+
+                        # Determinar ruta destino inicial
+                        ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str_temp)
 
                         # Si no encontramos el UUID, busquemos el nombre del ZIP como posible UUID en el fallback global
                         if is_zip_content and not uuid_str:
-                            zip_name_raw = file_name.replace('.zip', '').split('/')[-1]
+                            # Si no se pudo obtener del PDF, y fue extraido de un ZIP, verificamos si la carpeta o el ZIP padre tiene nombre de UUID
+                            zip_name_raw = file_path_in_zip.split('/')[0] if '/' in file_path_in_zip else file_name.replace('.zip', '')
                             match_global = re.search(r'[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}', zip_name_raw)
                             if match_global:
                                 uuid_str = match_global.group(0).upper().replace('‐', '-')
@@ -1329,8 +1336,12 @@ elif eleccion == "📄 CFDI (Facturas)":
 
                         for tb in tablas_egresos:
                             df_tb = get_df_from_sql(tb)
-                            if 'UUID' in df_tb.columns and not df_tb.empty:
-                                fila_match = df_tb[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str]
+
+                            # Normalizar la busqueda de la columna UUID en caso de que venga con espacios o diferentes casings
+                            col_uuid = next((c for c in df_tb.columns if c.strip().upper() == 'UUID'), None)
+
+                            if col_uuid and not df_tb.empty:
+                                fila_match = df_tb[df_tb[col_uuid].astype(str).str.strip().str.upper() == uuid_str]
                                 if not fila_match.empty:
                                     tipo_comprobante = "OTROS"
                                     if "PUE" in tb.upper(): tipo_comprobante = "PUE"
