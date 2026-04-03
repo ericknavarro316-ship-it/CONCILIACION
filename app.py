@@ -96,7 +96,7 @@ def abrir_expediente(id_venta_raw):
     if not archivos_venta.empty:
         st.subheader("Documentos Guardados")
         for idx, row in archivos_venta.iterrows():
-            col1, col2 = st.columns([4, 1])
+            col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 st.write(f"📄 {row['NOMBRE_ARCHIVO']} ({row['TIPO_DOCUMENTO']})")
             with col2:
@@ -106,6 +106,29 @@ def abrir_expediente(id_venta_raw):
                         open_local_path(row['RUTA_LOCAL'])
                     else:
                         st.error("El archivo físico ya no existe en esa ruta.")
+            with col3:
+                # Botón Eliminar
+                if st.button("🗑️ Eliminar", key=f"del_{idx}", help="Elimina el archivo físicamente y del registro."):
+                    if os.path.exists(row['RUTA_LOCAL']):
+                        try:
+                            os.remove(row['RUTA_LOCAL'])
+                        except Exception as e:
+                            st.error(f"Error borrando archivo: {e}")
+                    # Eliminar de la base de datos
+                    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+                    if not df_exp.empty:
+                        # Filtrar usando el índice original o ruta local para ser precisos
+                        df_exp = df_exp[df_exp['RUTA_LOCAL'] != row['RUTA_LOCAL']]
+                        from database_sqlite import update_table_from_df
+                        # We use save_df_to_sql here, but wait, if we drop a row, it's better to rewrite the whole table.
+                        import sqlite3
+                        try:
+                            conn = sqlite3.connect("conciliacion_data.db")
+                            df_exp.to_sql("EXPEDIENTES_ARCHIVOS", conn, if_exists="replace", index=False)
+                            conn.close()
+                            st.rerun()
+                        except Exception as e:
+                            pass
     else:
         st.info("Aún no hay documentos para esta venta. Sube los archivos arrastrándolos aquí abajo.")
 
@@ -134,7 +157,29 @@ def abrir_expediente(id_venta_raw):
                 "RUTA_LOCAL": ruta_destino
             })
 
+            # Intentar vincular UUID con CFDI
+            vincular_cfdi_y_venta(id_venta, ruta_destino, safe_name)
+
         if nuevos_registros:
+            # Actualizar la columna PDF en la tabla correspondiente si suben un PDF
+            for tb in tablas_egresos:
+                df_tb = get_df_from_sql(tb)
+                if 'UUID' in df_tb.columns and not df_tb.empty:
+                    mask = df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str
+                    if mask.any():
+                        # Buscar si se subió algún PDF para asignarlo al campo
+                        pdf_name = next((r["NOMBRE_ARCHIVO"] for r in nuevos_registros if r["TIPO_DOCUMENTO"] == "PDF"), None)
+                        if not pdf_name:
+                            # Si no hay PDF, tomamos el primer archivo como referencia (ej XML)
+                            pdf_name = nuevos_registros[0]["NOMBRE_ARCHIVO"]
+
+                        if 'PDF' not in df_tb.columns:
+                            df_tb['PDF'] = ""
+
+                        df_tb.loc[mask, 'PDF'] = pdf_name
+                        update_table_from_df(df_tb, tb)
+                        break
+
             df_nuevos = pd.DataFrame(nuevos_registros)
             if df_exp.empty:
                 df_exp = df_nuevos
@@ -147,12 +192,169 @@ def abrir_expediente(id_venta_raw):
             time.sleep(1)
             st.rerun()
 
+@st.dialog("📁 Expediente de Egreso", width="large")
+def abrir_expediente_egresos(uuid_raw):
+    import os
+    import subprocess
+    import platform
+    import pandas as pd
+    import re
+
+    # Sanitizar UUID para evitar Path Traversal vulnerabilities
+    uuid_str = str(uuid_raw).strip().upper()
+    if not uuid_str:
+        st.error("UUID inválido.")
+        return
+
+    def open_local_path(path):
+        try:
+            if platform.system() == 'Windows':
+                os.startfile(path)
+            elif platform.system() == 'Darwin':
+                subprocess.call(['open', path])
+            else:
+                subprocess.call(['xdg-open', path])
+        except Exception as e:
+            st.error(f"No se pudo abrir: {e}")
+
+    # Determinar la ruta base de la carpeta
+    ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str) # Fallback
+    tablas_todas = get_all_tables()
+    tablas_egresos = [t for t in tablas_todas if t.startswith("CFDI_E_") or t == "PAGOS_E"]
+
+    for tb in tablas_egresos:
+        df_tb = get_df_from_sql(tb)
+        if 'UUID' in df_tb.columns and not df_tb.empty:
+            fila_match = df_tb[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str]
+            if not fila_match.empty:
+                # Determinar TIPO_COMPROBANTE
+                tipo_comprobante = "OTROS"
+                if "PUE" in tb.upper(): tipo_comprobante = "PUE"
+                elif "PPD" in tb.upper(): tipo_comprobante = "PPD"
+                elif "PAGOS" in tb.upper(): tipo_comprobante = "PAGOS"
+
+                # Determinar MES
+                col_fecha = 'Fecha Pago' if 'PAGOS' in tb.upper() else 'Fecha Emisión'
+                mes_folder = "GENERAL"
+                if col_fecha in fila_match.columns:
+                    fecha_val = fila_match.iloc[0][col_fecha]
+                    try:
+                        dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                        if pd.notna(dt_fecha):
+                            mes_folder = dt_fecha.strftime("%Y_%m")
+                    except: pass
+
+                ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_str)
+                break
+
+    # Header
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.write(f"Gestionando documentos para Factura/Egreso: **{uuid_str}**")
+    with col_h2:
+        if os.path.exists(ruta_base):
+            if st.button("📂 Abrir Carpeta", help="Abre la carpeta física en Windows/Mac."):
+                open_local_path(ruta_base)
+
+    # Buscar si existe en la base de datos de expedientes (Usamos UUID en la columna ID_VENTA temporalmente/genéricamente)
+    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+    if df_exp.empty:
+        df_exp = pd.DataFrame(columns=["ID_VENTA", "NOMBRE_ARCHIVO", "TIPO_DOCUMENTO", "RUTA_LOCAL"])
+
+    archivos_egreso = df_exp[df_exp['ID_VENTA'].astype(str).str.upper() == uuid_str] if not df_exp.empty else pd.DataFrame()
+
+    # Mostrar archivos existentes
+    if not archivos_egreso.empty:
+        st.subheader("Documentos Guardados")
+        for idx, row in archivos_egreso.iterrows():
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                st.write(f"📄 {row['NOMBRE_ARCHIVO']} ({row['TIPO_DOCUMENTO']})")
+            with col2:
+                if st.button("Abrir", key=f"abrir_e_{idx}", help="Abre el archivo con tu lector de PDF o imágenes."):
+                    if os.path.exists(row['RUTA_LOCAL']):
+                        open_local_path(row['RUTA_LOCAL'])
+                    else:
+                        st.error("El archivo físico ya no existe en esa ruta.")
+            with col3:
+                if st.button("🗑️ Eliminar", key=f"del_e_{idx}", help="Elimina el archivo físicamente y del registro."):
+                    if os.path.exists(row['RUTA_LOCAL']):
+                        try:
+                            os.remove(row['RUTA_LOCAL'])
+                        except Exception as e:
+                            st.error(f"Error borrando archivo: {e}")
+                    # Eliminar de la base de datos
+                    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+                    if not df_exp.empty:
+                        df_exp = df_exp[df_exp['RUTA_LOCAL'] != row['RUTA_LOCAL']]
+                        import sqlite3
+                        try:
+                            conn = sqlite3.connect("conciliacion_data.db")
+                            df_exp.to_sql("EXPEDIENTES_ARCHIVOS", conn, if_exists="replace", index=False)
+                            conn.close()
+                            st.rerun()
+                        except Exception as e:
+                            pass
+    else:
+        st.info("Aún no hay documentos para este Egreso. Sube los archivos arrastrándolos aquí abajo.")
+
+    st.divider()
+    st.subheader("Subir Nuevos Archivos")
+    uploaded_files = st.file_uploader("Arrastra aquí PDF, XML, PNG, JPG...", accept_multiple_files=True, key=f"uploader_e_{uuid_str}")
+
+    if uploaded_files and st.button("💾 Guardar Archivos"):
+        from database_sqlite import update_table_from_df
+        os.makedirs(ruta_base, exist_ok=True)
+        nuevos_registros = []
+        for uf in uploaded_files:
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
+            ruta_destino = os.path.join(ruta_base, safe_name)
+            with open(ruta_destino, "wb") as f:
+                f.write(uf.getbuffer())
+            nuevos_registros.append({
+                "ID_VENTA": uuid_str,  # Reusamos columna para guardar el UUID
+                "NOMBRE_ARCHIVO": safe_name,
+                "TIPO_DOCUMENTO": safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO',
+                "RUTA_LOCAL": ruta_destino
+            })
+        if nuevos_registros:
+            # Actualizar la columna PDF en la tabla correspondiente si suben un PDF
+            for tb in tablas_egresos:
+                df_tb = get_df_from_sql(tb)
+                if 'UUID' in df_tb.columns and not df_tb.empty:
+                    mask = df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str
+                    if mask.any():
+                        # Buscar si se subió algún PDF para asignarlo al campo
+                        pdf_name = next((r["NOMBRE_ARCHIVO"] for r in nuevos_registros if r["TIPO_DOCUMENTO"] == "PDF"), None)
+                        if not pdf_name:
+                            # Si no hay PDF, tomamos el primer archivo como referencia (ej XML)
+                            pdf_name = nuevos_registros[0]["NOMBRE_ARCHIVO"]
+
+                        if 'PDF' not in df_tb.columns:
+                            df_tb['PDF'] = ""
+
+                        df_tb.loc[mask, 'PDF'] = pdf_name
+                        update_table_from_df(df_tb, tb)
+                        break
+
+            df_nuevos = pd.DataFrame(nuevos_registros)
+            if df_exp.empty: df_exp = df_nuevos
+            else: df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
+            save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
+            st.success("Archivos guardados correctamente.")
+            import time
+            time.sleep(1)
+            st.rerun()
+
 # Interceptar query params para abrir modal
 if "expediente" in st.query_params:
     id_venta_target = st.query_params["expediente"]
-    # Limpiar el query param para que al cerrar el modal no se vuelva a abrir al refrescar
     st.query_params.clear()
     abrir_expediente(id_venta_target)
+elif "expediente_egreso" in st.query_params:
+    uuid_target = st.query_params["expediente_egreso"]
+    st.query_params.clear()
+    abrir_expediente_egresos(uuid_target)
 
 # 1. ESTILOS CSS
 with open("style.css") as f:
@@ -179,7 +381,83 @@ def safe_parse_dates(serie):
 
     return s_iso_full.fillna(s_iso_short).fillna(s_eu)
 
-# 4. HELPER DE FILTROS GLOBALES (OPTIMIZADO CON SQL-FIRST)
+# 4. FUNCIONES PARA EXTRACCION Y VINCULACION DE UUID (CFDI <-> VENTAS)
+def extraer_uuid_de_archivo(ruta_archivo):
+    import re
+    import os
+    uuid_pattern = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
+
+    ext = os.path.splitext(ruta_archivo)[1].lower()
+
+    try:
+        if ext == '.xml':
+            with open(ruta_archivo, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                match = re.search(uuid_pattern, content)
+                if match:
+                    return match.group(0).upper()
+        elif ext == '.pdf':
+            import pdfplumber
+            with pdfplumber.open(ruta_archivo) as pdf:
+                # Revisar las primeras páginas donde suele estar el UUID
+                for page in pdf.pages[:2]:
+                    text = page.extract_text()
+                    if text:
+                        match = re.search(uuid_pattern, text)
+                        if match:
+                            return match.group(0).upper()
+    except Exception as e:
+        print(f"Error extrayendo UUID de {ruta_archivo}: {e}")
+        pass
+
+    return None
+
+def vincular_cfdi_y_venta(id_venta, ruta_archivo, nombre_archivo):
+    uuid_extraido = extraer_uuid_de_archivo(ruta_archivo)
+    if not uuid_extraido:
+        return False
+
+    vinculado = False
+
+    # 1. Actualizar tablas CFDI_I
+    tablas_todas = get_all_tables()
+    tablas_cfdi = [t for t in tablas_todas if t.startswith("CFDI_I_")]
+
+    for tb_cfdi in tablas_cfdi:
+        df_cfdi = get_df_from_sql(tb_cfdi)
+        if not df_cfdi.empty and 'UUID' in df_cfdi.columns:
+            # Encontrar la fila con ese UUID (ignorando case y espacios)
+            mask_uuid = df_cfdi['UUID'].astype(str).str.strip().str.upper() == uuid_extraido
+            if mask_uuid.any():
+                # Actualizamos las columnas ID VENTA y PDF
+                if 'ID VENTA' not in df_cfdi.columns:
+                    df_cfdi['ID VENTA'] = ""
+                if 'PDF' not in df_cfdi.columns:
+                    df_cfdi['PDF'] = ""
+
+                df_cfdi.loc[mask_uuid, 'ID VENTA'] = id_venta
+                df_cfdi.loc[mask_uuid, 'PDF'] = nombre_archivo
+                update_table_from_df(df_cfdi, tb_cfdi)
+                vinculado = True
+
+    # 2. Actualizar tablas de VENTAS
+    if vinculado:
+        tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_SERIES"]
+        for tb_venta in tablas_ventas:
+            df_venta = get_df_from_sql(tb_venta)
+            col_id = 'id_venta' if 'id_venta' in df_venta.columns else 'ID VENTA' if 'ID VENTA' in df_venta.columns else None
+
+            if col_id and not df_venta.empty:
+                mask_venta = df_venta[col_id].astype(str).str.strip() == str(id_venta)
+                if mask_venta.any():
+                    if 'UUID' not in df_venta.columns:
+                        df_venta['UUID'] = ""
+                    df_venta.loc[mask_venta, 'UUID'] = uuid_extraido
+                    update_table_from_df(df_venta, tb_venta)
+
+    return vinculado
+
+# 5. HELPER DE FILTROS GLOBALES (OPTIMIZADO CON SQL-FIRST)
 def render_filtros_globales_sql(table_name, col_fecha, key_prefix):
     """
     Renderiza controles de filtrado. Extrae únicamente metadatos de fechas (DISTINCT) y luego
@@ -985,6 +1263,148 @@ elif eleccion == "📄 CFDI (Facturas)":
         tipo_cfdi = st.radio("Selecciona Categoría:", ["INGRESOS", "EGRESOS"], horizontal=True)
         st.divider()
 
+        # Upload files into Expedientes for EGRESOS
+        if tipo_cfdi == "EGRESOS":
+            with st.expander("📥 Cargar Expedientes de Egresos (PDF / ZIP)", expanded=False):
+                st.markdown("Sube múltiples PDFs o un archivo ZIP. El sistema extraerá el UUID del PDF o del nombre de la carpeta en el ZIP para vincularlo a su respectiva factura.")
+
+                archivo_egresos_pdf = st.file_uploader("📂 Cargar Facturas (PDF)", type=['pdf'], accept_multiple_files=True, key="egresos_pdf")
+                archivo_egresos_zip = st.file_uploader("📂 Cargar Expedientes Completos (ZIP)", type=['zip'], accept_multiple_files=True, key="egresos_zip")
+
+                if st.button("Procesar Archivos de Egresos", type="primary"):
+                    import os
+                    import zipfile
+                    import shutil
+
+                    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+                    if df_exp.empty:
+                        df_exp = pd.DataFrame(columns=["ID_VENTA", "NOMBRE_ARCHIVO", "TIPO_DOCUMENTO", "RUTA_LOCAL"])
+
+                    tablas_egresos = [t for t in tablas_todas if t.startswith("CFDI_E_") or t == "PAGOS_E"]
+                    nuevos_registros_expediente = []
+
+                    def process_egreso_file(file_name, file_buffer, is_zip_content=False, file_path_in_zip=""):
+                        uuid_str = None
+
+                        # Si viene de ZIP, intentar extraer UUID del folder padre primero
+                        if is_zip_content and '/' in file_path_in_zip:
+                            parts = file_path_in_zip.split('/')
+                            # Asumimos que el penultimo puede ser el UUID
+                            potential_uuid = parts[-2]
+                            if re.match(r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$', potential_uuid):
+                                uuid_str = potential_uuid.upper()
+
+                        # Si no hay UUID aún y es PDF, escanear el PDF
+                        if not uuid_str and file_name.lower().endswith('.pdf'):
+                            import pdfplumber
+                            try:
+                                with pdfplumber.open(file_buffer) as pdf:
+                                    for page in pdf.pages[:2]:
+                                        text = page.extract_text()
+                                        if text:
+                                            match = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', text)
+                                            if match:
+                                                uuid_str = match.group(0).upper()
+                                                break
+                            except Exception as e:
+                                pass
+
+                        if not uuid_str:
+                            return None
+
+                        # Determinar ruta destino
+                        ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
+                        for tb in tablas_egresos:
+                            df_tb = get_df_from_sql(tb)
+                            if 'UUID' in df_tb.columns and not df_tb.empty:
+                                fila_match = df_tb[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str]
+                                if not fila_match.empty:
+                                    tipo_comprobante = "OTROS"
+                                    if "PUE" in tb.upper(): tipo_comprobante = "PUE"
+                                    elif "PPD" in tb.upper(): tipo_comprobante = "PPD"
+                                    elif "PAGOS" in tb.upper(): tipo_comprobante = "PAGOS"
+
+                                    col_fecha = 'Fecha Pago' if 'PAGOS' in tb.upper() else 'Fecha Emisión'
+                                    mes_folder = "GENERAL"
+                                    if col_fecha in fila_match.columns:
+                                        fecha_val = fila_match.iloc[0][col_fecha]
+                                        try:
+                                            dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                                            if pd.notna(dt_fecha):
+                                                mes_folder = dt_fecha.strftime("%Y_%m")
+                                        except: pass
+
+                                    ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_str)
+
+                                    # Actualizar columna PDF en la tabla correspondiente
+                                    safe_name_tmp = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
+                                    if 'PDF' not in df_tb.columns:
+                                        df_tb['PDF'] = ""
+                                    # Si es el XML no reemplazamos el PDF si ya existe, a menos que queramos guardar ambos,
+                                    # pero si es PDF damos prioridad
+                                    current_pdf = df_tb.loc[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str, 'PDF'].values[0]
+                                    if pd.isna(current_pdf) or current_pdf == "" or safe_name_tmp.lower().endswith('.pdf'):
+                                        df_tb.loc[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str, 'PDF'] = safe_name_tmp
+                                        update_table_from_df(df_tb, tb)
+
+                                    break
+
+                        os.makedirs(ruta_base, exist_ok=True)
+                        safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
+                        ruta_destino = os.path.join(ruta_base, safe_name)
+
+                        file_buffer.seek(0)
+                        with open(ruta_destino, "wb") as f:
+                            f.write(file_buffer.read())
+
+                        tipo_doc = safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO'
+
+                        return {
+                            "ID_VENTA": uuid_str,
+                            "NOMBRE_ARCHIVO": safe_name,
+                            "TIPO_DOCUMENTO": tipo_doc,
+                            "RUTA_LOCAL": ruta_destino
+                        }
+
+                    # Procesar PDFs
+                    if archivo_egresos_pdf:
+                        for pdf_file in archivo_egresos_pdf:
+                            with st.spinner(f"Procesando {pdf_file.name}..."):
+                                rec = process_egreso_file(pdf_file.name, pdf_file)
+                                if rec:
+                                    nuevos_registros_expediente.append(rec)
+
+                    # Procesar ZIPs
+                    if archivo_egresos_zip:
+                        from io import BytesIO
+                        for zip_file in archivo_egresos_zip:
+                            with st.spinner(f"Extrayendo ZIP {zip_file.name}..."):
+                                try:
+                                    with zipfile.ZipFile(zip_file) as z:
+                                        for file_info in z.infolist():
+                                            if file_info.is_dir(): continue
+                                            with z.open(file_info) as f:
+                                                file_buffer = BytesIO(f.read())
+                                                file_name = file_info.filename.split('/')[-1]
+                                                rec = process_egreso_file(file_name, file_buffer, is_zip_content=True, file_path_in_zip=file_info.filename)
+                                                if rec:
+                                                    nuevos_registros_expediente.append(rec)
+                                except Exception as e:
+                                    st.error(f"Error procesando ZIP: {e}")
+
+                    if nuevos_registros_expediente:
+                        df_nuevos = pd.DataFrame(nuevos_registros_expediente)
+                        if df_exp.empty: df_exp = df_nuevos
+                        else: df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
+                        save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
+                        st.success(f"✅ Se guardaron {len(nuevos_registros_expediente)} archivos en Expedientes de Egresos.")
+                        import time
+                        time.sleep(1.5)
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ No se identificaron archivos con UUIDs válidos o no se subió nada.")
+            st.divider()
+
         tablas_mostrar = tablas_cfdi_ingresos if tipo_cfdi == "INGRESOS" else tablas_cfdi_egresos
 
         if not tablas_mostrar:
@@ -1056,7 +1476,35 @@ elif eleccion == "📄 CFDI (Facturas)":
 
             df_mostrar = df_mostrar.replace("None", "").replace("NaT", "")
 
-            st.dataframe(df_mostrar.style.format(na_rep=""), use_container_width=True, hide_index=True)
+            # Formatear el PDF como un link si existe el ID VENTA vinculado
+            cc_cfdi = {}
+            if 'PDF' in df_mostrar.columns and 'ID VENTA' in df_mostrar.columns:
+                df_mostrar['LINK_PDF'] = df_mostrar.apply(
+                    lambda row: f"/?expediente={row['ID VENTA']}" if pd.notnull(row['ID VENTA']) and str(row['ID VENTA']).strip() != "" and pd.notnull(row['PDF']) and str(row['PDF']).strip() != "" else row['PDF'],
+                    axis=1
+                )
+                cc_cfdi['PDF'] = st.column_config.LinkColumn(
+                    "PDF (Expediente)",
+                    display_text=r"([^/]+)$" # Muestra solo el nombre del archivo al final del link o el valor original si no es link
+                )
+                # Solo reemplazar donde hay link, si no dejar el texto
+                mask = df_mostrar['LINK_PDF'].str.startswith('/?expediente', na=False)
+                df_mostrar.loc[mask, 'PDF'] = df_mostrar.loc[mask, 'LINK_PDF']
+                df_mostrar = df_mostrar.drop(columns=['LINK_PDF'])
+
+            # Agregar Link para abrir Expediente de Egreso basado en el UUID
+            if tipo_cfdi == "EGRESOS" and 'UUID' in df_mostrar.columns:
+                df_mostrar['LINK_EXPEDIENTE'] = df_mostrar['UUID'].apply(
+                    lambda x: f"/?expediente_egreso={x}" if pd.notnull(x) and str(x).strip() != "" else None
+                )
+                cc_cfdi['UUID'] = st.column_config.LinkColumn(
+                    "UUID (Expediente)",
+                    display_text=r"/\?expediente_egreso=(.*)"
+                )
+                df_mostrar['UUID'] = df_mostrar['LINK_EXPEDIENTE']
+                df_mostrar = df_mostrar.drop(columns=['LINK_EXPEDIENTE'])
+
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True, column_config=cc_cfdi)
 
 elif eleccion == "🛒 VENTAS":
     st.title(":material/point_of_sale: Módulo VENTAS")
@@ -1068,10 +1516,107 @@ elif eleccion == "🛒 VENTAS":
         archivo_ventas = st.file_uploader("📂 Cargar Notas de Ventas (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="ventas")
         archivo_ventas_csv = st.file_uploader("📂 Cargar Reporte de Series (CSV con ;)", type=['csv'], accept_multiple_files=True, key="ventas_csv", help="Archivo CSV que contiene ID Venta, Producto y Número de Serie.")
         archivo_ventas_pdf = st.file_uploader("📂 Cargar Notas de Ventas en lote (PDF)", type=['pdf'], accept_multiple_files=True, key="ventas_pdf", help="Se extraerá el Folio y se guardará en su respectivo expediente de venta automáticamente.")
+        archivo_ventas_zip = st.file_uploader("📂 Cargar Expedientes (ZIP)", type=['zip'], accept_multiple_files=True, key="ventas_zip", help="Sube archivos ZIP donde el nombre de la carpeta o archivo contenga el ID VENTA (ej. carpeta 28336/).")
 
         if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado"):
             procesados_ventas = False
             import os
+
+            if archivo_ventas_zip:
+                import zipfile
+
+                df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+                if df_exp.empty:
+                    df_exp = pd.DataFrame(columns=["ID_VENTA", "NOMBRE_ARCHIVO", "TIPO_DOCUMENTO", "RUTA_LOCAL"])
+
+                tablas_todas = get_all_tables()
+                tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_SERIES"]
+
+                nuevos_registros_expediente = []
+
+                for zip_file in archivo_ventas_zip:
+                    with st.spinner(f"Procesando ZIP: {zip_file.name}..."):
+                        try:
+                            with zipfile.ZipFile(zip_file) as z:
+                                for file_info in z.infolist():
+                                    if file_info.is_dir():
+                                        continue
+
+                                    # Extraer ID Venta a partir del directorio superior, o del nombre del ZIP si esta en la raiz
+                                    path_parts = file_info.filename.split('/')
+                                    if len(path_parts) > 1:
+                                        # Buscar la carpeta mas profunda que parezca un ID (numerica)
+                                        # O simplemente tomar la carpeta contenedora directa
+                                        id_venta_raw = path_parts[-2]
+                                    else:
+                                        id_venta_raw = zip_file.name.replace('.zip', '')
+
+                                    # Extraer el numero de la cadena
+                                    num_match = re.search(r'\d+', id_venta_raw)
+                                    if num_match:
+                                        id_venta = num_match.group(0)
+                                    else:
+                                        id_venta = id_venta_raw
+
+                                    id_venta_saneado = re.sub(r'[^a-zA-Z0-9_\-]', '', str(id_venta))
+                                    if not id_venta_saneado:
+                                        continue
+
+                                    # Buscar ruta de expediente
+                                    ruta_base = os.path.join("EXPEDIENTES", "MANUAL", id_venta_saneado)
+                                    for tb in tablas_ventas:
+                                        df_tb = get_df_from_sql(tb)
+                                        col_id = 'id_venta' if 'id_venta' in df_tb.columns else 'ID VENTA' if 'ID VENTA' in df_tb.columns else None
+                                        col_fecha = 'fecha' if 'fecha' in df_tb.columns else 'FECHA' if 'FECHA' in df_tb.columns else None
+
+                                        if col_id and col_fecha and not df_tb.empty:
+                                            fila_match = df_tb[df_tb[col_id].astype(str).str.strip() == id_venta_saneado]
+                                            if not fila_match.empty:
+                                                banco_folder = tb.replace('VENTAS_', '')
+                                                fecha_val = fila_match.iloc[0][col_fecha]
+                                                mes_folder = "GENERAL"
+                                                try:
+                                                    dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                                                    if pd.notna(dt_fecha):
+                                                        mes_folder = dt_fecha.strftime("%Y_%m")
+                                                except: pass
+                                                ruta_base = os.path.join("EXPEDIENTES", "VENTAS", mes_folder, banco_folder, id_venta_saneado)
+                                                break
+
+                                    # Guardar archivo
+                                    os.makedirs(ruta_base, exist_ok=True)
+                                    file_name = path_parts[-1]
+                                    safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
+                                    ruta_destino = os.path.join(ruta_base, safe_name)
+
+                                    with open(ruta_destino, "wb") as f:
+                                        f.write(z.read(file_info.filename))
+
+                                    tipo_doc = safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO'
+
+                                    nuevos_registros_expediente.append({
+                                        "ID_VENTA": id_venta_saneado,
+                                        "NOMBRE_ARCHIVO": safe_name,
+                                        "TIPO_DOCUMENTO": tipo_doc,
+                                        "RUTA_LOCAL": ruta_destino
+                                    })
+
+                                    # Intentar vincular UUID con CFDI
+                                    vincular_cfdi_y_venta(id_venta_saneado, ruta_destino, safe_name)
+
+                        except Exception as e:
+                            st.error(f"Error procesando ZIP {zip_file.name}: {e}")
+
+                if nuevos_registros_expediente:
+                    df_nuevos = pd.DataFrame(nuevos_registros_expediente)
+                    if df_exp.empty:
+                        df_exp = df_nuevos
+                    else:
+                        df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
+
+                    save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
+                    procesados_ventas = True
+                    st.success(f"✅ Se guardaron {len(nuevos_registros_expediente)} archivos extraídos de ZIP en sus respectivos expedientes.")
 
             if archivo_ventas_pdf:
                 import pdfplumber
@@ -1096,13 +1641,19 @@ elif eleccion == "🛒 VENTAS":
                                 if text:
                                     match = re.search(r'Folio:\s*(.*?)(?=\n|Fecha|$)', text, re.IGNORECASE)
                                     if match:
-                                        id_venta = match.group(1).strip()
+                                        id_venta_raw = match.group(1).strip()
+                                        # Extraer solo los números del folio (ignorando P1, P2, etc.)
+                                        num_match = re.search(r'\d+', id_venta_raw)
+                                        if num_match:
+                                            id_venta = num_match.group(0)
+                                        else:
+                                            id_venta = id_venta_raw
 
                             if not id_venta:
                                 st.warning(f"No se encontró 'Folio:' en el archivo {pdf_file.name}. Se omitirá.")
                                 continue
 
-                            id_venta_saneado = re.sub(r'[^a-zA-Z0-9_\- ]', '', str(id_venta))
+                            id_venta_saneado = re.sub(r'[^a-zA-Z0-9_\-]', '', str(id_venta))
 
                             # 2. Buscar ruta de expediente (idéntico a abrir_expediente)
                             ruta_base = os.path.join("EXPEDIENTES", "MANUAL", id_venta_saneado) # Fallback
@@ -1142,6 +1693,9 @@ elif eleccion == "🛒 VENTAS":
                                 "TIPO_DOCUMENTO": "PDF",
                                 "RUTA_LOCAL": ruta_destino
                             })
+
+                            # Intentar vincular UUID con CFDI
+                            vincular_cfdi_y_venta(id_venta_saneado, ruta_destino, safe_name)
 
                         except Exception as e:
                             st.error(f"Error procesando PDF {pdf_file.name}: {e}")
@@ -1297,7 +1851,7 @@ elif eleccion == "🛒 VENTAS":
             df_v['SUCURSAL BAN'] = ""
 
         # Columnas finales a mostrar
-        cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN']
+        cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN', 'UUID']
 
         # Asegurar que existan (por si el excel viene distinto)
         for c in cols_finales_v:
@@ -1453,7 +2007,77 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
         df = get_df_from_sql("VENTAS_MP_CRUZADO")
         if not df.empty and 'estado_cruce' in df.columns: df_alertas_mp = df[df['estado_cruce'] == 'PENDIENTE']
 
-    tab_a, tab_b = st.tabs(["Pendientes BBVA", "Pendientes MP"])
+    def render_sugerencias_inteligentes(df_pendientes):
+        st.info("💡 **Sugerencias de Conciliación Inteligente:** Hemos encontrado pagos en el banco que se acercan a los montos de estas ventas huérfanas pero exceden la tolerancia estricta, o cayeron en meses diferentes. Puedes forzar la conciliación manualmente aquí.")
+
+        # 1. Buscar abonos bancarios huérfanos
+        tablas_todas = get_all_tables()
+        cuentas_bbva = [t for t in tablas_todas if t.startswith("BANCO_") and t.endswith("_CRUZADO")]
+
+        abonos_huerfanos = []
+        for cta in cuentas_bbva:
+            df_cta = get_df_from_sql(cta)
+            if not df_cta.empty and 'ABONO' in df_cta.columns and 'ID_VENTA_CRUCE' in df_cta.columns:
+                huerfanos = df_cta[pd.isna(df_cta['ID_VENTA_CRUCE']) & pd.notna(df_cta['ABONO'])].copy()
+                if not huerfanos.empty:
+                    huerfanos['CUENTA_ORIGEN'] = cta
+                    huerfanos['IDX_ORIGEN'] = huerfanos.index
+                    abonos_huerfanos.append(huerfanos)
+
+        if not abonos_huerfanos:
+            st.success("No se detectaron depósitos huérfanos en los bancos para sugerir.")
+            return
+
+        df_abonos_libres = pd.concat(abonos_huerfanos, ignore_index=True)
+        df_abonos_libres['ABONO_NUM'] = pd.to_numeric(df_abonos_libres['ABONO'], errors='coerce')
+
+        # 2. Generar sugerencias
+        sugerencias = []
+        # Agrupar ventas pendientes por ID
+        df_pend_grp = df_pendientes.groupby('id_venta', as_index=False).agg({
+            'precio_real': 'sum',
+            'fecha': 'first'
+        })
+
+        for _, venta in df_pend_grp.iterrows():
+            total_venta = pd.to_numeric(venta['precio_real'], errors='coerce')
+            if pd.isna(total_venta) or total_venta <= 0: continue
+
+            # Buscar abonos que varíen hasta en un 5% del valor (tolerancia holgada)
+            tolerancia_holgada = total_venta * 0.05
+            if tolerancia_holgada < 100: tolerancia_holgada = 100 # minimo 100 pesos de busqueda
+
+            candidatos = df_abonos_libres[abs(df_abonos_libres['ABONO_NUM'] - total_venta) <= tolerancia_holgada]
+
+            for _, cand in candidatos.iterrows():
+                sugerencias.append({
+                    'ID_VENTA_PENDIENTE': venta['id_venta'],
+                    'TOTAL_VENTA': total_venta,
+                    'FECHA_VENTA': venta['fecha'],
+                    'ABONO_CANDIDATO': cand['ABONO_NUM'],
+                    'FECHA_BANCO': cand.get('FECHA', ''),
+                    'CUENTA_BANCO': cand['CUENTA_ORIGEN'].replace('BANCO_', '').replace('_CRUZADO', ''),
+                    'DIFERENCIA': cand['ABONO_NUM'] - total_venta,
+                    '_CTA_ORIGEN': cand['CUENTA_ORIGEN'],
+                    '_IDX_ORIGEN': cand['IDX_ORIGEN']
+                })
+
+        if sugerencias:
+            df_sug = pd.DataFrame(sugerencias)
+
+            # Quitar nulos y formatear
+            df_sug_ui = df_sug.copy()
+            for col in ['TOTAL_VENTA', 'ABONO_CANDIDATO', 'DIFERENCIA']:
+                df_sug_ui[col] = df_sug_ui[col].apply(lambda x: f"${x:,.2f}")
+
+            # Mostramos las sugerencias con checkbox
+            st.dataframe(df_sug_ui[['ID_VENTA_PENDIENTE', 'FECHA_VENTA', 'TOTAL_VENTA', 'ABONO_CANDIDATO', 'FECHA_BANCO', 'CUENTA_BANCO', 'DIFERENCIA']], use_container_width=True)
+
+            st.markdown("⚠️ *Por el momento, las sugerencias son sólo de lectura/análisis para que sepas dónde pudo haber quedado el depósito. En la próxima actualización habilitaremos el botón para auto-aprobarlas.*")
+        else:
+            st.success("No se detectaron depósitos bancarios que se asemejen a las ventas pendientes.")
+
+    tab_a, tab_b, tab_c = st.tabs(["Pendientes BBVA", "Pendientes MP", "Sugerencias Inteligentes 🧠"])
     with tab_a:
         cc_pendientes_bbva = {}
         if not df_alertas_bbva.empty and 'id_venta' in df_alertas_bbva.columns:
@@ -1468,6 +2092,12 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
             df_alertas_bbva = df_alertas_bbva.drop(columns=['LINK_EXPEDIENTE'])
 
         st.dataframe(df_alertas_bbva, use_container_width=True, column_config=cc_pendientes_bbva)
+
+    with tab_c:
+        if not df_alertas_bbva.empty:
+            render_sugerencias_inteligentes(df_alertas_bbva)
+        else:
+            st.info("No hay ventas de BBVA pendientes para analizar.")
 
     with tab_b:
         st.markdown("✍️ **Edita directamente la columna `numero_transaccion`** para corregir las referencias y presiona el botón para guardar.")
