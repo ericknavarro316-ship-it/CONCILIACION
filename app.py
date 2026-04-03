@@ -134,6 +134,9 @@ def abrir_expediente(id_venta_raw):
                 "RUTA_LOCAL": ruta_destino
             })
 
+            # Intentar vincular UUID con CFDI
+            vincular_cfdi_y_venta(id_venta, ruta_destino, safe_name)
+
         if nuevos_registros:
             df_nuevos = pd.DataFrame(nuevos_registros)
             if df_exp.empty:
@@ -179,7 +182,83 @@ def safe_parse_dates(serie):
 
     return s_iso_full.fillna(s_iso_short).fillna(s_eu)
 
-# 4. HELPER DE FILTROS GLOBALES (OPTIMIZADO CON SQL-FIRST)
+# 4. FUNCIONES PARA EXTRACCION Y VINCULACION DE UUID (CFDI <-> VENTAS)
+def extraer_uuid_de_archivo(ruta_archivo):
+    import re
+    import os
+    uuid_pattern = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
+
+    ext = os.path.splitext(ruta_archivo)[1].lower()
+
+    try:
+        if ext == '.xml':
+            with open(ruta_archivo, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                match = re.search(uuid_pattern, content)
+                if match:
+                    return match.group(0).upper()
+        elif ext == '.pdf':
+            import pdfplumber
+            with pdfplumber.open(ruta_archivo) as pdf:
+                # Revisar las primeras páginas donde suele estar el UUID
+                for page in pdf.pages[:2]:
+                    text = page.extract_text()
+                    if text:
+                        match = re.search(uuid_pattern, text)
+                        if match:
+                            return match.group(0).upper()
+    except Exception as e:
+        print(f"Error extrayendo UUID de {ruta_archivo}: {e}")
+        pass
+
+    return None
+
+def vincular_cfdi_y_venta(id_venta, ruta_archivo, nombre_archivo):
+    uuid_extraido = extraer_uuid_de_archivo(ruta_archivo)
+    if not uuid_extraido:
+        return False
+
+    vinculado = False
+
+    # 1. Actualizar tablas CFDI_I
+    tablas_todas = get_all_tables()
+    tablas_cfdi = [t for t in tablas_todas if t.startswith("CFDI_I_")]
+
+    for tb_cfdi in tablas_cfdi:
+        df_cfdi = get_df_from_sql(tb_cfdi)
+        if not df_cfdi.empty and 'UUID' in df_cfdi.columns:
+            # Encontrar la fila con ese UUID (ignorando case y espacios)
+            mask_uuid = df_cfdi['UUID'].astype(str).str.strip().str.upper() == uuid_extraido
+            if mask_uuid.any():
+                # Actualizamos las columnas ID VENTA y PDF
+                if 'ID VENTA' not in df_cfdi.columns:
+                    df_cfdi['ID VENTA'] = ""
+                if 'PDF' not in df_cfdi.columns:
+                    df_cfdi['PDF'] = ""
+
+                df_cfdi.loc[mask_uuid, 'ID VENTA'] = id_venta
+                df_cfdi.loc[mask_uuid, 'PDF'] = nombre_archivo
+                update_table_from_df(df_cfdi, tb_cfdi)
+                vinculado = True
+
+    # 2. Actualizar tablas de VENTAS
+    if vinculado:
+        tablas_ventas = [t for t in tablas_todas if t.startswith("VENTAS_") and not t.endswith("CRUZADO") and t != "VENTAS_SERIES"]
+        for tb_venta in tablas_ventas:
+            df_venta = get_df_from_sql(tb_venta)
+            col_id = 'id_venta' if 'id_venta' in df_venta.columns else 'ID VENTA' if 'ID VENTA' in df_venta.columns else None
+
+            if col_id and not df_venta.empty:
+                mask_venta = df_venta[col_id].astype(str).str.strip() == str(id_venta)
+                if mask_venta.any():
+                    if 'UUID' not in df_venta.columns:
+                        df_venta['UUID'] = ""
+                    df_venta.loc[mask_venta, 'UUID'] = uuid_extraido
+                    update_table_from_df(df_venta, tb_venta)
+
+    return vinculado
+
+# 5. HELPER DE FILTROS GLOBALES (OPTIMIZADO CON SQL-FIRST)
 def render_filtros_globales_sql(table_name, col_fecha, key_prefix):
     """
     Renderiza controles de filtrado. Extrae únicamente metadatos de fechas (DISTINCT) y luego
@@ -1056,7 +1135,23 @@ elif eleccion == "📄 CFDI (Facturas)":
 
             df_mostrar = df_mostrar.replace("None", "").replace("NaT", "")
 
-            st.dataframe(df_mostrar.style.format(na_rep=""), use_container_width=True, hide_index=True)
+            # Formatear el PDF como un link si existe el ID VENTA vinculado
+            cc_cfdi = {}
+            if 'PDF' in df_mostrar.columns and 'ID VENTA' in df_mostrar.columns:
+                df_mostrar['LINK_PDF'] = df_mostrar.apply(
+                    lambda row: f"/?expediente={row['ID VENTA']}" if pd.notnull(row['ID VENTA']) and str(row['ID VENTA']).strip() != "" and pd.notnull(row['PDF']) and str(row['PDF']).strip() != "" else row['PDF'],
+                    axis=1
+                )
+                cc_cfdi['PDF'] = st.column_config.LinkColumn(
+                    "PDF (Expediente)",
+                    display_text=r"([^/]+)$" # Muestra solo el nombre del archivo al final del link o el valor original si no es link
+                )
+                # Solo reemplazar donde hay link, si no dejar el texto
+                mask = df_mostrar['LINK_PDF'].str.startswith('/?expediente', na=False)
+                df_mostrar.loc[mask, 'PDF'] = df_mostrar.loc[mask, 'LINK_PDF']
+                df_mostrar = df_mostrar.drop(columns=['LINK_PDF'])
+
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True, column_config=cc_cfdi)
 
 elif eleccion == "🛒 VENTAS":
     st.title(":material/point_of_sale: Módulo VENTAS")
@@ -1153,6 +1248,9 @@ elif eleccion == "🛒 VENTAS":
                                         "RUTA_LOCAL": ruta_destino
                                     })
 
+                                    # Intentar vincular UUID con CFDI
+                                    vincular_cfdi_y_venta(id_venta_saneado, ruta_destino, safe_name)
+
                         except Exception as e:
                             st.error(f"Error procesando ZIP {zip_file.name}: {e}")
 
@@ -1242,6 +1340,9 @@ elif eleccion == "🛒 VENTAS":
                                 "TIPO_DOCUMENTO": "PDF",
                                 "RUTA_LOCAL": ruta_destino
                             })
+
+                            # Intentar vincular UUID con CFDI
+                            vincular_cfdi_y_venta(id_venta_saneado, ruta_destino, safe_name)
 
                         except Exception as e:
                             st.error(f"Error procesando PDF {pdf_file.name}: {e}")
@@ -1397,7 +1498,7 @@ elif eleccion == "🛒 VENTAS":
             df_v['SUCURSAL BAN'] = ""
 
         # Columnas finales a mostrar
-        cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN']
+        cols_finales_v = ['ID VENTA', 'FECHA', 'SUCURSAL', 'PRODUCTO', 'NUMERO DE SERIE', 'PRECIO UNITARIO', 'nombre cliente', 'BANCOS COBRO', 'NUMERO TRANSACCION', 'SUCURSAL BAN', 'UUID']
 
         # Asegurar que existan (por si el excel viene distinto)
         for c in cols_finales_v:
