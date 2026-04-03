@@ -385,7 +385,7 @@ def safe_parse_dates(serie):
 def extraer_uuid_de_archivo(ruta_archivo):
     import re
     import os
-    uuid_pattern = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
+    uuid_pattern = r'[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}'
 
     ext = os.path.splitext(ruta_archivo)[1].lower()
 
@@ -395,7 +395,7 @@ def extraer_uuid_de_archivo(ruta_archivo):
                 content = f.read()
                 match = re.search(uuid_pattern, content)
                 if match:
-                    return match.group(0).upper()
+                    return match.group(0).upper().replace('‐', '-')
         elif ext == '.pdf':
             import pdfplumber
             with pdfplumber.open(ruta_archivo) as pdf:
@@ -1292,8 +1292,8 @@ elif eleccion == "📄 CFDI (Facturas)":
                             parts = file_path_in_zip.split('/')
                             # Asumimos que el penultimo puede ser el UUID
                             potential_uuid = parts[-2]
-                            if re.match(r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$', potential_uuid):
-                                uuid_str = potential_uuid.upper()
+                            if re.match(r'^[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}$', potential_uuid):
+                                uuid_str = potential_uuid.upper().replace('‐', '-')
 
                         # Si no hay UUID aún y es PDF, escanear el PDF
                         if not uuid_str and file_name.lower().endswith('.pdf'):
@@ -1303,9 +1303,9 @@ elif eleccion == "📄 CFDI (Facturas)":
                                     for page in pdf.pages[:2]:
                                         text = page.extract_text()
                                         if text:
-                                            match = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', text)
+                                            match = re.search(r'[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}', text)
                                             if match:
-                                                uuid_str = match.group(0).upper()
+                                                uuid_str = match.group(0).upper().replace('‐', '-')
                                                 break
                             except Exception as e:
                                 pass
@@ -1319,9 +1319,9 @@ elif eleccion == "📄 CFDI (Facturas)":
                         # Si no encontramos el UUID, busquemos el nombre del ZIP como posible UUID en el fallback global
                         if is_zip_content and not uuid_str:
                             zip_name_raw = file_name.replace('.zip', '').split('/')[-1]
-                            match_global = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', zip_name_raw)
+                            match_global = re.search(r'[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}', zip_name_raw)
                             if match_global:
-                                uuid_str = match_global.group(0).upper()
+                                uuid_str = match_global.group(0).upper().replace('‐', '-')
                                 ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
 
                         if not uuid_str:
