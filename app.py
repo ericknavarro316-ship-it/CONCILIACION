@@ -1096,13 +1096,19 @@ elif eleccion == "🛒 VENTAS":
                                 if text:
                                     match = re.search(r'Folio:\s*(.*?)(?=\n|Fecha|$)', text, re.IGNORECASE)
                                     if match:
-                                        id_venta = match.group(1).strip()
+                                        id_venta_raw = match.group(1).strip()
+                                        # Extraer solo los números del folio (ignorando P1, P2, etc.)
+                                        num_match = re.search(r'\d+', id_venta_raw)
+                                        if num_match:
+                                            id_venta = num_match.group(0)
+                                        else:
+                                            id_venta = id_venta_raw
 
                             if not id_venta:
                                 st.warning(f"No se encontró 'Folio:' en el archivo {pdf_file.name}. Se omitirá.")
                                 continue
 
-                            id_venta_saneado = re.sub(r'[^a-zA-Z0-9_\- ]', '', str(id_venta))
+                            id_venta_saneado = re.sub(r'[^a-zA-Z0-9_\-]', '', str(id_venta))
 
                             # 2. Buscar ruta de expediente (idéntico a abrir_expediente)
                             ruta_base = os.path.join("EXPEDIENTES", "MANUAL", id_venta_saneado) # Fallback
