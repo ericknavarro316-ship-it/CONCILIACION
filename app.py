@@ -1310,9 +1310,6 @@ elif eleccion == "📄 CFDI (Facturas)":
                             except Exception as e:
                                 pass
 
-                        if not uuid_str:
-                            return None
-
                         # Determinar ruta destino
                         ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
 
