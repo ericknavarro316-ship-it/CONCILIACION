@@ -96,7 +96,7 @@ def abrir_expediente(id_venta_raw):
     if not archivos_venta.empty:
         st.subheader("Documentos Guardados")
         for idx, row in archivos_venta.iterrows():
-            col1, col2 = st.columns([4, 1])
+            col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 st.write(f"📄 {row['NOMBRE_ARCHIVO']} ({row['TIPO_DOCUMENTO']})")
             with col2:
@@ -106,6 +106,29 @@ def abrir_expediente(id_venta_raw):
                         open_local_path(row['RUTA_LOCAL'])
                     else:
                         st.error("El archivo físico ya no existe en esa ruta.")
+            with col3:
+                # Botón Eliminar
+                if st.button("🗑️ Eliminar", key=f"del_{idx}", help="Elimina el archivo físicamente y del registro."):
+                    if os.path.exists(row['RUTA_LOCAL']):
+                        try:
+                            os.remove(row['RUTA_LOCAL'])
+                        except Exception as e:
+                            st.error(f"Error borrando archivo: {e}")
+                    # Eliminar de la base de datos
+                    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+                    if not df_exp.empty:
+                        # Filtrar usando el índice original o ruta local para ser precisos
+                        df_exp = df_exp[df_exp['RUTA_LOCAL'] != row['RUTA_LOCAL']]
+                        from database_sqlite import update_table_from_df
+                        # We use save_df_to_sql here, but wait, if we drop a row, it's better to rewrite the whole table.
+                        import sqlite3
+                        try:
+                            conn = sqlite3.connect("conciliacion_data.db")
+                            df_exp.to_sql("EXPEDIENTES_ARCHIVOS", conn, if_exists="replace", index=False)
+                            conn.close()
+                            st.rerun()
+                        except Exception as e:
+                            pass
     else:
         st.info("Aún no hay documentos para esta venta. Sube los archivos arrastrándolos aquí abajo.")
 
@@ -244,7 +267,7 @@ def abrir_expediente_egresos(uuid_raw):
     if not archivos_egreso.empty:
         st.subheader("Documentos Guardados")
         for idx, row in archivos_egreso.iterrows():
-            col1, col2 = st.columns([4, 1])
+            col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 st.write(f"📄 {row['NOMBRE_ARCHIVO']} ({row['TIPO_DOCUMENTO']})")
             with col2:
@@ -253,6 +276,25 @@ def abrir_expediente_egresos(uuid_raw):
                         open_local_path(row['RUTA_LOCAL'])
                     else:
                         st.error("El archivo físico ya no existe en esa ruta.")
+            with col3:
+                if st.button("🗑️ Eliminar", key=f"del_e_{idx}", help="Elimina el archivo físicamente y del registro."):
+                    if os.path.exists(row['RUTA_LOCAL']):
+                        try:
+                            os.remove(row['RUTA_LOCAL'])
+                        except Exception as e:
+                            st.error(f"Error borrando archivo: {e}")
+                    # Eliminar de la base de datos
+                    df_exp = get_df_from_sql("EXPEDIENTES_ARCHIVOS")
+                    if not df_exp.empty:
+                        df_exp = df_exp[df_exp['RUTA_LOCAL'] != row['RUTA_LOCAL']]
+                        import sqlite3
+                        try:
+                            conn = sqlite3.connect("conciliacion_data.db")
+                            df_exp.to_sql("EXPEDIENTES_ARCHIVOS", conn, if_exists="replace", index=False)
+                            conn.close()
+                            st.rerun()
+                        except Exception as e:
+                            pass
     else:
         st.info("Aún no hay documentos para este Egreso. Sube los archivos arrastrándolos aquí abajo.")
 
@@ -1965,7 +2007,77 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
         df = get_df_from_sql("VENTAS_MP_CRUZADO")
         if not df.empty and 'estado_cruce' in df.columns: df_alertas_mp = df[df['estado_cruce'] == 'PENDIENTE']
 
-    tab_a, tab_b = st.tabs(["Pendientes BBVA", "Pendientes MP"])
+    def render_sugerencias_inteligentes(df_pendientes):
+        st.info("💡 **Sugerencias de Conciliación Inteligente:** Hemos encontrado pagos en el banco que se acercan a los montos de estas ventas huérfanas pero exceden la tolerancia estricta, o cayeron en meses diferentes. Puedes forzar la conciliación manualmente aquí.")
+
+        # 1. Buscar abonos bancarios huérfanos
+        tablas_todas = get_all_tables()
+        cuentas_bbva = [t for t in tablas_todas if t.startswith("BANCO_") and t.endswith("_CRUZADO")]
+
+        abonos_huerfanos = []
+        for cta in cuentas_bbva:
+            df_cta = get_df_from_sql(cta)
+            if not df_cta.empty and 'ABONO' in df_cta.columns and 'ID_VENTA_CRUCE' in df_cta.columns:
+                huerfanos = df_cta[pd.isna(df_cta['ID_VENTA_CRUCE']) & pd.notna(df_cta['ABONO'])].copy()
+                if not huerfanos.empty:
+                    huerfanos['CUENTA_ORIGEN'] = cta
+                    huerfanos['IDX_ORIGEN'] = huerfanos.index
+                    abonos_huerfanos.append(huerfanos)
+
+        if not abonos_huerfanos:
+            st.success("No se detectaron depósitos huérfanos en los bancos para sugerir.")
+            return
+
+        df_abonos_libres = pd.concat(abonos_huerfanos, ignore_index=True)
+        df_abonos_libres['ABONO_NUM'] = pd.to_numeric(df_abonos_libres['ABONO'], errors='coerce')
+
+        # 2. Generar sugerencias
+        sugerencias = []
+        # Agrupar ventas pendientes por ID
+        df_pend_grp = df_pendientes.groupby('id_venta', as_index=False).agg({
+            'precio_real': 'sum',
+            'fecha': 'first'
+        })
+
+        for _, venta in df_pend_grp.iterrows():
+            total_venta = pd.to_numeric(venta['precio_real'], errors='coerce')
+            if pd.isna(total_venta) or total_venta <= 0: continue
+
+            # Buscar abonos que varíen hasta en un 5% del valor (tolerancia holgada)
+            tolerancia_holgada = total_venta * 0.05
+            if tolerancia_holgada < 100: tolerancia_holgada = 100 # minimo 100 pesos de busqueda
+
+            candidatos = df_abonos_libres[abs(df_abonos_libres['ABONO_NUM'] - total_venta) <= tolerancia_holgada]
+
+            for _, cand in candidatos.iterrows():
+                sugerencias.append({
+                    'ID_VENTA_PENDIENTE': venta['id_venta'],
+                    'TOTAL_VENTA': total_venta,
+                    'FECHA_VENTA': venta['fecha'],
+                    'ABONO_CANDIDATO': cand['ABONO_NUM'],
+                    'FECHA_BANCO': cand.get('FECHA', ''),
+                    'CUENTA_BANCO': cand['CUENTA_ORIGEN'].replace('BANCO_', '').replace('_CRUZADO', ''),
+                    'DIFERENCIA': cand['ABONO_NUM'] - total_venta,
+                    '_CTA_ORIGEN': cand['CUENTA_ORIGEN'],
+                    '_IDX_ORIGEN': cand['IDX_ORIGEN']
+                })
+
+        if sugerencias:
+            df_sug = pd.DataFrame(sugerencias)
+
+            # Quitar nulos y formatear
+            df_sug_ui = df_sug.copy()
+            for col in ['TOTAL_VENTA', 'ABONO_CANDIDATO', 'DIFERENCIA']:
+                df_sug_ui[col] = df_sug_ui[col].apply(lambda x: f"${x:,.2f}")
+
+            # Mostramos las sugerencias con checkbox
+            st.dataframe(df_sug_ui[['ID_VENTA_PENDIENTE', 'FECHA_VENTA', 'TOTAL_VENTA', 'ABONO_CANDIDATO', 'FECHA_BANCO', 'CUENTA_BANCO', 'DIFERENCIA']], use_container_width=True)
+
+            st.markdown("⚠️ *Por el momento, las sugerencias son sólo de lectura/análisis para que sepas dónde pudo haber quedado el depósito. En la próxima actualización habilitaremos el botón para auto-aprobarlas.*")
+        else:
+            st.success("No se detectaron depósitos bancarios que se asemejen a las ventas pendientes.")
+
+    tab_a, tab_b, tab_c = st.tabs(["Pendientes BBVA", "Pendientes MP", "Sugerencias Inteligentes 🧠"])
     with tab_a:
         cc_pendientes_bbva = {}
         if not df_alertas_bbva.empty and 'id_venta' in df_alertas_bbva.columns:
@@ -1980,6 +2092,12 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
             df_alertas_bbva = df_alertas_bbva.drop(columns=['LINK_EXPEDIENTE'])
 
         st.dataframe(df_alertas_bbva, use_container_width=True, column_config=cc_pendientes_bbva)
+
+    with tab_c:
+        if not df_alertas_bbva.empty:
+            render_sugerencias_inteligentes(df_alertas_bbva)
+        else:
+            st.info("No hay ventas de BBVA pendientes para analizar.")
 
     with tab_b:
         st.markdown("✍️ **Edita directamente la columna `numero_transaccion`** para corregir las referencias y presiona el botón para guardar.")
