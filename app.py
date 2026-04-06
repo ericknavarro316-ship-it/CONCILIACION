@@ -76,6 +76,12 @@ def abrir_expediente(id_venta_raw):
                 ruta_base = os.path.join("EXPEDIENTES", "VENTAS", mes_folder, banco_folder, id_venta)
                 break
 
+    # Asegurarnos de que el directorio físico exista siempre que se abre el modal
+    os.makedirs(safe_path(ruta_base), exist_ok=True)
+
+    # Asegurarnos de que el directorio físico exista siempre que se abre el modal
+    os.makedirs(safe_path(ruta_base), exist_ok=True)
+
     # Header
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
@@ -247,6 +253,9 @@ def abrir_expediente_egresos(uuid_raw):
 
                 ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_str)
                 break
+
+    # Asegurarnos de que el directorio físico exista siempre que se abre el modal
+    os.makedirs(safe_path(ruta_base), exist_ok=True)
 
     # Header
     col_h1, col_h2 = st.columns([3, 1])
@@ -660,7 +669,7 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                                 col_uuid = next((c for c in df_cfdi.columns if c.strip().upper() == 'UUID'), None)
                                 col_fecha = 'Fecha Pago' if 'PAGOS' in nombre_tabla.upper() else 'Fecha Emisión'
 
-                                if col_uuid and col_fecha in df_cfdi.columns:
+                                if col_uuid:
                                     tipo_comprobante = "OTROS"
                                     if "PUE" in nombre_tabla.upper(): tipo_comprobante = "PUE"
                                     elif "PPD" in nombre_tabla.upper(): tipo_comprobante = "PPD"
@@ -669,13 +678,14 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                                     for _, row in df_cfdi.iterrows():
                                         uuid_val = str(row[col_uuid]).strip().upper()
                                         if uuid_val and uuid_val.lower() != 'nan':
-                                            fecha_val = row[col_fecha]
                                             mes_folder = "GENERAL"
-                                            try:
-                                                dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
-                                                if pd.notna(dt_fecha):
-                                                    mes_folder = dt_fecha.strftime("%Y_%m")
-                                            except: pass
+                                            if col_fecha in df_cfdi.columns:
+                                                fecha_val = row[col_fecha]
+                                                try:
+                                                    dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                                                    if pd.notna(dt_fecha):
+                                                        mes_folder = dt_fecha.strftime("%Y_%m")
+                                                except: pass
 
                                             ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_val)
                                             os.makedirs(safe_path(ruta_base), exist_ok=True)
