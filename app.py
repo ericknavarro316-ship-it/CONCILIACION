@@ -136,61 +136,66 @@ def abrir_expediente(id_venta_raw):
     st.subheader("Subir Nuevos Archivos")
     uploaded_files = st.file_uploader("Arrastra aquí PDF, XML, PNG, JPG...", accept_multiple_files=True, key=f"uploader_{id_venta}")
 
-    if uploaded_files and st.button("💾 Guardar Archivos"):
-        from database_sqlite import update_table_from_df
+    if st.button("💾 Guardar Archivos", disabled=not bool(uploaded_files), help="Sube al menos un archivo para habilitar el botón." if not uploaded_files else "Guardar los archivos subidos."):
+        if uploaded_files:
+            from database_sqlite import update_table_from_df
 
-        os.makedirs(safe_path(ruta_base), exist_ok=True)
+            os.makedirs(safe_path(ruta_base), exist_ok=True)
 
-        nuevos_registros = []
-        for uf in uploaded_files:
-            # Sanitizar nombre de archivo
-            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
-            ruta_destino = os.path.join(ruta_base, safe_name)
+            nuevos_registros = []
+            for uf in uploaded_files:
+                # Sanitizar nombre de archivo
+                safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
+                ruta_destino = os.path.join(ruta_base, safe_name)
 
-            with open(safe_path(ruta_destino), "wb") as f:
-                f.write(uf.getbuffer())
+                with open(safe_path(ruta_destino), "wb") as f:
+                    f.write(uf.getbuffer())
 
-            nuevos_registros.append({
-                "ID_VENTA": id_venta,
-                "NOMBRE_ARCHIVO": safe_name,
-                "TIPO_DOCUMENTO": safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO',
-                "RUTA_LOCAL": ruta_destino
-            })
+                nuevos_registros.append({
+                    "ID_VENTA": id_venta,
+                    "NOMBRE_ARCHIVO": safe_name,
+                    "TIPO_DOCUMENTO": safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO',
+                    "RUTA_LOCAL": ruta_destino
+                })
 
-            # Intentar vincular UUID con CFDI
-            vincular_cfdi_y_venta(id_venta, ruta_destino, safe_name)
+                # Intentar vincular UUID con CFDI
+                vincular_cfdi_y_venta(id_venta, ruta_destino, safe_name)
 
-        if nuevos_registros:
-            # Actualizar la columna PDF en la tabla correspondiente si suben un PDF
-            for tb in tablas_egresos:
-                df_tb = get_df_from_sql(tb)
-                if 'UUID' in df_tb.columns and not df_tb.empty:
-                    mask = df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str
-                    if mask.any():
-                        # Buscar si se subió algún PDF para asignarlo al campo
-                        pdf_name = next((r["NOMBRE_ARCHIVO"] for r in nuevos_registros if r["TIPO_DOCUMENTO"] == "PDF"), None)
-                        if not pdf_name:
-                            # Si no hay PDF, tomamos el primer archivo como referencia (ej XML)
-                            pdf_name = nuevos_registros[0]["NOMBRE_ARCHIVO"]
+            if nuevos_registros:
+                # Actualizar la columna PDF en la tabla correspondiente si suben un PDF
+                for tb in tablas_egresos:
+                    df_tb = get_df_from_sql(tb)
+                    if 'UUID' in df_tb.columns and not df_tb.empty:
+                        # uuid_str might not exist here, falling back if not defined in context
+                        try:
+                            mask = df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str
+                            if mask.any():
+                                # Buscar si se subió algún PDF para asignarlo al campo
+                                pdf_name = next((r["NOMBRE_ARCHIVO"] for r in nuevos_registros if r["TIPO_DOCUMENTO"] == "PDF"), None)
+                                if not pdf_name:
+                                    # Si no hay PDF, tomamos el primer archivo como referencia (ej XML)
+                                    pdf_name = nuevos_registros[0]["NOMBRE_ARCHIVO"]
 
-                        if 'PDF' not in df_tb.columns:
-                            df_tb['PDF'] = ""
+                                if 'PDF' not in df_tb.columns:
+                                    df_tb['PDF'] = ""
 
-                        df_tb.loc[mask, 'PDF'] = pdf_name
-                        update_table_from_df(df_tb, tb)
-                        break
+                                df_tb.loc[mask, 'PDF'] = pdf_name
+                                update_table_from_df(df_tb, tb)
+                                break
+                        except Exception:
+                            pass
 
-            df_nuevos = pd.DataFrame(nuevos_registros)
-            if df_exp.empty:
-                df_exp = df_nuevos
-            else:
-                df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
+                df_nuevos = pd.DataFrame(nuevos_registros)
+                if df_exp.empty:
+                    df_exp = df_nuevos
+                else:
+                    df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
 
-            save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
-            st.success("Archivos guardados correctamente.")
-            import time
-            time.sleep(1)
-            st.rerun()
+                save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
+                st.success("Archivos guardados correctamente.")
+                import time
+                time.sleep(1)
+                st.rerun()
 
 @st.dialog("📁 Expediente de Egreso", width="large")
 def abrir_expediente_egresos(uuid_raw):
@@ -302,49 +307,50 @@ def abrir_expediente_egresos(uuid_raw):
     st.subheader("Subir Nuevos Archivos")
     uploaded_files = st.file_uploader("Arrastra aquí PDF, XML, PNG, JPG...", accept_multiple_files=True, key=f"uploader_e_{uuid_str}")
 
-    if uploaded_files and st.button("💾 Guardar Archivos"):
-        from database_sqlite import update_table_from_df
-        os.makedirs(safe_path(ruta_base), exist_ok=True)
-        nuevos_registros = []
-        for uf in uploaded_files:
-            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
-            ruta_destino = os.path.join(ruta_base, safe_name)
-            with open(safe_path(ruta_destino), "wb") as f:
-                f.write(uf.getbuffer())
-            nuevos_registros.append({
-                "ID_VENTA": uuid_str,  # Reusamos columna para guardar el UUID
-                "NOMBRE_ARCHIVO": safe_name,
-                "TIPO_DOCUMENTO": safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO',
-                "RUTA_LOCAL": ruta_destino
-            })
-        if nuevos_registros:
-            # Actualizar la columna PDF en la tabla correspondiente si suben un PDF
-            for tb in tablas_egresos:
-                df_tb = get_df_from_sql(tb)
-                if 'UUID' in df_tb.columns and not df_tb.empty:
-                    mask = df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str
-                    if mask.any():
-                        # Buscar si se subió algún PDF para asignarlo al campo
-                        pdf_name = next((r["NOMBRE_ARCHIVO"] for r in nuevos_registros if r["TIPO_DOCUMENTO"] == "PDF"), None)
-                        if not pdf_name:
-                            # Si no hay PDF, tomamos el primer archivo como referencia (ej XML)
-                            pdf_name = nuevos_registros[0]["NOMBRE_ARCHIVO"]
+    if st.button("💾 Guardar Archivos", key=f"btn_upload_e_{uuid_str}", disabled=not bool(uploaded_files), help="Sube al menos un archivo para habilitar el botón." if not uploaded_files else "Guardar los archivos subidos."):
+        if uploaded_files:
+            from database_sqlite import update_table_from_df
+            os.makedirs(safe_path(ruta_base), exist_ok=True)
+            nuevos_registros = []
+            for uf in uploaded_files:
+                safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
+                ruta_destino = os.path.join(ruta_base, safe_name)
+                with open(safe_path(ruta_destino), "wb") as f:
+                    f.write(uf.getbuffer())
+                nuevos_registros.append({
+                    "ID_VENTA": uuid_str,  # Reusamos columna para guardar el UUID
+                    "NOMBRE_ARCHIVO": safe_name,
+                    "TIPO_DOCUMENTO": safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO',
+                    "RUTA_LOCAL": ruta_destino
+                })
+            if nuevos_registros:
+                # Actualizar la columna PDF en la tabla correspondiente si suben un PDF
+                for tb in tablas_egresos:
+                    df_tb = get_df_from_sql(tb)
+                    if 'UUID' in df_tb.columns and not df_tb.empty:
+                        mask = df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str
+                        if mask.any():
+                            # Buscar si se subió algún PDF para asignarlo al campo
+                            pdf_name = next((r["NOMBRE_ARCHIVO"] for r in nuevos_registros if r["TIPO_DOCUMENTO"] == "PDF"), None)
+                            if not pdf_name:
+                                # Si no hay PDF, tomamos el primer archivo como referencia (ej XML)
+                                pdf_name = nuevos_registros[0]["NOMBRE_ARCHIVO"]
 
-                        if 'PDF' not in df_tb.columns:
-                            df_tb['PDF'] = ""
+                            if 'PDF' not in df_tb.columns:
+                                df_tb['PDF'] = ""
 
-                        df_tb.loc[mask, 'PDF'] = pdf_name
-                        update_table_from_df(df_tb, tb)
-                        break
+                            df_tb.loc[mask, 'PDF'] = pdf_name
+                            update_table_from_df(df_tb, tb)
+                            break
 
-            df_nuevos = pd.DataFrame(nuevos_registros)
-            if df_exp.empty: df_exp = df_nuevos
-            else: df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
-            save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
-            st.success("Archivos guardados correctamente.")
-            import time
-            time.sleep(1)
-            st.rerun()
+                df_nuevos = pd.DataFrame(nuevos_registros)
+                if df_exp.empty: df_exp = df_nuevos
+                else: df_exp = pd.concat([df_exp, df_nuevos], ignore_index=True)
+                save_df_to_sql(df_exp, "EXPEDIENTES_ARCHIVOS")
+                st.success("Archivos guardados correctamente.")
+                import time
+                time.sleep(1)
+                st.rerun()
 
 # Interceptar query params para abrir modal
 if "expediente" in st.query_params:
@@ -609,7 +615,7 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
         st.markdown("Sube un solo archivo Excel con todas las hojas (Bancos, Ventas, CFDI).")
         archivo_subido = st.file_uploader("📂 Cargar Mega Excel", type=['xlsx', 'xlsm'], key="consolidado")
 
-        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado"):
+        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado", disabled=not bool(archivo_subido), help="Sube un archivo consolidado para habilitar el botón." if not archivo_subido else "Procesar el archivo Excel consolidado."):
             if archivo_subido is not None:
                 with st.spinner("Procesando Bancos..."):
                     bancos = limpiar_modulo_bancos(archivo_subido)
@@ -634,15 +640,13 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                         save_df_to_sql(df_venta, nombre_venta)
 
                 st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
-            else:
-                st.warning("⚠️ Sube un archivo consolidado primero.")
 
     with tab4:
         st.markdown("### Carga de CFDI (Individual)")
         st.markdown("Sube los reportes del SAT (Ingresos/Egresos).")
         archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="cfdi")
 
-        if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
+        if st.button("Procesar CFDI", type="primary", key="btn_cfdi", disabled=not bool(archivo_cfdi), help="Sube al menos un archivo CFDI para habilitar el botón." if not archivo_cfdi else "Procesar los archivos CFDI subidos."):
             if archivo_cfdi:
                 for archivo in archivo_cfdi:
                     with st.spinner(f"Procesando {archivo.name}..."):
@@ -651,8 +655,6 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                             nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
                             save_df_to_sql(df_cfdi, nombre_tabla)
                 st.success("✅ ¡CFDI guardados en la Base de Datos SQL!")
-            else:
-                st.warning("⚠️ Sube un archivo CFDI primero.")
 
 # ==========================================================
 # MÓDULOS DE VISUALIZACIÓN BÁSICA
@@ -671,7 +673,7 @@ elif eleccion == "🏦 BANCOS":
             archivo_est_excel = st.file_uploader("📂 Cargar Estado de Cuenta (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="est_excel")
             archivo_est_pdf = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'], accept_multiple_files=True, key="est_pdf")
 
-            if st.button("Procesar Estados de Cuenta", type="primary"):
+            if st.button("Procesar Estados de Cuenta", type="primary", disabled=not (bool(archivo_est_excel) or bool(archivo_est_pdf)), help="Sube al menos un estado de cuenta (Excel o PDF) para habilitar el botón." if not (archivo_est_excel or archivo_est_pdf) else "Procesar los estados de cuenta subidos."):
                 procesados = False
 
                 if archivo_est_excel:
@@ -719,14 +721,12 @@ elif eleccion == "🏦 BANCOS":
                     import time
                     time.sleep(1.5)
                     st.rerun()
-                else:
-                    st.warning("Sube un archivo primero.")
 
         else: # Movimientos Operativos
             st.markdown("Sube archivos de **Movimientos Operativos** (Excel).")
             archivo_det_excel = st.file_uploader("📂 Cargar Movimientos (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="det_excel")
 
-            if st.button("Procesar Movimientos", type="primary"):
+            if st.button("Procesar Movimientos", type="primary", disabled=not bool(archivo_det_excel), help="Sube al menos un archivo de movimientos para habilitar el botón." if not archivo_det_excel else "Procesar los archivos de movimientos subidos."):
                 if archivo_det_excel:
                     for archivo in archivo_det_excel:
                         with st.spinner(f"Procesando {archivo.name}..."):
@@ -758,8 +758,6 @@ elif eleccion == "🏦 BANCOS":
                     import time
                     time.sleep(1.5)
                     st.rerun()
-                else:
-                    st.warning("Sube un archivo de Excel primero.")
 
     st.divider()
 
@@ -1281,7 +1279,7 @@ elif eleccion == "📄 CFDI (Facturas)":
                 archivo_egresos_pdf = st.file_uploader("📂 Cargar Facturas (PDF)", type=['pdf'], accept_multiple_files=True, key="egresos_pdf")
                 archivo_egresos_zip = st.file_uploader("📂 Cargar Expedientes Completos (ZIP)", type=['zip'], accept_multiple_files=True, key="egresos_zip")
 
-                if st.button("Procesar Archivos de Egresos", type="primary"):
+                if st.button("Procesar Archivos de Egresos", type="primary", disabled=not (bool(archivo_egresos_pdf) or bool(archivo_egresos_zip)), help="Sube al menos un archivo de egresos (PDF o ZIP) para habilitar el botón." if not (archivo_egresos_pdf or archivo_egresos_zip) else "Procesar los archivos de egresos subidos."):
                     import os
                     import zipfile
                     import shutil
@@ -1426,8 +1424,6 @@ elif eleccion == "📄 CFDI (Facturas)":
                         import time
                         time.sleep(1.5)
                         st.rerun()
-                    else:
-                        st.warning("⚠️ No se identificaron archivos con UUIDs válidos o no se subió nada.")
             st.divider()
 
         tablas_mostrar = tablas_cfdi_ingresos if tipo_cfdi == "INGRESOS" else tablas_cfdi_egresos
@@ -1543,7 +1539,7 @@ elif eleccion == "🛒 VENTAS":
         archivo_ventas_pdf = st.file_uploader("📂 Cargar Notas de Ventas en lote (PDF)", type=['pdf'], accept_multiple_files=True, key="ventas_pdf", help="Se extraerá el Folio y se guardará en su respectivo expediente de venta automáticamente.")
         archivo_ventas_zip = st.file_uploader("📂 Cargar Expedientes (ZIP)", type=['zip'], accept_multiple_files=True, key="ventas_zip", help="Sube archivos ZIP donde el nombre de la carpeta o archivo contenga el ID VENTA (ej. carpeta 28336/).")
 
-        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado"):
+        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado", disabled=not (bool(archivo_ventas) or bool(archivo_ventas_csv) or bool(archivo_ventas_pdf) or bool(archivo_ventas_zip)), help="Sube al menos un archivo de ventas para habilitar el botón." if not (archivo_ventas or archivo_ventas_csv or archivo_ventas_pdf or archivo_ventas_zip) else "Procesar los archivos de ventas subidos."):
             procesados_ventas = False
             import os
 
@@ -1769,8 +1765,6 @@ elif eleccion == "🛒 VENTAS":
                 import time
                 time.sleep(1.5)
                 st.rerun()
-            else:
-                st.warning("⚠️ Sube al menos un archivo de ventas o reporte de series CSV primero.")
 
     st.divider()
 

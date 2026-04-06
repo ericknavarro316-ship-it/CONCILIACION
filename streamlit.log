@@ -1,2 +1,36 @@
-Iniciando ERP Conciliacion PRO...
-./run.sh: line 3: streamlit: command not found
+
+Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.2:8501
+  External URL: http://35.224.132.190:8501
+
+2026-04-06 18:14:37.175 Uncaught app execution
+Traceback (most recent call last):
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 689, in code_to_exec
+    exec(code, module.__dict__)  # noqa: S102
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/app.py", line 23, in <module>
+    from pdf_reader import parse_bank_pdf
+  File "/app/pdf_reader.py", line 3, in <module>
+    import pdfplumber
+ModuleNotFoundError: No module named 'pdfplumber'
+2026-04-06 18:15:35.042 Uncaught app execution
+Traceback (most recent call last):
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 129, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 689, in code_to_exec
+    exec(code, module.__dict__)  # noqa: S102
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/app.py", line 23, in <module>
+    from pdf_reader import parse_bank_pdf
+  File "/app/pdf_reader.py", line 3, in <module>
+    import pdfplumber
+ModuleNotFoundError: No module named 'pdfplumber'
