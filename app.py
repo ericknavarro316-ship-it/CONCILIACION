@@ -164,8 +164,9 @@ def abrir_expediente(id_venta_raw):
             # Actualizar la columna PDF en la tabla correspondiente si suben un PDF
             for tb in tablas_egresos:
                 df_tb = get_df_from_sql(tb)
-                if 'UUID' in df_tb.columns and not df_tb.empty:
-                    mask = df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str
+                col_uuid = next((c for c in df_tb.columns if c.strip().upper() == 'UUID'), None)
+                if col_uuid and not df_tb.empty:
+                    mask = df_tb[col_uuid].astype(str).str.strip().str.upper() == uuid_str
                     if mask.any():
                         # Buscar si se subió algún PDF para asignarlo al campo
                         pdf_name = next((r["NOMBRE_ARCHIVO"] for r in nuevos_registros if r["TIPO_DOCUMENTO"] == "PDF"), None)
@@ -394,7 +395,7 @@ def safe_parse_dates(serie):
 def extraer_uuid_de_archivo(ruta_archivo):
     import re
     import os
-    uuid_pattern = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
+    uuid_pattern = r'[0-9A-Fa-f]{8}[\-\u2010][0-9A-Fa-f]{4}[\-\u2010][0-9A-Fa-f]{4}[\-\u2010][0-9A-Fa-f]{4}[\-\u2010][0-9A-Fa-f]{12}'
 
     ext = os.path.splitext(ruta_archivo)[1].lower()
 
@@ -414,7 +415,8 @@ def extraer_uuid_de_archivo(ruta_archivo):
                     if text:
                         match = re.search(uuid_pattern, text)
                         if match:
-                            return match.group(0).upper()
+                            # Normalizar guiones raros a guiones normales
+                            return match.group(0).upper().replace('\u2010', '-')
     except Exception as e:
         print(f"Error extrayendo UUID de {ruta_archivo}: {e}")
         pass
@@ -644,13 +646,40 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
 
         if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
             if archivo_cfdi:
+                import os
+                import pandas as pd
                 for archivo in archivo_cfdi:
                     with st.spinner(f"Procesando {archivo.name}..."):
                         cfdis = limpiar_modulo_cfdi(archivo)
                         for nombre_cfdi, df_cfdi in cfdis.items():
                             nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
                             save_df_to_sql(df_cfdi, nombre_tabla)
-                st.success("✅ ¡CFDI guardados en la Base de Datos SQL!")
+
+                            # Generar estructura de carpetas para Egresos automáticamente
+                            if nombre_tabla.startswith("CFDI_E_") or nombre_tabla.startswith("PAGOS_E"):
+                                col_uuid = next((c for c in df_cfdi.columns if c.strip().upper() == 'UUID'), None)
+                                col_fecha = 'Fecha Pago' if 'PAGOS' in nombre_tabla.upper() else 'Fecha Emisión'
+
+                                if col_uuid and col_fecha in df_cfdi.columns:
+                                    tipo_comprobante = "OTROS"
+                                    if "PUE" in nombre_tabla.upper(): tipo_comprobante = "PUE"
+                                    elif "PPD" in nombre_tabla.upper(): tipo_comprobante = "PPD"
+                                    elif "PAGOS" in nombre_tabla.upper(): tipo_comprobante = "PAGOS"
+
+                                    for _, row in df_cfdi.iterrows():
+                                        uuid_val = str(row[col_uuid]).strip().upper()
+                                        if uuid_val and uuid_val.lower() != 'nan':
+                                            fecha_val = row[col_fecha]
+                                            mes_folder = "GENERAL"
+                                            try:
+                                                dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                                                if pd.notna(dt_fecha):
+                                                    mes_folder = dt_fecha.strftime("%Y_%m")
+                                            except: pass
+
+                                            ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_val)
+                                            os.makedirs(safe_path(ruta_base), exist_ok=True)
+                st.success("✅ ¡CFDI guardados en la Base de Datos SQL y carpetas de expedientes generadas!")
             else:
                 st.warning("⚠️ Sube un archivo CFDI primero.")
 
@@ -1312,18 +1341,16 @@ elif eleccion == "📄 CFDI (Facturas)":
                                     for page in pdf.pages[:2]:
                                         text = page.extract_text()
                                         if text:
-                                            match = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', text)
+                                            match = re.search(r'[0-9A-Fa-f]{8}[\-\u2010][0-9A-Fa-f]{4}[\-\u2010][0-9A-Fa-f]{4}[\-\u2010][0-9A-Fa-f]{4}[\-\u2010][0-9A-Fa-f]{12}', text)
                                             if match:
-                                                uuid_str = match.group(0).upper()
+                                                uuid_str = match.group(0).upper().replace('\u2010', '-')
                                                 break
                             except Exception as e:
                                 pass
 
-                        if not uuid_str:
-                            return None
-
                         # Determinar ruta destino
-                        ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
+                        uuid_seguro = uuid_str if uuid_str else "DESCONOCIDOS"
+                        ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_seguro)
 
                         # Si no encontramos el UUID, busquemos el nombre del ZIP como posible UUID en el fallback global
                         if is_zip_content and not uuid_str:
@@ -1341,8 +1368,11 @@ elif eleccion == "📄 CFDI (Facturas)":
 
                         for tb in tablas_egresos:
                             df_tb = get_df_from_sql(tb)
-                            if 'UUID' in df_tb.columns and not df_tb.empty:
-                                fila_match = df_tb[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str]
+                            # Búsqueda de columna flexible para UUID (puede llamarse 'Uuid', 'UUID ', etc.)
+                            col_uuid = next((c for c in df_tb.columns if c.strip().upper() == 'UUID'), None)
+
+                            if col_uuid and not df_tb.empty:
+                                fila_match = df_tb[df_tb[col_uuid].astype(str).str.strip().str.upper() == uuid_str]
                                 if not fila_match.empty:
                                     tipo_comprobante = "OTROS"
                                     if "PUE" in tb.upper(): tipo_comprobante = "PUE"
@@ -1367,9 +1397,9 @@ elif eleccion == "📄 CFDI (Facturas)":
                                         df_tb['PDF'] = ""
                                     # Si es el XML no reemplazamos el PDF si ya existe, a menos que queramos guardar ambos,
                                     # pero si es PDF damos prioridad
-                                    current_pdf = df_tb.loc[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str, 'PDF'].values[0]
+                                    current_pdf = df_tb.loc[df_tb[col_uuid].astype(str).str.strip().str.upper() == uuid_str, 'PDF'].values[0]
                                     if pd.isna(current_pdf) or current_pdf == "" or safe_name_tmp.lower().endswith('.pdf'):
-                                        df_tb.loc[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str, 'PDF'] = safe_name_tmp
+                                        df_tb.loc[df_tb[col_uuid].astype(str).str.strip().str.upper() == uuid_str, 'PDF'] = safe_name_tmp
                                         update_table_from_df(df_tb, tb)
 
                                     break
@@ -1667,12 +1697,8 @@ elif eleccion == "🛒 VENTAS":
                                     match = re.search(r'Folio:\s*(.*?)(?=\n|Fecha|$)', text, re.IGNORECASE)
                                     if match:
                                         id_venta_raw = match.group(1).strip()
-                                        # Extraer solo los números del folio (ignorando P1, P2, etc.)
-                                        num_match = re.search(r'\d+', id_venta_raw)
-                                        if num_match:
-                                            id_venta = num_match.group(0)
-                                        else:
-                                            id_venta = id_venta_raw
+                                        # Eliminar sufijos como P1, P2, etc. (ej. "384 P1", "nv 28336 P1")
+                                        id_venta = re.sub(r'\s*P\d+$', '', id_venta_raw, flags=re.IGNORECASE).strip()
 
                             if not id_venta:
                                 st.warning(f"No se encontró 'Folio:' en el archivo {pdf_file.name}. Se omitirá.")
