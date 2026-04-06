@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import os
-import re
 
 # Módulos core
 from modulo_bancos_fix import limpiar_mp
@@ -140,7 +139,7 @@ def abrir_expediente(id_venta_raw):
     if uploaded_files and st.button("💾 Guardar Archivos"):
         from database_sqlite import update_table_from_df
 
-        os.makedirs(ruta_base, exist_ok=True)
+        os.makedirs(safe_path(ruta_base), exist_ok=True)
 
         nuevos_registros = []
         for uf in uploaded_files:
@@ -148,7 +147,7 @@ def abrir_expediente(id_venta_raw):
             safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
             ruta_destino = os.path.join(ruta_base, safe_name)
 
-            with open(ruta_destino, "wb") as f:
+            with open(safe_path(ruta_destino), "wb") as f:
                 f.write(uf.getbuffer())
 
             nuevos_registros.append({
@@ -305,12 +304,12 @@ def abrir_expediente_egresos(uuid_raw):
 
     if uploaded_files and st.button("💾 Guardar Archivos"):
         from database_sqlite import update_table_from_df
-        os.makedirs(ruta_base, exist_ok=True)
+        os.makedirs(safe_path(ruta_base), exist_ok=True)
         nuevos_registros = []
         for uf in uploaded_files:
             safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', uf.name)
             ruta_destino = os.path.join(ruta_base, safe_name)
-            with open(ruta_destino, "wb") as f:
+            with open(safe_path(ruta_destino), "wb") as f:
                 f.write(uf.getbuffer())
             nuevos_registros.append({
                 "ID_VENTA": uuid_str,  # Reusamos columna para guardar el UUID
@@ -371,6 +370,15 @@ if not os.path.exists("conciliacion_data.db"):
     database_sqlite.init_db()
 
 # 3. HELPER DE FECHAS ROBUSTO
+def safe_path(ruta_relativa):
+    import os
+    ruta_absoluta = os.path.abspath(ruta_relativa)
+    if os.name == 'nt':
+        prefix = "\\" + "\\" + "?" + "\\"
+        if not ruta_absoluta.startswith(prefix):
+            return prefix + ruta_absoluta
+    return ruta_absoluta
+
 def safe_parse_dates(serie):
     """
     Intenta parsear fechas de forma segura para no invertir Día y Mes.
@@ -386,7 +394,7 @@ def safe_parse_dates(serie):
 def extraer_uuid_de_archivo(ruta_archivo):
     import re
     import os
-    uuid_pattern = r'[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}'
+    uuid_pattern = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
 
     ext = os.path.splitext(ruta_archivo)[1].lower()
 
@@ -396,7 +404,7 @@ def extraer_uuid_de_archivo(ruta_archivo):
                 content = f.read()
                 match = re.search(uuid_pattern, content)
                 if match:
-                    return match.group(0).upper().replace('‐', '-')
+                    return match.group(0).upper()
         elif ext == '.pdf':
             import pdfplumber
             with pdfplumber.open(ruta_archivo) as pdf:
@@ -1293,8 +1301,8 @@ elif eleccion == "📄 CFDI (Facturas)":
                             parts = file_path_in_zip.split('/')
                             # Asumimos que el penultimo puede ser el UUID
                             potential_uuid = parts[-2]
-                            if re.match(r'^[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}$', potential_uuid):
-                                uuid_str = potential_uuid.upper().replace('‐', '-')
+                            if re.match(r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$', potential_uuid):
+                                uuid_str = potential_uuid.upper()
 
                         # Si no hay UUID aún y es PDF, escanear el PDF
                         if not uuid_str and file_name.lower().endswith('.pdf'):
@@ -1304,29 +1312,25 @@ elif eleccion == "📄 CFDI (Facturas)":
                                     for page in pdf.pages[:2]:
                                         text = page.extract_text()
                                         if text:
-                                            match = re.search(r'[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}', text)
+                                            match = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', text)
                                             if match:
-                                                uuid_str = match.group(0).upper().replace('‐', '-')
+                                                uuid_str = match.group(0).upper()
                                                 break
                             except Exception as e:
                                 pass
 
-                        # Si uuid_str sigue nulo, tenemos que inicializarlo antes de usar path.join
                         if not uuid_str:
-                            uuid_str_temp = "DESCONOCIDO"
-                        else:
-                            uuid_str_temp = uuid_str
+                            return None
 
-                        # Determinar ruta destino inicial
-                        ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str_temp)
+                        # Determinar ruta destino
+                        ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
 
                         # Si no encontramos el UUID, busquemos el nombre del ZIP como posible UUID en el fallback global
                         if is_zip_content and not uuid_str:
-                            # Si no se pudo obtener del PDF, y fue extraido de un ZIP, verificamos si la carpeta o el ZIP padre tiene nombre de UUID
-                            zip_name_raw = file_path_in_zip.split('/')[0] if '/' in file_path_in_zip else file_name.replace('.zip', '')
-                            match_global = re.search(r'[0-9A-Fa-f]{8}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{4}[-‐][0-9A-Fa-f]{12}', zip_name_raw)
+                            zip_name_raw = file_name.replace('.zip', '').split('/')[-1]
+                            match_global = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', zip_name_raw)
                             if match_global:
-                                uuid_str = match_global.group(0).upper().replace('‐', '-')
+                                uuid_str = match_global.group(0).upper()
                                 ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", "MANUAL", uuid_str)
 
                         if not uuid_str:
@@ -1337,12 +1341,8 @@ elif eleccion == "📄 CFDI (Facturas)":
 
                         for tb in tablas_egresos:
                             df_tb = get_df_from_sql(tb)
-
-                            # Normalizar la busqueda de la columna UUID en caso de que venga con espacios o diferentes casings
-                            col_uuid = next((c for c in df_tb.columns if c.strip().upper() == 'UUID'), None)
-
-                            if col_uuid and not df_tb.empty:
-                                fila_match = df_tb[df_tb[col_uuid].astype(str).str.strip().str.upper() == uuid_str]
+                            if 'UUID' in df_tb.columns and not df_tb.empty:
+                                fila_match = df_tb[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str]
                                 if not fila_match.empty:
                                     tipo_comprobante = "OTROS"
                                     if "PUE" in tb.upper(): tipo_comprobante = "PUE"
@@ -1374,12 +1374,12 @@ elif eleccion == "📄 CFDI (Facturas)":
 
                                     break
 
-                        os.makedirs(ruta_base, exist_ok=True)
+                        os.makedirs(safe_path(ruta_base), exist_ok=True)
                         safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
                         ruta_destino = os.path.join(ruta_base, safe_name)
 
                         file_buffer.seek(0)
-                        with open(ruta_destino, "wb") as f:
+                        with open(safe_path(ruta_destino), "wb") as f:
                             f.write(file_buffer.read())
 
                         tipo_doc = safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO'
@@ -1609,12 +1609,12 @@ elif eleccion == "🛒 VENTAS":
                                                 break
 
                                     # Guardar archivo
-                                    os.makedirs(ruta_base, exist_ok=True)
+                                    os.makedirs(safe_path(ruta_base), exist_ok=True)
                                     file_name = path_parts[-1]
                                     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
                                     ruta_destino = os.path.join(ruta_base, safe_name)
 
-                                    with open(ruta_destino, "wb") as f:
+                                    with open(safe_path(ruta_destino), "wb") as f:
                                         f.write(z.read(file_info.filename))
 
                                     tipo_doc = safe_name.split('.')[-1].upper() if '.' in safe_name else 'DESCONOCIDO'
@@ -1705,11 +1705,11 @@ elif eleccion == "🛒 VENTAS":
                                         break
 
                             # 3. Guardar archivo
-                            os.makedirs(ruta_base, exist_ok=True)
+                            os.makedirs(safe_path(ruta_base), exist_ok=True)
                             safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', pdf_file.name)
                             ruta_destino = os.path.join(ruta_base, safe_name)
 
-                            with open(ruta_destino, "wb") as f:
+                            with open(safe_path(ruta_destino), "wb") as f:
                                 f.write(pdf_file.getbuffer())
 
                             nuevos_registros_expediente.append({
