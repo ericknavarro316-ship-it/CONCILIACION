@@ -646,13 +646,40 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
 
         if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
             if archivo_cfdi:
+                import os
+                import pandas as pd
                 for archivo in archivo_cfdi:
                     with st.spinner(f"Procesando {archivo.name}..."):
                         cfdis = limpiar_modulo_cfdi(archivo)
                         for nombre_cfdi, df_cfdi in cfdis.items():
                             nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
                             save_df_to_sql(df_cfdi, nombre_tabla)
-                st.success("✅ ¡CFDI guardados en la Base de Datos SQL!")
+
+                            # Generar estructura de carpetas para Egresos automáticamente
+                            if nombre_tabla.startswith("CFDI_E_") or nombre_tabla.startswith("PAGOS_E"):
+                                col_uuid = next((c for c in df_cfdi.columns if c.strip().upper() == 'UUID'), None)
+                                col_fecha = 'Fecha Pago' if 'PAGOS' in nombre_tabla.upper() else 'Fecha Emisión'
+
+                                if col_uuid and col_fecha in df_cfdi.columns:
+                                    tipo_comprobante = "OTROS"
+                                    if "PUE" in nombre_tabla.upper(): tipo_comprobante = "PUE"
+                                    elif "PPD" in nombre_tabla.upper(): tipo_comprobante = "PPD"
+                                    elif "PAGOS" in nombre_tabla.upper(): tipo_comprobante = "PAGOS"
+
+                                    for _, row in df_cfdi.iterrows():
+                                        uuid_val = str(row[col_uuid]).strip().upper()
+                                        if uuid_val and uuid_val.lower() != 'nan':
+                                            fecha_val = row[col_fecha]
+                                            mes_folder = "GENERAL"
+                                            try:
+                                                dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                                                if pd.notna(dt_fecha):
+                                                    mes_folder = dt_fecha.strftime("%Y_%m")
+                                            except: pass
+
+                                            ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_val)
+                                            os.makedirs(safe_path(ruta_base), exist_ok=True)
+                st.success("✅ ¡CFDI guardados en la Base de Datos SQL y carpetas de expedientes generadas!")
             else:
                 st.warning("⚠️ Sube un archivo CFDI primero.")
 
