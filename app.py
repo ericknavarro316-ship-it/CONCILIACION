@@ -387,6 +387,35 @@ if not os.path.exists("conciliacion_data.db"):
     database_sqlite.init_db()
 
 # 3. HELPER DE FECHAS ROBUSTO
+
+def generar_carpetas_egresos(df_cfdi, nombre_tabla):
+    import os
+    import pandas as pd
+    if nombre_tabla.startswith("CFDI_E_") or nombre_tabla.startswith("PAGOS_E"):
+        col_uuid = next((c for c in df_cfdi.columns if c.strip().upper() == 'UUID'), None)
+        col_fecha = 'Fecha Pago' if 'PAGOS' in nombre_tabla.upper() else 'Fecha Emisión'
+
+        if col_uuid:
+            tipo_comprobante = "OTROS"
+            if "PUE" in nombre_tabla.upper(): tipo_comprobante = "PUE"
+            elif "PPD" in nombre_tabla.upper(): tipo_comprobante = "PPD"
+            elif "PAGOS" in nombre_tabla.upper(): tipo_comprobante = "PAGOS"
+
+            for _, row in df_cfdi.iterrows():
+                uuid_val = str(row[col_uuid]).strip().upper()
+                if uuid_val and uuid_val.lower() != 'nan':
+                    mes_folder = "GENERAL"
+                    if col_fecha in df_cfdi.columns:
+                        fecha_val = row[col_fecha]
+                        try:
+                            dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
+                            if pd.notna(dt_fecha):
+                                mes_folder = dt_fecha.strftime("%Y_%m")
+                        except: pass
+
+                    ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_val)
+                    os.makedirs(safe_path(ruta_base), exist_ok=True)
+
 def safe_parse_dates(serie):
     """
     Intenta parsear fechas de forma segura para no invertir Día y Mes.
@@ -637,6 +666,7 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                         # Evitar prefijo doble "CFDI_CFDI_"
                         nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
                         save_df_to_sql(df_cfdi, nombre_tabla)
+                        generar_carpetas_egresos(df_cfdi, nombre_tabla)
 
                 with st.spinner("Procesando Ventas..."):
                     ventas = limpiar_modulo_ventas_v2(archivo_subido)
@@ -664,30 +694,7 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                             save_df_to_sql(df_cfdi, nombre_tabla)
 
                             # Generar estructura de carpetas para Egresos automáticamente
-                            if nombre_tabla.startswith("CFDI_E_") or nombre_tabla.startswith("PAGOS_E"):
-                                col_uuid = next((c for c in df_cfdi.columns if c.strip().upper() == 'UUID'), None)
-                                col_fecha = 'Fecha Pago' if 'PAGOS' in nombre_tabla.upper() else 'Fecha Emisión'
-
-                                if col_uuid:
-                                    tipo_comprobante = "OTROS"
-                                    if "PUE" in nombre_tabla.upper(): tipo_comprobante = "PUE"
-                                    elif "PPD" in nombre_tabla.upper(): tipo_comprobante = "PPD"
-                                    elif "PAGOS" in nombre_tabla.upper(): tipo_comprobante = "PAGOS"
-
-                                    for _, row in df_cfdi.iterrows():
-                                        uuid_val = str(row[col_uuid]).strip().upper()
-                                        if uuid_val and uuid_val.lower() != 'nan':
-                                            mes_folder = "GENERAL"
-                                            if col_fecha in df_cfdi.columns:
-                                                fecha_val = row[col_fecha]
-                                                try:
-                                                    dt_fecha = pd.to_datetime(fecha_val, errors='coerce')
-                                                    if pd.notna(dt_fecha):
-                                                        mes_folder = dt_fecha.strftime("%Y_%m")
-                                                except: pass
-
-                                            ruta_base = os.path.join("EXPEDIENTES", "EGRESOS", mes_folder, tipo_comprobante, uuid_val)
-                                            os.makedirs(safe_path(ruta_base), exist_ok=True)
+                            generar_carpetas_egresos(df_cfdi, nombre_tabla)
                 st.success("✅ ¡CFDI guardados en la Base de Datos SQL y carpetas de expedientes generadas!")
             else:
                 st.warning("⚠️ Sube un archivo CFDI primero.")
