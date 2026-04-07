@@ -1294,6 +1294,46 @@ elif eleccion == "📄 CFDI (Facturas)":
     if not tablas_cfdi_ingresos and not tablas_cfdi_egresos:
         st.warning("La BD está vacía o no hay CFDI/Pagos procesados.")
     else:
+        # Buscador Global Inter-tablas
+        with st.expander("🌍 Buscador Global (En todas las secciones y meses)", expanded=False):
+            st.markdown("Busca un UUID o texto específico en **absolutamente todos** los CFDI y Pagos (Ingresos y Egresos).")
+            termino_global = st.text_input("🔍 Búsqueda profunda:", "", placeholder="Ej. 12345678-ABCD-...", key="search_global_cfdi")
+            if termino_global.strip():
+                st.write("Resultados encontrados en:")
+                encontrado = False
+                termino_upper = termino_global.strip().upper()
+                for tb in (tablas_cfdi_ingresos + tablas_cfdi_egresos):
+                    df_tb = get_df_from_sql(tb)
+                    if not df_tb.empty:
+                        # Busqueda global en todas las columnas
+                        mask = pd.Series(False, index=df_tb.index)
+                        for col in df_tb.columns:
+                            mask = mask | df_tb[col].astype(str).str.upper().str.contains(termino_upper, regex=False, na=False)
+
+                        df_res = df_tb[mask]
+                        if not df_res.empty:
+                            encontrado = True
+                            st.success(f"📌 Tabla: **{tb}** ({len(df_res)} coincidencias)")
+
+                            # Preparar para mostrar (link UUID opcional)
+                            df_mostrar_g = df_res.copy().replace("None", "").replace("NaT", "")
+                            cc_g = {}
+                            col_uuid = next((c for c in df_mostrar_g.columns if c.strip().upper() == 'UUID'), None)
+                            if col_uuid and (tb.startswith("CFDI_E_") or tb.startswith("PAGOS_E")):
+                                df_mostrar_g['LINK_EXPEDIENTE'] = df_mostrar_g.apply(
+                                    lambda r: f"/?expediente_egreso={str(r[col_uuid]).strip()}", axis=1
+                                )
+                                cc_g[col_uuid] = st.column_config.LinkColumn(
+                                    "UUID (Expediente)",
+                                    display_text=r"/\?expediente_egreso=(.*)"
+                                )
+                                df_mostrar_g[col_uuid] = df_mostrar_g['LINK_EXPEDIENTE']
+                                df_mostrar_g = df_mostrar_g.drop(columns=['LINK_EXPEDIENTE'])
+
+                            st.dataframe(df_mostrar_g, use_container_width=True, hide_index=True, column_config=cc_g)
+                if not encontrado:
+                    st.warning(f"No se encontró '{termino_global}' en ninguna tabla o mes.")
+
         # Top-level filter for INGRESOS vs EGRESOS
         tipo_cfdi = st.radio("Selecciona Categoría:", ["INGRESOS", "EGRESOS"], horizontal=True)
         st.divider()
@@ -1551,7 +1591,7 @@ elif eleccion == "📄 CFDI (Facturas)":
                 )
                 cc_cfdi['UUID'] = st.column_config.LinkColumn(
                     "UUID (Expediente)",
-                    display_text=r"/\?expediente_egreso=(.*)"
+                    display_text=r"/\\?expediente_egreso=(.*)"
                 )
                 df_mostrar['UUID'] = df_mostrar['LINK_EXPEDIENTE']
                 df_mostrar = df_mostrar.drop(columns=['LINK_EXPEDIENTE'])
