@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import re
 
 # Módulos core
 from modulo_bancos_fix import limpiar_mp
@@ -173,26 +174,6 @@ def abrir_expediente(id_venta_raw):
             vincular_cfdi_y_venta(id_venta, ruta_destino, safe_name)
 
         if nuevos_registros:
-            # Actualizar la columna PDF en la tabla correspondiente si suben un PDF
-            for tb in tablas_egresos:
-                df_tb = get_df_from_sql(tb)
-                col_uuid = next((c for c in df_tb.columns if c.strip().upper() == 'UUID'), None)
-                if col_uuid and not df_tb.empty:
-                    mask = df_tb[col_uuid].astype(str).str.strip().str.upper() == uuid_str
-                    if mask.any():
-                        # Buscar si se subió algún PDF para asignarlo al campo
-                        pdf_name = next((r["NOMBRE_ARCHIVO"] for r in nuevos_registros if r["TIPO_DOCUMENTO"] == "PDF"), None)
-                        if not pdf_name:
-                            # Si no hay PDF, tomamos el primer archivo como referencia (ej XML)
-                            pdf_name = nuevos_registros[0]["NOMBRE_ARCHIVO"]
-
-                        if 'PDF' not in df_tb.columns:
-                            df_tb['PDF'] = ""
-
-                        df_tb.loc[mask, 'PDF'] = pdf_name
-                        update_table_from_df(df_tb, tb)
-                        break
-
             df_nuevos = pd.DataFrame(nuevos_registros)
             if df_exp.empty:
                 df_exp = df_nuevos
