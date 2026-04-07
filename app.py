@@ -24,6 +24,15 @@ from pdf_reader import parse_bank_pdf
 
 st.set_page_config(page_title="ERP Conciliación PRO", layout="wide", page_icon=":material/account_balance:", initial_sidebar_state="collapsed")
 
+def safe_path(ruta_relativa):
+    import os
+    ruta_absoluta = os.path.abspath(ruta_relativa)
+    if os.name == 'nt':
+        prefix = "\\" + "\\" + "?" + "\\"
+        if not ruta_absoluta.startswith(prefix):
+            return prefix + ruta_absoluta
+    return ruta_absoluta
+
 # Modal para Expedientes
 @st.dialog("📁 Expediente de Venta", width="large")
 def abrir_expediente(id_venta_raw):
@@ -75,9 +84,6 @@ def abrir_expediente(id_venta_raw):
                 except: pass
                 ruta_base = os.path.join("EXPEDIENTES", "VENTAS", mes_folder, banco_folder, id_venta)
                 break
-
-    # Asegurarnos de que el directorio físico exista siempre que se abre el modal
-    os.makedirs(safe_path(ruta_base), exist_ok=True)
 
     # Asegurarnos de que el directorio físico exista siempre que se abre el modal
     os.makedirs(safe_path(ruta_base), exist_ok=True)
@@ -208,7 +214,7 @@ def abrir_expediente_egresos(uuid_raw):
     import re
 
     # Sanitizar UUID para evitar Path Traversal vulnerabilities
-    uuid_str = str(uuid_raw).strip().upper()
+    uuid_str = re.sub(r'[^a-zA-Z0-9_\-]', '', str(uuid_raw).strip().upper())
     if not uuid_str:
         st.error("UUID inválido.")
         return
@@ -231,8 +237,9 @@ def abrir_expediente_egresos(uuid_raw):
 
     for tb in tablas_egresos:
         df_tb = get_df_from_sql(tb)
-        if 'UUID' in df_tb.columns and not df_tb.empty:
-            fila_match = df_tb[df_tb['UUID'].astype(str).str.strip().str.upper() == uuid_str]
+        col_uuid = next((c for c in df_tb.columns if c.strip().upper() == 'UUID'), None)
+        if col_uuid and not df_tb.empty:
+            fila_match = df_tb[df_tb[col_uuid].astype(str).str.strip().str.upper() == uuid_str]
             if not fila_match.empty:
                 # Determinar TIPO_COMPROBANTE
                 tipo_comprobante = "OTROS"
@@ -380,15 +387,6 @@ if not os.path.exists("conciliacion_data.db"):
     database_sqlite.init_db()
 
 # 3. HELPER DE FECHAS ROBUSTO
-def safe_path(ruta_relativa):
-    import os
-    ruta_absoluta = os.path.abspath(ruta_relativa)
-    if os.name == 'nt':
-        prefix = "\\" + "\\" + "?" + "\\"
-        if not ruta_absoluta.startswith(prefix):
-            return prefix + ruta_absoluta
-    return ruta_absoluta
-
 def safe_parse_dates(serie):
     """
     Intenta parsear fechas de forma segura para no invertir Día y Mes.
@@ -445,9 +443,10 @@ def vincular_cfdi_y_venta(id_venta, ruta_archivo, nombre_archivo):
 
     for tb_cfdi in tablas_cfdi:
         df_cfdi = get_df_from_sql(tb_cfdi)
-        if not df_cfdi.empty and 'UUID' in df_cfdi.columns:
+        col_uuid = next((c for c in df_cfdi.columns if c.strip().upper() == 'UUID'), None)
+        if col_uuid and not df_cfdi.empty:
             # Encontrar la fila con ese UUID (ignorando case y espacios)
-            mask_uuid = df_cfdi['UUID'].astype(str).str.strip().str.upper() == uuid_extraido
+            mask_uuid = df_cfdi[col_uuid].astype(str).str.strip().str.upper() == uuid_extraido
             if mask_uuid.any():
                 # Actualizamos las columnas ID VENTA y PDF
                 if 'ID VENTA' not in df_cfdi.columns:
