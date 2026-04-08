@@ -1,0 +1,3 @@
+## 2025-02-23 - Proactive Error Prevention with Disabled States
+**Learning:** Using `st.warning` alerts *after* a user clicks a button to notify them of missing inputs (like file uploads) creates a frustrating, reactive experience. Streamlit provides native support for proactively disabling buttons using `disabled=condition` and guiding users with tooltips using `help="..."`.
+**Action:** When implementing forms or file upload sequences, always evaluate dependencies (e.g. "is a file uploaded?") and use disabled button states coupled with clear tooltips rather than relying on reactive error messages.
