@@ -2253,8 +2253,16 @@ elif eleccion == "💸 CRUCE EGRESOS":
 
     st.subheader("Gastos Pendientes de Identificar en Banco")
     tablas = get_all_tables()
-    if "CFDI_CFDI_E_PUE_CRUZADO" in tablas:
-         df_egresos = get_df_from_sql("CFDI_CFDI_E_PUE_CRUZADO")
+
+    # Check both potential names for the cruzado table
+    tabla_cruzado_name = None
+    if "CFDI_E_PUE_CRUZADO" in tablas:
+        tabla_cruzado_name = "CFDI_E_PUE_CRUZADO"
+    elif "CFDI_CFDI_E_PUE_CRUZADO" in tablas:
+        tabla_cruzado_name = "CFDI_CFDI_E_PUE_CRUZADO"
+
+    if tabla_cruzado_name:
+         df_egresos = get_df_from_sql(tabla_cruzado_name)
          if not df_egresos.empty and 'estado_cruce_egreso' in df_egresos.columns:
              pendientes = df_egresos[df_egresos['estado_cruce_egreso'] == 'PENDIENTE BANCARIO']
              st.metric("Total Facturas Gasto Sin Salida de Banco Visible", len(pendientes))

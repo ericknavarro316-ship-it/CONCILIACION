@@ -13,7 +13,14 @@ def run_egresos_crosscheck():
     """Cruza los CFDI de Egresos PUE contra los CARGOS en cuentas bancarias."""
 
     # 1. Leer Egresos (CFDI E PUE)
-    df_egresos = get_df_from_sql("CFDI_CFDI_E_PUE")
+    # Intentamos primero con CFDI_E_PUE (nombre correcto sin prefijo doble) y luego el antiguo
+    df_egresos = get_df_from_sql("CFDI_E_PUE")
+    nombre_tabla_egresos = "CFDI_E_PUE"
+
+    if df_egresos.empty:
+        df_egresos = get_df_from_sql("CFDI_CFDI_E_PUE")
+        nombre_tabla_egresos = "CFDI_CFDI_E_PUE"
+
     if df_egresos.empty:
         return {"error": "No hay tabla CFDI_E_PUE (Egresos) en la base de datos."}
 
@@ -151,10 +158,10 @@ def run_egresos_crosscheck():
         update_table_from_df(df_banco, cuenta_nombre)
 
     # Actualizar el CFDI original (para que la columna BANCOS perdure)
-    update_table_from_df(df_egresos, "CFDI_CFDI_E_PUE")
+    update_table_from_df(df_egresos, nombre_tabla_egresos)
 
     # También creamos/actualizamos el sufijo _CRUZADO para la vista UI si es lo que lee actualmente
-    save_df_to_sql(df_egresos, "CFDI_CFDI_E_PUE_CRUZADO")
+    save_df_to_sql(df_egresos, f"{nombre_tabla_egresos}_CRUZADO")
 
     return {
         "success": True,
