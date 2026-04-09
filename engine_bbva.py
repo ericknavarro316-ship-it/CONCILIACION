@@ -1,5 +1,5 @@
 import pandas as pd
-from database_sqlite import get_df_from_sql, save_df_to_sql, get_all_tables
+from database_sqlite import get_df_from_sql, save_df_to_sql, get_all_tables, update_table_from_df, drop_table_from_sql
 
 def run_bbva_crosscheck():
     """Ejecuta el cruce de Ventas BBVA contra Bancos BBVA leyendo y escribiendo en SQL."""
@@ -131,9 +131,14 @@ def run_bbva_crosscheck():
             df_ventas.at[idx, 'cuenta_bancaria_cruce'] = id_venta_a_cuenta[id_v]
 
     # 6. Guardar resultados
-    save_df_to_sql(df_ventas, "VENTAS_BBVA_CRUZADO")
+    # Guardar resultados in-place para ventas BBVA
+    update_table_from_df(df_ventas, "VENTAS_BBVA")
+    drop_table_from_sql("VENTAS_BBVA_CRUZADO")
+
+    # Guardar resultados in-place para cuentas BBVA
     for cuenta_nombre, df_banco in cuentas_bbva.items():
-        save_df_to_sql(df_banco, f"{cuenta_nombre}_CRUZADO")
+        update_table_from_df(df_banco, cuenta_nombre)
+        drop_table_from_sql(f"{cuenta_nombre}_CRUZADO")
 
     return {
         "success": True,

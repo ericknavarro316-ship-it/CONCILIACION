@@ -18,13 +18,13 @@ def generate_final_report():
         df_resumen.to_excel(writer, sheet_name='00_RESUMEN_GERENCIAL', index=False)
 
         # 2. Pestaña: BBVA Cruzado
-        if "VENTAS_BBVA_CRUZADO" in tablas_crudas:
-            df = get_df_from_sql("VENTAS_BBVA_CRUZADO")
+        if "VENTAS_BBVA" in tablas_crudas:
+            df = get_df_from_sql("VENTAS_BBVA")
             df.to_excel(writer, sheet_name='01_VENTAS_BBVA_OK', index=False)
 
         # 3. Pestaña: Faltantes BBVA
-        if "VENTAS_BBVA_CRUZADO" in tablas_crudas:
-            df = get_df_from_sql("VENTAS_BBVA_CRUZADO")
+        if "VENTAS_BBVA" in tablas_crudas:
+            df = get_df_from_sql("VENTAS_BBVA")
             if 'estado_cruce' in df.columns:
                 df_faltantes = df[df['estado_cruce'] == 'PENDIENTE']
                 df_faltantes.to_excel(writer, sheet_name='02_FALTANTES_BBVA', index=False)

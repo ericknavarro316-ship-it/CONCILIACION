@@ -2094,8 +2094,8 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
     df_alertas_bbva = pd.DataFrame()
     df_alertas_mp = pd.DataFrame()
 
-    if "VENTAS_BBVA_CRUZADO" in tablas:
-        df = get_df_from_sql("VENTAS_BBVA_CRUZADO")
+    if "VENTAS_BBVA" in tablas:
+        df = get_df_from_sql("VENTAS_BBVA")
         if not df.empty and 'estado_cruce' in df.columns: df_alertas_bbva = df[df['estado_cruce'] == 'PENDIENTE']
 
     if "VENTAS_MP_CRUZADO" in tablas:
@@ -2317,9 +2317,10 @@ elif eleccion == "📊 DASHBOARD & REPORTES":
     col2.metric("Total Ventas (Bloque BBVA)", f"${total_ventas_bbva:,.2f}")
 
     avance = "0%"
-    df_cruzadas = get_df_from_sql("VENTAS_BBVA_CRUZADO")
+    df_cruzadas = get_df_from_sql("VENTAS_BBVA")
     if not df_cruzadas.empty:
-        cruzadas = len(df_cruzadas[df_cruzadas['estado_cruce'] == 'OK vs BANCO'])
-        total = len(df_cruzadas)
-        avance = f"{(cruzadas/total)*100:.1f}%" if total > 0 else "0%"
+        if 'estado_cruce' in df_cruzadas.columns:
+            cruzadas = len(df_cruzadas[df_cruzadas['estado_cruce'] == 'OK vs BANCO'])
+            total = len(df_cruzadas)
+            avance = f"{(cruzadas/total)*100:.1f}%" if total > 0 else "0%"
     col3.metric("Avance Conciliación BBVA (Por Tickets)", avance)
