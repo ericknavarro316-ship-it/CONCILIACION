@@ -37,7 +37,8 @@ def run_egresos_crosscheck():
         df_egresos['cuenta_origen_pago'] = None
     if 'BANCOS' not in df_egresos.columns:
         df_egresos['BANCOS'] = None
-    df_egresos['estado_cruce_egreso'] = 'PENDIENTE BANCARIO'
+    if 'estado_cruce_egreso' not in df_egresos.columns:
+        df_egresos['estado_cruce_egreso'] = 'PENDIENTE BANCARIO'
 
     col_fecha_cfdi = 'Fecha Emisión' if 'Fecha Emisión' in df_egresos.columns else 'FECHA'
     if col_fecha_cfdi in df_egresos.columns:
@@ -65,10 +66,9 @@ def run_egresos_crosscheck():
     # 3. Construir "pool" de cargos bancarios para optimización vectorial
     pool_cargos_list = []
     for cuenta_nombre, df_banco in cuentas_bancos.items():
-        if 'UUID_EGRESO_CRUCE' not in df_banco.columns:
-            df_banco['UUID_EGRESO_CRUCE'] = None
-        if 'UUID COMPL.' not in df_banco.columns:
-            df_banco['UUID COMPL.'] = None
+        # Limpiar temporalmente la columna OBSERVACION si viniera como basura
+        if 'OBSERVACION' not in df_banco.columns:
+            df_banco['OBSERVACION'] = None
 
         df_banco['CARGO_NUM'] = pd.to_numeric(df_banco['CARGO'], errors='coerce')
 
@@ -79,9 +79,8 @@ def run_egresos_crosscheck():
         else:
             df_banco['FECHA_PARSED'] = pd.NaT
 
-        # Limpiar columnas de UUID para estandarizar valores vacíos o nulos que vengan de SQLite como strings
-        for col_uuid in ['UUID_EGRESO_CRUCE', 'UUID COMPL.']:
-            df_banco[col_uuid] = df_banco[col_uuid].replace(['None', 'nan', 'NaN', ''], np.nan)
+        # Limpiar columna OBSERVACION para estandarizar valores vacíos o nulos que vengan de SQLite como strings
+        df_banco['OBSERVACION'] = df_banco['OBSERVACION'].replace(['None', 'nan', 'NaN', ''], np.nan)
 
         # Extraer cargos numéricos limpiando posibles símbolos $ y comas
         df_banco['CARGO_NUM'] = pd.to_numeric(
@@ -89,10 +88,9 @@ def run_egresos_crosscheck():
             errors='coerce'
         )
 
-        # Solo necesitamos los cargos libres, válidos y con fecha (opcional, pero ideal)
+        # Solo necesitamos los cargos libres (sin observación previa), válidos y numéricos
         cargos_libres = df_banco[
-            pd.isna(df_banco['UUID_EGRESO_CRUCE']) &
-            pd.isna(df_banco['UUID COMPL.']) &
+            pd.isna(df_banco['OBSERVACION']) &
             pd.notna(df_banco['CARGO_NUM']) &
             (df_banco['CARGO_NUM'] > 0)
         ].copy()
@@ -120,6 +118,10 @@ def run_egresos_crosscheck():
     tolerancia_dias = 31 # Maximo de dias de diferencia para aceptar un match, para tolerar cruces de mes
 
     for idx_egreso, egreso in df_egresos.iterrows():
+        # Si ya está cruzado, omitir
+        if egreso.get('estado_cruce_egreso') == 'PAGADO OK':
+            continue
+
         total_pagar = pd.to_numeric(egreso[col_total], errors='coerce')
         if pd.isna(total_pagar) or total_pagar <= 0:
             continue
@@ -154,8 +156,8 @@ def run_egresos_crosscheck():
             uuid_egreso = str(egreso.get('UUID', f"EGRESO_{idx_egreso}")).strip()
 
             # Actualizar la tabla en memoria
-            cuentas_bancos[tabla_origen].at[idx_origen, 'UUID_EGRESO_CRUCE'] = uuid_egreso
-            cuentas_bancos[tabla_origen].at[idx_origen, 'UUID COMPL.'] = uuid_egreso
+            # Se omite UUID_EGRESO_CRUCE y UUID COMPL. y se escribe el hipervínculo directo en OBSERVACION
+            cuentas_bancos[tabla_origen].at[idx_origen, 'OBSERVACION'] = f"/?expediente_egreso={uuid_egreso}"
 
             # Actualizar estado del egreso
             df_egresos.at[idx_egreso, 'estado_cruce_egreso'] = 'PAGADO OK'

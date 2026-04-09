@@ -1217,6 +1217,13 @@ elif eleccion == "🏦 BANCOS":
                         df_mostrar[col_id_pos] = df_mostrar[f'LINK_EXPEDIENTE_{col_id_pos}']
                         df_mostrar = df_mostrar.drop(columns=[f'LINK_EXPEDIENTE_{col_id_pos}'])
 
+                # Renderizar los expedientes de Egresos en la columna OBSERVACION si tienen el formato
+                if 'OBSERVACION' in df_mostrar.columns:
+                    cc_format['OBSERVACION'] = st.column_config.LinkColumn(
+                        "OBSERVACION",
+                        display_text=r"/\?expediente_egreso=(.*)"
+                    )
+
                 # Reemplazar explicitly in the dataframe just in case
                 # Asegurar que todas las columnas en general no muestren NaNs literales
                 df_mostrar = df_mostrar.fillna("")
