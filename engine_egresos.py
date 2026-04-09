@@ -4,10 +4,18 @@ from database_sqlite import get_df_from_sql, save_df_to_sql, get_all_tables, upd
 
 def safe_parse_dates(serie):
     """Intenta parsear fechas de forma segura asumiendo múltiples formatos posibles."""
-    s_iso_full = pd.to_datetime(serie, format='%Y-%m-%d %H:%M:%S', errors='coerce')
-    s_iso_short = pd.to_datetime(serie, format='%Y-%m-%d', errors='coerce')
-    s_eu = pd.to_datetime(serie, format='%d/%m/%Y', errors='coerce')
-    return s_iso_full.fillna(s_iso_short).fillna(s_eu)
+    # Limpiar strings de fecha (ej. "2026-02-03T17:37:53" -> "2026-02-03 17:37:53")
+    serie_str = serie.astype(str).str.replace('T', ' ', regex=False).str.split('.').str[0].str.strip()
+
+    s_iso_full = pd.to_datetime(serie_str, format='%Y-%m-%d %H:%M:%S', errors='coerce')
+    s_iso_short = pd.to_datetime(serie_str, format='%Y-%m-%d', errors='coerce')
+    s_eu = pd.to_datetime(serie_str, format='%d/%m/%Y', errors='coerce')
+    s_eu_full = pd.to_datetime(serie_str, format='%d/%m/%Y %H:%M:%S', errors='coerce')
+
+    # Fallback genérico de pandas si los formatos estrictos fallan
+    s_auto = pd.to_datetime(serie, errors='coerce')
+
+    return s_iso_full.fillna(s_iso_short).fillna(s_eu_full).fillna(s_eu).fillna(s_auto)
 
 def run_egresos_crosscheck():
     """Cruza los CFDI de Egresos PUE contra los CARGOS en cuentas bancarias."""
@@ -71,10 +79,20 @@ def run_egresos_crosscheck():
         else:
             df_banco['FECHA_PARSED'] = pd.NaT
 
+        # Limpiar columnas de UUID para estandarizar valores vacíos o nulos que vengan de SQLite como strings
+        for col_uuid in ['UUID_EGRESO_CRUCE', 'UUID COMPL.']:
+            df_banco[col_uuid] = df_banco[col_uuid].replace(['None', 'nan', 'NaN', ''], np.nan)
+
+        # Extraer cargos numéricos limpiando posibles símbolos $ y comas
+        df_banco['CARGO_NUM'] = pd.to_numeric(
+            df_banco['CARGO'].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False),
+            errors='coerce'
+        )
+
         # Solo necesitamos los cargos libres, válidos y con fecha (opcional, pero ideal)
         cargos_libres = df_banco[
             pd.isna(df_banco['UUID_EGRESO_CRUCE']) &
-            (pd.isna(df_banco['UUID COMPL.']) | (df_banco['UUID COMPL.'] == '')) &
+            pd.isna(df_banco['UUID COMPL.']) &
             pd.notna(df_banco['CARGO_NUM']) &
             (df_banco['CARGO_NUM'] > 0)
         ].copy()
@@ -99,6 +117,7 @@ def run_egresos_crosscheck():
          return {"error": "No se encontró columna 'Total' en los Egresos CFDI para hacer el cruce."}
 
     tolerancia = 1.0 # Tolerancia 1 peso para egresos PUE
+    tolerancia_dias = 31 # Maximo de dias de diferencia para aceptar un match, para tolerar cruces de mes
 
     for idx_egreso, egreso in df_egresos.iterrows():
         total_pagar = pd.to_numeric(egreso[col_total], errors='coerce')
@@ -109,24 +128,25 @@ def run_egresos_crosscheck():
         if pd.isna(fecha_cfdi):
             continue
 
-        mes_año_cfdi = fecha_cfdi.to_period('M')
-
-        # Buscar en el pool: mismo mes y monto aproximado
-        candidatos = df_pool[
-            (df_pool['MES_AÑO'] == mes_año_cfdi) &
-            (np.abs(df_pool['CARGO_NUM'] - total_pagar) <= tolerancia)
-        ].copy()
+        # Buscar en el pool por monto primero (ya que es más estricto)
+        candidatos = df_pool[np.abs(df_pool['CARGO_NUM'] - total_pagar) <= tolerancia].copy()
 
         if not candidatos.empty:
-            # Calcular diferencia en días absolutos
+            # Calcular diferencia en días absolutos para verificar proximidad
             candidatos['DIFF_DIAS'] = (candidatos['FECHA_PARSED'] - fecha_cfdi).dt.days.abs()
 
+            # Filtrar solo candidatos que ocurrieron dentro del límite de días (ej. mismo mes calendario o muy cercano)
+            candidatos_validos = candidatos[candidatos['DIFF_DIAS'] <= tolerancia_dias].copy()
+
+            if candidatos_validos.empty:
+                continue
+
             # Ordenar por el que tenga la fecha más cercana al comprobante y luego el que más se acerque al monto exacto
-            candidatos['DIFF_MONTO'] = np.abs(candidatos['CARGO_NUM'] - total_pagar)
-            candidatos = candidatos.sort_values(by=['DIFF_DIAS', 'DIFF_MONTO'])
+            candidatos_validos['DIFF_MONTO'] = np.abs(candidatos_validos['CARGO_NUM'] - total_pagar)
+            candidatos_validos = candidatos_validos.sort_values(by=['DIFF_DIAS', 'DIFF_MONTO'])
 
             # Seleccionar el mejor
-            mejor_match = candidatos.iloc[0]
+            mejor_match = candidatos_validos.iloc[0]
 
             tabla_origen = mejor_match['ORIGEN_TABLA']
             idx_origen = mejor_match['ORIGEN_IDX']
