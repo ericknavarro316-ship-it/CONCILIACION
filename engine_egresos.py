@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from database_sqlite import get_df_from_sql, save_df_to_sql, get_all_tables, update_table_from_df
+from database_sqlite import get_df_from_sql, save_df_to_sql, get_all_tables, update_table_from_df, drop_table_from_sql
 
 def safe_parse_dates(serie):
     """Intenta parsear fechas de forma segura asumiendo múltiples formatos posibles."""
@@ -180,8 +180,8 @@ def run_egresos_crosscheck():
     # Actualizar el CFDI original (para que la columna BANCOS perdure)
     update_table_from_df(df_egresos, nombre_tabla_egresos)
 
-    # También creamos/actualizamos el sufijo _CRUZADO para la vista UI si es lo que lee actualmente
-    save_df_to_sql(df_egresos, f"{nombre_tabla_egresos}_CRUZADO")
+    # Limpiar tabla residual anterior si existiera para que no estorbe en la UI
+    drop_table_from_sql(f"{nombre_tabla_egresos}_CRUZADO")
 
     return {
         "success": True,
