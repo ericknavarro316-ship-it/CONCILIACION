@@ -128,7 +128,13 @@ def run_o01_preclasificar_bancos():
 
 def run_o07_conciliar_pagos_e():
     """Cruza Salidas de Bancos (Cargos) vs Complementos de Pago de Egresos (PAGOS E)"""
-    df_pagos = get_df_from_sql("CFDI_PAGOS_E")
+    df_pagos = get_df_from_sql("PAGOS_E")
+    nombre_tabla_pagos = "PAGOS_E"
+
+    if df_pagos.empty:
+        df_pagos = get_df_from_sql("CFDI_PAGOS_E")
+        nombre_tabla_pagos = "CFDI_PAGOS_E"
+
     if df_pagos.empty:
          return {"error": "No hay tabla de PAGOS E en la base de datos."}
 
@@ -263,8 +269,8 @@ def run_o07_conciliar_pagos_e():
 
     # Limpieza de temporales y guardado de resultados
     df_pagos = df_pagos.drop(columns=['FECHA_PARSED'], errors='ignore')
-    update_table_from_df(df_pagos, "CFDI_PAGOS_E")
-    drop_table_from_sql("CFDI_PAGOS_E_CRUZADO")
+    update_table_from_df(df_pagos, nombre_tabla_pagos)
+    drop_table_from_sql(f"{nombre_tabla_pagos}_CRUZADO")
 
     for cuenta_nombre, df_banco in cuentas_bancos.items():
         df_banco = df_banco.drop(columns=['CARGO_NUM', 'FECHA_PARSED'], errors='ignore')
