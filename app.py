@@ -1224,6 +1224,13 @@ elif eleccion == "🏦 BANCOS":
                         display_text=r"/\?expediente_egreso=(.*)"
                     )
 
+                # Renderizar los expedientes de Egresos (PAGOS E) en la columna UUID COMPL. si tienen el formato
+                if 'UUID COMPL.' in df_mostrar.columns:
+                    cc_format['UUID COMPL.'] = st.column_config.LinkColumn(
+                        "UUID COMPL.",
+                        display_text=r"/\?expediente_egreso=(.*)"
+                    )
+
                 # Reemplazar explicitly in the dataframe just in case
                 # Asegurar que todas las columnas en general no muestren NaNs literales
                 df_mostrar = df_mostrar.fillna("")
