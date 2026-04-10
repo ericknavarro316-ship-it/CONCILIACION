@@ -247,7 +247,11 @@ def run_o07_conciliar_pagos_e():
         idx_origen = mejor_match['ORIGEN_IDX']
 
         uuid_pago = str(pago.get('UUID', f"PAGO_{idx_pago}")).strip()
-        uuid_madre = str(pago.get('UUID MADRE', "")).strip()
+
+        # Buscar la columna de UUID Madre con flexibilidad en capitalización
+        col_uuid_madre = next((c for c in ['UUID Madre', 'UUID MADRE', 'Uuid Madre'] if c in df_pagos.columns), None)
+        uuid_madre = str(pago.get(col_uuid_madre, "")) if col_uuid_madre else ""
+        uuid_madre = uuid_madre.strip()
 
         # Inicializar columnas si no existen en el banco
         if 'UUID COMPL.' not in cuentas_bancos[tabla_origen].columns:
