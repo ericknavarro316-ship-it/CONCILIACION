@@ -5,7 +5,7 @@ def run_cfdi_crosscheck():
     """Propaga la información bancaria desde las ventas cruzadas hacia los CFDI."""
 
     # 1. Leer las tablas de Ventas ya cruzadas con bancos
-    df_bbva = get_df_from_sql("VENTAS_BBVA_CRUZADO")
+    df_bbva = get_df_from_sql("VENTAS_BBVA")
     df_mp = get_df_from_sql("VENTAS_MP_CRUZADO")
 
     # Unificamos todas las ventas cruzadas en un solo dataframe maestro para buscar sus UUIDs
