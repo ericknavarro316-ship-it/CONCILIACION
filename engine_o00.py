@@ -144,7 +144,8 @@ def run_o07_conciliar_pagos_e():
         df_pagos['FECHA_PARSED'] = pd.NaT
 
     tablas = get_all_tables()
-    bancos = [t for t in tablas if t.startswith("BANCO_") and not t.endswith("_CRUZADO")]
+    # Solo buscar en tablas de movimientos (DET) como solicitó el usuario, ignorando estados de cuenta (EST)
+    bancos = [t for t in tablas if t.startswith("BANCO_") and "_DET_" in t and not t.endswith("_CRUZADO")]
 
     col_total = next((col for col in ['Monto', 'Total', 'Total Pago'] if col in df_pagos.columns), None)
     if not col_total:
@@ -240,9 +241,18 @@ def run_o07_conciliar_pagos_e():
         idx_origen = mejor_match['ORIGEN_IDX']
 
         uuid_pago = str(pago.get('UUID', f"PAGO_{idx_pago}")).strip()
+        uuid_madre = str(pago.get('UUID MADRE', "")).strip()
 
-        # Actualizar la tabla del banco con el link
-        cuentas_bancos[tabla_origen].at[idx_origen, 'OBSERVACION'] = f"/?expediente_egreso={uuid_pago}"
+        # Inicializar columnas si no existen en el banco
+        if 'UUID COMPL.' not in cuentas_bancos[tabla_origen].columns:
+            cuentas_bancos[tabla_origen]['UUID COMPL.'] = None
+        if 'UUID MADRE' not in cuentas_bancos[tabla_origen].columns:
+            cuentas_bancos[tabla_origen]['UUID MADRE'] = None
+
+        # Actualizar la tabla del banco con las nuevas reglas
+        cuentas_bancos[tabla_origen].at[idx_origen, 'OBSERVACION'] = "PPD"
+        cuentas_bancos[tabla_origen].at[idx_origen, 'UUID COMPL.'] = f"/?expediente_egreso={uuid_pago}"
+        cuentas_bancos[tabla_origen].at[idx_origen, 'UUID MADRE'] = uuid_madre
 
         # Actualizar estado del pago CFDI
         df_pagos.at[idx_pago, 'estado_cruce_pago'] = 'PAGADO OK'
