@@ -153,7 +153,7 @@ def run_o07_conciliar_pagos_e():
     # Solo buscar en tablas de movimientos (DET) como solicitó el usuario, ignorando estados de cuenta (EST)
     bancos = [t for t in tablas if t.startswith("BANCO_") and "_DET_" in t and not t.endswith("_CRUZADO")]
 
-    col_total = next((col for col in ['Monto', 'Total', 'Total Pago'] if col in df_pagos.columns), None)
+    col_total = next((col for col in ['Monto', 'Total', 'Total Pago', 'Total Pagado'] if col in df_pagos.columns), None)
     if not col_total:
          return {"error": f"No se encontró columna de monto en PAGOS E. Columnas son: {df_pagos.columns.tolist()}"}
 
