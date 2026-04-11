@@ -703,42 +703,48 @@ elif eleccion == "🏦 BANCOS":
                 if archivo_est_excel:
                     for archivo in archivo_est_excel:
                         with st.spinner(f"Procesando {archivo.name}..."):
-                            # Guardar copia física
-                            dir_guardado = os.path.join("PROCESADOS", "BANCOS", "ESTADOS_CUENTA")
-                            os.makedirs(dir_guardado, exist_ok=True)
-                            ruta_guardado = os.path.join(dir_guardado, archivo.name)
-                            with open(ruta_guardado, "wb") as f:
-                                f.write(archivo.getbuffer())
+                            try:
+                                # Guardar copia física
+                                dir_guardado = os.path.join("PROCESADOS", "BANCOS", "ESTADOS_CUENTA")
+                                os.makedirs(dir_guardado, exist_ok=True)
+                                ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                                with open(ruta_guardado, "wb") as f:
+                                    f.write(archivo.getbuffer())
 
-                            bancos = limpiar_modulo_bancos(archivo)
-                            for nombre_cuenta, df_banco in bancos.items():
-                                if nombre_cuenta == "MP_DETALLE":
-                                    save_df_to_sql(df_banco, "AUX_MP_DETALLE")
-                                elif "MP_ESTADO_CUENTA" in nombre_cuenta:
-                                    save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
-                                else:
-                                    # Asegurar que tenga EST_ en el nombre
-                                    nombre_final = nombre_cuenta if "_EST_" in nombre_cuenta else nombre_cuenta.replace("_DET_", "_EST_")
-                                    if "_EST_" not in nombre_final:
-                                         partes = nombre_final.split("_", 1)
-                                         if len(partes) == 2:
-                                             nombre_final = f"{partes[0]}_EST_{partes[1]}"
-                                         else:
-                                             nombre_final = f"{nombre_final}_EST"
-                                    save_df_to_sql(df_banco, f"BANCO_{nombre_final}")
-                    procesados = True
+                                bancos = limpiar_modulo_bancos(archivo)
+                                for nombre_cuenta, df_banco in bancos.items():
+                                    if nombre_cuenta == "MP_DETALLE":
+                                        save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                                    elif "MP_ESTADO_CUENTA" in nombre_cuenta:
+                                        save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
+                                    else:
+                                        # Asegurar que tenga EST_ en el nombre
+                                        nombre_final = nombre_cuenta if "_EST_" in nombre_cuenta else nombre_cuenta.replace("_DET_", "_EST_")
+                                        if "_EST_" not in nombre_final:
+                                             partes = nombre_final.split("_", 1)
+                                             if len(partes) == 2:
+                                                 nombre_final = f"{partes[0]}_EST_{partes[1]}"
+                                             else:
+                                                 nombre_final = f"{nombre_final}_EST"
+                                        save_df_to_sql(df_banco, f"BANCO_{nombre_final}")
+                                procesados = True
+                            except Exception as e:
+                                st.error(f"Error procesando archivo {archivo.name}: {e}")
 
                 if archivo_est_pdf:
                     for pdf in archivo_est_pdf:
-                        # Guardar copia física
-                        dir_guardado = os.path.join("PROCESADOS", "BANCOS", "ESTADOS_CUENTA")
-                        os.makedirs(dir_guardado, exist_ok=True)
-                        ruta_guardado = os.path.join(dir_guardado, pdf.name)
-                        with open(ruta_guardado, "wb") as f:
-                            f.write(pdf.getbuffer())
-                        # parse_bank_pdf ya guarda en SQLite con nombre BANCO_BBVA_EST_...
-                        parse_bank_pdf(pdf)
-                    procesados = True
+                        try:
+                            # Guardar copia física
+                            dir_guardado = os.path.join("PROCESADOS", "BANCOS", "ESTADOS_CUENTA")
+                            os.makedirs(dir_guardado, exist_ok=True)
+                            ruta_guardado = os.path.join(dir_guardado, pdf.name)
+                            with open(ruta_guardado, "wb") as f:
+                                f.write(pdf.getbuffer())
+                            # parse_bank_pdf ya guarda en SQLite con nombre BANCO_BBVA_EST_...
+                            parse_bank_pdf(pdf)
+                            procesados = True
+                        except Exception as e:
+                            st.error(f"Error procesando PDF {pdf.name}: {e}")
 
                 if procesados:
                     st.success("✅ ¡Estados de Cuenta guardados en la Base de Datos SQL y archivados!")
@@ -756,34 +762,41 @@ elif eleccion == "🏦 BANCOS":
                 if archivo_det_excel:
                     for archivo in archivo_det_excel:
                         with st.spinner(f"Procesando {archivo.name}..."):
-                            # Guardar copia física
-                            dir_guardado = os.path.join("PROCESADOS", "BANCOS", "MOVIMIENTOS")
-                            os.makedirs(dir_guardado, exist_ok=True)
-                            ruta_guardado = os.path.join(dir_guardado, archivo.name)
-                            with open(ruta_guardado, "wb") as f:
-                                f.write(archivo.getbuffer())
+                            try:
+                                # Guardar copia física
+                                dir_guardado = os.path.join("PROCESADOS", "BANCOS", "MOVIMIENTOS")
+                                os.makedirs(dir_guardado, exist_ok=True)
+                                ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                                with open(ruta_guardado, "wb") as f:
+                                    f.write(archivo.getbuffer())
 
-                            bancos = limpiar_modulo_bancos(archivo)
-                            for nombre_cuenta, df_banco in bancos.items():
-                                if nombre_cuenta == "MP_DETALLE":
-                                    save_df_to_sql(df_banco, "AUX_MP_DETALLE")
-                                elif "MP_ESTADO_CUENTA" in nombre_cuenta:
-                                    # Omitir estados de cuenta si se suben por error aquí, o guardarlos donde corresponde
-                                    save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
-                                else:
-                                    # Asegurar que tenga DET_ en el nombre
-                                    nombre_final = nombre_cuenta if "_DET_" in nombre_cuenta else nombre_cuenta.replace("_EST_", "_DET_")
-                                    if "_DET_" not in nombre_final:
-                                         partes = nombre_final.split("_", 1)
-                                         if len(partes) == 2:
-                                             nombre_final = f"{partes[0]}_DET_{partes[1]}"
-                                         else:
-                                             nombre_final = f"{nombre_final}_DET"
-                                    save_df_to_sql(df_banco, f"BANCO_{nombre_final}")
-                    st.success("✅ ¡Movimientos guardados en la Base de Datos SQL y archivados!")
-                    import time
-                    time.sleep(1.5)
-                    st.rerun()
+                                bancos = limpiar_modulo_bancos(archivo)
+                                for nombre_cuenta, df_banco in bancos.items():
+                                    if nombre_cuenta == "MP_DETALLE":
+                                        save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                                    elif "MP_ESTADO_CUENTA" in nombre_cuenta:
+                                        # Omitir estados de cuenta si se suben por error aquí, o guardarlos donde corresponde
+                                        save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
+                                    else:
+                                        # Asegurar que tenga DET_ en el nombre
+                                        nombre_final = nombre_cuenta if "_DET_" in nombre_cuenta else nombre_cuenta.replace("_EST_", "_DET_")
+                                        if "_DET_" not in nombre_final:
+                                             partes = nombre_final.split("_", 1)
+                                             if len(partes) == 2:
+                                                 nombre_final = f"{partes[0]}_DET_{partes[1]}"
+                                             else:
+                                                 nombre_final = f"{nombre_final}_DET"
+                                        save_df_to_sql(df_banco, f"BANCO_{nombre_final}")
+                                procesados_mov = True
+                            except Exception as e:
+                                st.error(f"Error procesando movimientos en {archivo.name}: {e}")
+                                procesados_mov = False
+
+                    if procesados_mov:
+                        st.success("✅ ¡Movimientos guardados en la Base de Datos SQL y archivados!")
+                        import time
+                        time.sleep(1.5)
+                        st.rerun()
                 else:
                     st.warning("Sube un archivo de Excel primero.")
 
@@ -888,19 +901,19 @@ elif eleccion == "🏦 BANCOS":
                 st.divider()
                 df_resumen = pd.DataFrame(resumen_data)
 
+                # Reemplazar NaNs por 0 en las columnas numéricas para que se muestren correctamente
+                for col in ["Total Abonos", "Total Cargos", "Último Saldo"]:
+                    df_resumen[col] = pd.to_numeric(df_resumen[col], errors='coerce').fillna(0)
+
                 # Configuración de columnas para que se vean bien los dineros
                 cc_resumen_global = {
-                    "Total Abonos": st.column_config.NumberColumn("Total Abonos"),
-                    "Total Cargos": st.column_config.NumberColumn("Total Cargos"),
-                    "Último Saldo": st.column_config.NumberColumn("Último Saldo")
+                    "Total Abonos": st.column_config.NumberColumn("Total Abonos", format="$%,.2f"),
+                    "Total Cargos": st.column_config.NumberColumn("Total Cargos", format="$%,.2f"),
+                    "Último Saldo": st.column_config.NumberColumn("Último Saldo", format="$%,.2f")
                 }
 
-                # Format to strings with commas and dollar signs using Pandas Styler
-                st.dataframe(df_resumen.style.format({
-                    "Total Abonos": "${:,.2f}",
-                    "Total Cargos": "${:,.2f}",
-                    "Último Saldo": "${:,.2f}"
-                }, na_rep=""), use_container_width=True, hide_index=True, column_config=cc_resumen_global)
+                # Usar st.dataframe de forma nativa sin .style.format()
+                st.dataframe(df_resumen, use_container_width=True, hide_index=True, column_config=cc_resumen_global)
 
 
         # Función auxiliar para renderizar el panel de control de un banco
@@ -1004,7 +1017,10 @@ elif eleccion == "🏦 BANCOS":
                         df_graf['ABONO_NUM'] = pd.to_numeric(df_graf['ABONO'], errors='coerce').fillna(0)
                         df_graf['CARGO_NUM'] = pd.to_numeric(df_graf['CARGO'], errors='coerce').fillna(0)
 
+                    # Ensure FECHA is exactly datetime type, drop any NaT that Altair can't handle
+                    df_graf['FECHA'] = pd.to_datetime(df_graf['FECHA'], errors='coerce')
                     df_graf = df_graf.dropna(subset=['FECHA'])
+
                     if not df_graf.empty:
                         df_graf_grp = df_graf.groupby(df_graf['FECHA'].dt.date)[['ABONO_NUM', 'CARGO_NUM']].sum().reset_index()
                         df_graf_melt = pd.melt(df_graf_grp, id_vars=['FECHA'], value_vars=['ABONO_NUM', 'CARGO_NUM'],
@@ -1102,9 +1118,17 @@ elif eleccion == "🏦 BANCOS":
                         # Lo mantenemos como numérico en el dataframe subyacente para permitir ordenamiento y style
                         temp_num = pd.to_numeric(df_mostrar[col_moneda].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce')
                         df_mostrar[col_moneda] = temp_num
-                        cc_format[col_moneda] = st.column_config.NumberColumn(col_moneda)
+                        cc_format[col_moneda] = st.column_config.NumberColumn(col_moneda, format="$%,.2f")
                     except:
                         pass
+
+            # Configurar otras columnas de forma explícita para evitar inferencias erróneas en data_editor
+            for col_texto in ['CONCEPTO', 'REFERENCE', 'OBSERVACION', 'Detalle', 'Nombre de sucursal', 'ID VENTA', 'EST MP', 'COMISION']:
+                if col_texto in df_mostrar.columns:
+                    cc_format[col_texto] = st.column_config.TextColumn(col_texto)
+            for col_fecha in ['FECHA', 'Fecha del cargo']:
+                if col_fecha in df_mostrar.columns:
+                    cc_format[col_fecha] = st.column_config.TextColumn(col_fecha) # Maintain as string for display since it was formatted with strftime
 
             # Reemplazar el literal 'NaT' por cadena vacía para fechas (las de tipo moneda ahora son numéricas o nulas)
             df_mostrar = df_mostrar.replace("NaT", "")
