@@ -629,7 +629,7 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
         st.markdown("Sube un solo archivo Excel con todas las hojas (Bancos, Ventas, CFDI).")
         archivo_subido = st.file_uploader("📂 Cargar Mega Excel", type=['xlsx', 'xlsm'], key="consolidado")
 
-        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado"):
+        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado", disabled=not archivo_subido, help="Sube un archivo para procesar." if not archivo_subido else "Procesa el archivo consolidado."):
             if archivo_subido is not None:
                 with st.spinner("Procesando Bancos..."):
                     bancos = limpiar_modulo_bancos(archivo_subido)
@@ -663,7 +663,7 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
         st.markdown("Sube los reportes del SAT (Ingresos/Egresos).")
         archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="cfdi")
 
-        if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
+        if st.button("Procesar CFDI", type="primary", key="btn_cfdi", disabled=not archivo_cfdi, help="Sube al menos un archivo para procesar." if not archivo_cfdi else "Procesa los archivos CFDI."):
             if archivo_cfdi:
                 import os
                 import pandas as pd
@@ -697,7 +697,7 @@ elif eleccion == "🏦 BANCOS":
             archivo_est_excel = st.file_uploader("📂 Cargar Estado de Cuenta (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="est_excel")
             archivo_est_pdf = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'], accept_multiple_files=True, key="est_pdf")
 
-            if st.button("Procesar Estados de Cuenta", type="primary"):
+            if st.button("Procesar Estados de Cuenta", type="primary", disabled=not (archivo_est_excel or archivo_est_pdf), help="Sube un estado de cuenta para procesar." if not (archivo_est_excel or archivo_est_pdf) else "Procesa los estados de cuenta."):
                 procesados = False
 
                 if archivo_est_excel:
@@ -758,7 +758,7 @@ elif eleccion == "🏦 BANCOS":
             st.markdown("Sube archivos de **Movimientos Operativos** (Excel).")
             archivo_det_excel = st.file_uploader("📂 Cargar Movimientos (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="det_excel")
 
-            if st.button("Procesar Movimientos", type="primary"):
+            if st.button("Procesar Movimientos", type="primary", disabled=not archivo_det_excel, help="Sube un archivo de movimientos para procesar." if not archivo_det_excel else "Procesa los movimientos bancarios."):
                 if archivo_det_excel:
                     for archivo in archivo_det_excel:
                         with st.spinner(f"Procesando {archivo.name}..."):
@@ -1385,7 +1385,7 @@ elif eleccion == "📄 CFDI (Facturas)":
                 archivo_egresos_pdf = st.file_uploader("📂 Cargar Facturas (PDF)", type=['pdf'], accept_multiple_files=True, key="egresos_pdf")
                 archivo_egresos_zip = st.file_uploader("📂 Cargar Expedientes Completos (ZIP)", type=['zip'], accept_multiple_files=True, key="egresos_zip")
 
-                if st.button("Procesar Archivos de Egresos", type="primary"):
+                if st.button("Procesar Archivos de Egresos", type="primary", disabled=not (archivo_egresos_pdf or archivo_egresos_zip), help="Sube archivos de egresos para procesar." if not (archivo_egresos_pdf or archivo_egresos_zip) else "Procesa los archivos de egresos."):
                     import os
                     import zipfile
                     import shutil
@@ -1648,7 +1648,7 @@ elif eleccion == "🛒 VENTAS":
         archivo_ventas_pdf = st.file_uploader("📂 Cargar Notas de Ventas en lote (PDF)", type=['pdf'], accept_multiple_files=True, key="ventas_pdf", help="Se extraerá el Folio y se guardará en su respectivo expediente de venta automáticamente.")
         archivo_ventas_zip = st.file_uploader("📂 Cargar Expedientes (ZIP)", type=['zip'], accept_multiple_files=True, key="ventas_zip", help="Sube archivos ZIP donde el nombre de la carpeta o archivo contenga el ID VENTA (ej. carpeta 28336/).")
 
-        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado"):
+        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado", disabled=not (archivo_ventas or archivo_ventas_csv or archivo_ventas_pdf or archivo_ventas_zip), help="Sube archivos de ventas para procesar." if not (archivo_ventas or archivo_ventas_csv or archivo_ventas_pdf or archivo_ventas_zip) else "Procesa los archivos de ventas."):
             procesados_ventas = False
             import os
 
