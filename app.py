@@ -629,56 +629,50 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
         st.markdown("Sube un solo archivo Excel con todas las hojas (Bancos, Ventas, CFDI).")
         archivo_subido = st.file_uploader("📂 Cargar Mega Excel", type=['xlsx', 'xlsm'], key="consolidado")
 
-        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado"):
-            if archivo_subido is not None:
-                with st.spinner("Procesando Bancos..."):
-                    bancos = limpiar_modulo_bancos(archivo_subido)
-                    for nombre_cuenta, df_banco in bancos.items():
-                        # MP_DETALLE is an auxiliary detail table, not a standard bank statement.
-                        # We save it without the BANCO_ prefix to isolate it from the "BANCOS" UI.
-                        if nombre_cuenta == "MP_DETALLE":
-                            save_df_to_sql(df_banco, "AUX_MP_DETALLE")
-                        else:
-                            save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
+        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado", disabled=not archivo_subido, help="Sube un archivo para habilitar esta acción"):
+            with st.spinner("Procesando Bancos..."):
+                bancos = limpiar_modulo_bancos(archivo_subido)
+                for nombre_cuenta, df_banco in bancos.items():
+                    # MP_DETALLE is an auxiliary detail table, not a standard bank statement.
+                    # We save it without the BANCO_ prefix to isolate it from the "BANCOS" UI.
+                    if nombre_cuenta == "MP_DETALLE":
+                        save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                    else:
+                        save_df_to_sql(df_banco, f"BANCO_{nombre_cuenta}")
 
-                with st.spinner("Procesando CFDI..."):
-                    cfdis = limpiar_modulo_cfdi(archivo_subido)
-                    for nombre_cfdi, df_cfdi in cfdis.items():
-                        # Evitar prefijo doble "CFDI_CFDI_"
-                        nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
-                        save_df_to_sql(df_cfdi, nombre_tabla)
-                        generar_carpetas_egresos(df_cfdi, nombre_tabla)
+            with st.spinner("Procesando CFDI..."):
+                cfdis = limpiar_modulo_cfdi(archivo_subido)
+                for nombre_cfdi, df_cfdi in cfdis.items():
+                    # Evitar prefijo doble "CFDI_CFDI_"
+                    nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
+                    save_df_to_sql(df_cfdi, nombre_tabla)
+                    generar_carpetas_egresos(df_cfdi, nombre_tabla)
 
-                with st.spinner("Procesando Ventas..."):
-                    ventas = limpiar_modulo_ventas_v2(archivo_subido)
-                    for nombre_venta, df_venta in ventas.items():
-                        save_df_to_sql(df_venta, nombre_venta)
+            with st.spinner("Procesando Ventas..."):
+                ventas = limpiar_modulo_ventas_v2(archivo_subido)
+                for nombre_venta, df_venta in ventas.items():
+                    save_df_to_sql(df_venta, nombre_venta)
 
-                st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
-            else:
-                st.warning("⚠️ Sube un archivo consolidado primero.")
+            st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
 
     with tab4:
         st.markdown("### Carga de CFDI (Individual)")
         st.markdown("Sube los reportes del SAT (Ingresos/Egresos).")
         archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="cfdi")
 
-        if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
-            if archivo_cfdi:
-                import os
-                import pandas as pd
-                for archivo in archivo_cfdi:
-                    with st.spinner(f"Procesando {archivo.name}..."):
-                        cfdis = limpiar_modulo_cfdi(archivo)
-                        for nombre_cfdi, df_cfdi in cfdis.items():
-                            nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
-                            save_df_to_sql(df_cfdi, nombre_tabla)
+        if st.button("Procesar CFDI", type="primary", key="btn_cfdi", disabled=not archivo_cfdi, help="Sube un archivo para habilitar esta acción"):
+            import os
+            import pandas as pd
+            for archivo in archivo_cfdi:
+                with st.spinner(f"Procesando {archivo.name}..."):
+                    cfdis = limpiar_modulo_cfdi(archivo)
+                    for nombre_cfdi, df_cfdi in cfdis.items():
+                        nombre_tabla = nombre_cfdi if nombre_cfdi.startswith(("CFDI_", "PAGOS_")) else f"CFDI_{nombre_cfdi}"
+                        save_df_to_sql(df_cfdi, nombre_tabla)
 
-                            # Generar estructura de carpetas para Egresos automáticamente
-                            generar_carpetas_egresos(df_cfdi, nombre_tabla)
-                st.success("✅ ¡CFDI guardados en la Base de Datos SQL y carpetas de expedientes generadas!")
-            else:
-                st.warning("⚠️ Sube un archivo CFDI primero.")
+                        # Generar estructura de carpetas para Egresos automáticamente
+                        generar_carpetas_egresos(df_cfdi, nombre_tabla)
+            st.success("✅ ¡CFDI guardados en la Base de Datos SQL y carpetas de expedientes generadas!")
 
 # ==========================================================
 # MÓDULOS DE VISUALIZACIÓN BÁSICA
@@ -697,7 +691,7 @@ elif eleccion == "🏦 BANCOS":
             archivo_est_excel = st.file_uploader("📂 Cargar Estado de Cuenta (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="est_excel")
             archivo_est_pdf = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'], accept_multiple_files=True, key="est_pdf")
 
-            if st.button("Procesar Estados de Cuenta", type="primary"):
+            if st.button("Procesar Estados de Cuenta", type="primary", disabled=not (archivo_est_excel or archivo_est_pdf), help="Sube un archivo para habilitar esta acción"):
                 procesados = False
 
                 if archivo_est_excel:
@@ -751,54 +745,49 @@ elif eleccion == "🏦 BANCOS":
                     import time
                     time.sleep(1.5)
                     st.rerun()
-                else:
-                    st.warning("Sube un archivo primero.")
 
         else: # Movimientos Operativos
             st.markdown("Sube archivos de **Movimientos Operativos** (Excel).")
             archivo_det_excel = st.file_uploader("📂 Cargar Movimientos (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="det_excel")
 
-            if st.button("Procesar Movimientos", type="primary"):
-                if archivo_det_excel:
-                    for archivo in archivo_det_excel:
-                        with st.spinner(f"Procesando {archivo.name}..."):
-                            try:
-                                # Guardar copia física
-                                dir_guardado = os.path.join("PROCESADOS", "BANCOS", "MOVIMIENTOS")
-                                os.makedirs(dir_guardado, exist_ok=True)
-                                ruta_guardado = os.path.join(dir_guardado, archivo.name)
-                                with open(ruta_guardado, "wb") as f:
-                                    f.write(archivo.getbuffer())
+            if st.button("Procesar Movimientos", type="primary", disabled=not archivo_det_excel, help="Sube un archivo para habilitar esta acción"):
+                for archivo in archivo_det_excel:
+                    with st.spinner(f"Procesando {archivo.name}..."):
+                        try:
+                            # Guardar copia física
+                            dir_guardado = os.path.join("PROCESADOS", "BANCOS", "MOVIMIENTOS")
+                            os.makedirs(dir_guardado, exist_ok=True)
+                            ruta_guardado = os.path.join(dir_guardado, archivo.name)
+                            with open(ruta_guardado, "wb") as f:
+                                f.write(archivo.getbuffer())
 
-                                bancos = limpiar_modulo_bancos(archivo)
-                                for nombre_cuenta, df_banco in bancos.items():
-                                    if nombre_cuenta == "MP_DETALLE":
-                                        save_df_to_sql(df_banco, "AUX_MP_DETALLE")
-                                    elif "MP_ESTADO_CUENTA" in nombre_cuenta:
-                                        # Omitir estados de cuenta si se suben por error aquí, o guardarlos donde corresponde
-                                        save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
-                                    else:
-                                        # Asegurar que tenga DET_ en el nombre
-                                        nombre_final = nombre_cuenta if "_DET_" in nombre_cuenta else nombre_cuenta.replace("_EST_", "_DET_")
-                                        if "_DET_" not in nombre_final:
-                                             partes = nombre_final.split("_", 1)
-                                             if len(partes) == 2:
-                                                 nombre_final = f"{partes[0]}_DET_{partes[1]}"
-                                             else:
-                                                 nombre_final = f"{nombre_final}_DET"
-                                        save_df_to_sql(df_banco, f"BANCO_{nombre_final}")
-                                procesados_mov = True
-                            except Exception as e:
-                                st.error(f"Error procesando movimientos en {archivo.name}: {e}")
-                                procesados_mov = False
+                            bancos = limpiar_modulo_bancos(archivo)
+                            for nombre_cuenta, df_banco in bancos.items():
+                                if nombre_cuenta == "MP_DETALLE":
+                                    save_df_to_sql(df_banco, "AUX_MP_DETALLE")
+                                elif "MP_ESTADO_CUENTA" in nombre_cuenta:
+                                    # Omitir estados de cuenta si se suben por error aquí, o guardarlos donde corresponde
+                                    save_df_to_sql(df_banco, "BANCO_MP_ESTADO_CUENTA")
+                                else:
+                                    # Asegurar que tenga DET_ en el nombre
+                                    nombre_final = nombre_cuenta if "_DET_" in nombre_cuenta else nombre_cuenta.replace("_EST_", "_DET_")
+                                    if "_DET_" not in nombre_final:
+                                         partes = nombre_final.split("_", 1)
+                                         if len(partes) == 2:
+                                             nombre_final = f"{partes[0]}_DET_{partes[1]}"
+                                         else:
+                                             nombre_final = f"{nombre_final}_DET"
+                                    save_df_to_sql(df_banco, f"BANCO_{nombre_final}")
+                            procesados_mov = True
+                        except Exception as e:
+                            st.error(f"Error procesando movimientos en {archivo.name}: {e}")
+                            procesados_mov = False
 
-                    if procesados_mov:
-                        st.success("✅ ¡Movimientos guardados en la Base de Datos SQL y archivados!")
-                        import time
-                        time.sleep(1.5)
-                        st.rerun()
-                else:
-                    st.warning("Sube un archivo de Excel primero.")
+                if procesados_mov:
+                    st.success("✅ ¡Movimientos guardados en la Base de Datos SQL y archivados!")
+                    import time
+                    time.sleep(1.5)
+                    st.rerun()
 
     st.divider()
 
@@ -1385,7 +1374,7 @@ elif eleccion == "📄 CFDI (Facturas)":
                 archivo_egresos_pdf = st.file_uploader("📂 Cargar Facturas (PDF)", type=['pdf'], accept_multiple_files=True, key="egresos_pdf")
                 archivo_egresos_zip = st.file_uploader("📂 Cargar Expedientes Completos (ZIP)", type=['zip'], accept_multiple_files=True, key="egresos_zip")
 
-                if st.button("Procesar Archivos de Egresos", type="primary"):
+                if st.button("Procesar Archivos de Egresos", type="primary", disabled=not (archivo_egresos_pdf or archivo_egresos_zip), help="Sube un archivo para habilitar esta acción"):
                     import os
                     import zipfile
                     import shutil
@@ -1532,7 +1521,7 @@ elif eleccion == "📄 CFDI (Facturas)":
                         time.sleep(1.5)
                         st.rerun()
                     else:
-                        st.warning("⚠️ No se identificaron archivos con UUIDs válidos o no se subió nada.")
+                        st.warning("⚠️ No se identificaron archivos con UUIDs válidos.")
             st.divider()
 
         tablas_mostrar = tablas_cfdi_ingresos if tipo_cfdi == "INGRESOS" else tablas_cfdi_egresos
@@ -1648,7 +1637,7 @@ elif eleccion == "🛒 VENTAS":
         archivo_ventas_pdf = st.file_uploader("📂 Cargar Notas de Ventas en lote (PDF)", type=['pdf'], accept_multiple_files=True, key="ventas_pdf", help="Se extraerá el Folio y se guardará en su respectivo expediente de venta automáticamente.")
         archivo_ventas_zip = st.file_uploader("📂 Cargar Expedientes (ZIP)", type=['zip'], accept_multiple_files=True, key="ventas_zip", help="Sube archivos ZIP donde el nombre de la carpeta o archivo contenga el ID VENTA (ej. carpeta 28336/).")
 
-        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado"):
+        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado", disabled=not (archivo_ventas or archivo_ventas_csv or archivo_ventas_pdf or archivo_ventas_zip), help="Sube un archivo para habilitar esta acción"):
             procesados_ventas = False
             import os
 
@@ -1870,8 +1859,6 @@ elif eleccion == "🛒 VENTAS":
                 import time
                 time.sleep(1.5)
                 st.rerun()
-            else:
-                st.warning("⚠️ Sube al menos un archivo de ventas o reporte de series CSV primero.")
 
     st.divider()
 
