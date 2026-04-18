@@ -149,7 +149,7 @@ def abrir_expediente(id_venta_raw):
     st.subheader("Subir Nuevos Archivos")
     uploaded_files = st.file_uploader("Arrastra aquí PDF, XML, PNG, JPG...", accept_multiple_files=True, key=f"uploader_{id_venta}")
 
-    if uploaded_files and st.button("💾 Guardar Archivos"):
+    if st.button("💾 Guardar Archivos", disabled=not uploaded_files, help="Sube un archivo primero para habilitar esta opción." if not uploaded_files else "Guardar archivos subidos"):
         from database_sqlite import update_table_from_df
 
         os.makedirs(safe_path(ruta_base), exist_ok=True)
@@ -300,7 +300,7 @@ def abrir_expediente_egresos(uuid_raw):
     st.subheader("Subir Nuevos Archivos")
     uploaded_files = st.file_uploader("Arrastra aquí PDF, XML, PNG, JPG...", accept_multiple_files=True, key=f"uploader_e_{uuid_str}")
 
-    if uploaded_files and st.button("💾 Guardar Archivos"):
+    if st.button("💾 Guardar Archivos", disabled=not uploaded_files, help="Sube un archivo primero para habilitar esta opción." if not uploaded_files else "Guardar archivos subidos"):
         from database_sqlite import update_table_from_df
         os.makedirs(safe_path(ruta_base), exist_ok=True)
         nuevos_registros = []
@@ -629,7 +629,7 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
         st.markdown("Sube un solo archivo Excel con todas las hojas (Bancos, Ventas, CFDI).")
         archivo_subido = st.file_uploader("📂 Cargar Mega Excel", type=['xlsx', 'xlsm'], key="consolidado")
 
-        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado"):
+        if st.button("Procesar Archivo Consolidado y Guardar en BD", type="primary", key="btn_consolidado", disabled=not archivo_subido, help="Sube un archivo primero para habilitar esta opción." if not archivo_subido else "Inicia el procesamiento"):
             if archivo_subido is not None:
                 with st.spinner("Procesando Bancos..."):
                     bancos = limpiar_modulo_bancos(archivo_subido)
@@ -655,15 +655,13 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                         save_df_to_sql(df_venta, nombre_venta)
 
                 st.success("✅ ¡Datos consolidados guardados en la Base de Datos SQL!")
-            else:
-                st.warning("⚠️ Sube un archivo consolidado primero.")
 
     with tab4:
         st.markdown("### Carga de CFDI (Individual)")
         st.markdown("Sube los reportes del SAT (Ingresos/Egresos).")
         archivo_cfdi = st.file_uploader("📂 Cargar CFDI (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="cfdi")
 
-        if st.button("Procesar CFDI", type="primary", key="btn_cfdi"):
+        if st.button("Procesar CFDI", type="primary", key="btn_cfdi", disabled=not archivo_cfdi, help="Sube un archivo primero para habilitar esta opción." if not archivo_cfdi else "Inicia el procesamiento"):
             if archivo_cfdi:
                 import os
                 import pandas as pd
@@ -677,8 +675,6 @@ if eleccion == "📥 Ingesta (Excel / PDF)":
                             # Generar estructura de carpetas para Egresos automáticamente
                             generar_carpetas_egresos(df_cfdi, nombre_tabla)
                 st.success("✅ ¡CFDI guardados en la Base de Datos SQL y carpetas de expedientes generadas!")
-            else:
-                st.warning("⚠️ Sube un archivo CFDI primero.")
 
 # ==========================================================
 # MÓDULOS DE VISUALIZACIÓN BÁSICA
@@ -697,7 +693,7 @@ elif eleccion == "🏦 BANCOS":
             archivo_est_excel = st.file_uploader("📂 Cargar Estado de Cuenta (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="est_excel")
             archivo_est_pdf = st.file_uploader("📂 Cargar Estado de Cuenta (PDF)", type=['pdf'], accept_multiple_files=True, key="est_pdf")
 
-            if st.button("Procesar Estados de Cuenta", type="primary"):
+            if st.button("Procesar Estados de Cuenta", type="primary", disabled=not archivo_est_excel and not archivo_est_pdf, help="Sube un archivo primero para habilitar esta opción." if not archivo_est_excel and not archivo_est_pdf else "Inicia el procesamiento"):
                 procesados = False
 
                 if archivo_est_excel:
@@ -751,14 +747,12 @@ elif eleccion == "🏦 BANCOS":
                     import time
                     time.sleep(1.5)
                     st.rerun()
-                else:
-                    st.warning("Sube un archivo primero.")
 
         else: # Movimientos Operativos
             st.markdown("Sube archivos de **Movimientos Operativos** (Excel).")
             archivo_det_excel = st.file_uploader("📂 Cargar Movimientos (Excel)", type=['xlsx', 'xls'], accept_multiple_files=True, key="det_excel")
 
-            if st.button("Procesar Movimientos", type="primary"):
+            if st.button("Procesar Movimientos", type="primary", disabled=not archivo_det_excel, help="Sube un archivo primero para habilitar esta opción." if not archivo_det_excel else "Inicia el procesamiento"):
                 if archivo_det_excel:
                     for archivo in archivo_det_excel:
                         with st.spinner(f"Procesando {archivo.name}..."):
@@ -797,8 +791,6 @@ elif eleccion == "🏦 BANCOS":
                         import time
                         time.sleep(1.5)
                         st.rerun()
-                else:
-                    st.warning("Sube un archivo de Excel primero.")
 
     st.divider()
 
@@ -1385,7 +1377,7 @@ elif eleccion == "📄 CFDI (Facturas)":
                 archivo_egresos_pdf = st.file_uploader("📂 Cargar Facturas (PDF)", type=['pdf'], accept_multiple_files=True, key="egresos_pdf")
                 archivo_egresos_zip = st.file_uploader("📂 Cargar Expedientes Completos (ZIP)", type=['zip'], accept_multiple_files=True, key="egresos_zip")
 
-                if st.button("Procesar Archivos de Egresos", type="primary"):
+                if st.button("Procesar Archivos de Egresos", type="primary", disabled=not archivo_egresos_pdf and not archivo_egresos_zip, help="Sube un archivo primero para habilitar esta opción." if not archivo_egresos_pdf and not archivo_egresos_zip else "Inicia el procesamiento"):
                     import os
                     import zipfile
                     import shutil
@@ -1532,7 +1524,7 @@ elif eleccion == "📄 CFDI (Facturas)":
                         time.sleep(1.5)
                         st.rerun()
                     else:
-                        st.warning("⚠️ No se identificaron archivos con UUIDs válidos o no se subió nada.")
+                        st.warning("⚠️ No se identificaron archivos con UUIDs válidos.")
             st.divider()
 
         tablas_mostrar = tablas_cfdi_ingresos if tipo_cfdi == "INGRESOS" else tablas_cfdi_egresos
@@ -1648,7 +1640,7 @@ elif eleccion == "🛒 VENTAS":
         archivo_ventas_pdf = st.file_uploader("📂 Cargar Notas de Ventas en lote (PDF)", type=['pdf'], accept_multiple_files=True, key="ventas_pdf", help="Se extraerá el Folio y se guardará en su respectivo expediente de venta automáticamente.")
         archivo_ventas_zip = st.file_uploader("📂 Cargar Expedientes (ZIP)", type=['zip'], accept_multiple_files=True, key="ventas_zip", help="Sube archivos ZIP donde el nombre de la carpeta o archivo contenga el ID VENTA (ej. carpeta 28336/).")
 
-        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado"):
+        if st.button("Procesar Archivos de Ventas", type="primary", key="btn_ventas_integrado", disabled=not archivo_ventas and not archivo_ventas_csv and not archivo_ventas_pdf and not archivo_ventas_zip, help="Sube un archivo primero para habilitar esta opción." if not archivo_ventas and not archivo_ventas_csv and not archivo_ventas_pdf and not archivo_ventas_zip else "Inicia el procesamiento"):
             procesados_ventas = False
             import os
 
@@ -1870,8 +1862,6 @@ elif eleccion == "🛒 VENTAS":
                 import time
                 time.sleep(1.5)
                 st.rerun()
-            else:
-                st.warning("⚠️ Sube al menos un archivo de ventas o reporte de series CSV primero.")
 
     st.divider()
 
