@@ -1,3 +1,6 @@
 ## 2026-04-18 - Native disabled states for Streamlit forms
 **Learning:** Streamlit forms and buttons often use a pattern of short-circuiting rendering (e.g., `if data and st.button(...)`) which hides the action entirely until valid data is provided. This is a UX anti-pattern because users don't know what actions are available or why they can't proceed.
 **Action:** Always use the native `disabled` property on interactive elements (e.g., `st.button('Action', disabled=not data)`) combined with the `help` parameter to provide contextual tooltips explaining the required prerequisites.
+## 2026-04-22 - Visual feedback for long-running processes
+**Learning:** Functions triggered by action buttons that process significant amounts of data (like reconciliation cross-checks) can appear unresponsive if there is no visual feedback, leaving the user confused if their action registered. The Streamlit `st.button` UI elements also benefit from alignment and tooltip hints.
+**Action:** Wrap backend execution logic tied to `st.button`s in a `st.spinner()` context manager. Additionally, apply `width='stretch'` to `st.button` elements where appropriate for layout alignment, and utilize the `help` parameter to provide contextual tooltips.
