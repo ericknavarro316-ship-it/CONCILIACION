@@ -1153,13 +1153,13 @@ elif eleccion == "🏦 BANCOS":
                     st.markdown("Aplica un mismo valor a todas las filas actualmente visibles en esta tabla. *(Útil si filtraste por un texto específico en el buscador superior)*.")
                     col_masiva1, col_masiva2, col_masiva3 = st.columns([1, 2, 1])
                     with col_masiva1:
-                        columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}")
+                        columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}", help="Selecciona la columna que será actualizada en todas las filas visibles.")
                     with col_masiva2:
-                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}")
+                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}", placeholder="Ej. Pago a Proveedor", help="Escribe el nuevo texto, o deja en blanco si deseas borrar el contenido actual de la columna seleccionada.")
                     with col_masiva3:
                         st.write("") # Espaciador
                         st.write("")
-                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary"):
+                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary", help="Aplica este valor a todas las filas que coincidan con los filtros actuales en la tabla de abajo."):
                             if len(df_filtrado) > 0:
                                 df_crudo_masivo = get_df_from_sql(cuenta_sel)
                                 # Asegurar que las columnas nuevas existan en el df original antes de guardar
