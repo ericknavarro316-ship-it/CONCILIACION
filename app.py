@@ -2095,17 +2095,20 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
 
     col1, col2, col3 = st.columns(3)
     if col1.button("🚀 Cruce BBVA", type="primary"):
-        res = run_bbva_crosscheck()
+        with st.spinner("Realizando cruce BBVA..."):
+            res = run_bbva_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
     if col2.button("⚙️ Cruce Mercado Pago", type="primary"):
-        res = run_mp_crosscheck()
+        with st.spinner("Realizando cruce Mercado Pago..."):
+            res = run_mp_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
 
     if col3.button("📄 Propagar a CFDI Ingresos", type="primary"):
-        res = run_cfdi_crosscheck()
+        with st.spinner("Propagando a CFDI Ingresos..."):
+            res = run_cfdi_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
 
