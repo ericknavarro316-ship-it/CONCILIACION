@@ -2013,11 +2013,12 @@ elif eleccion == "🛒 VENTAS":
                 data=to_excel_ventas_det(df_v_vista),
                 file_name=f"{bloque}_Exportado.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"export_{bloque}"
+                key=f"export_{bloque}",
+                use_container_width=True
             )
 
         with col_vbtn4:
-            if st.button(f"🗑️ Eliminar Bloque {bloque}", key=f"del_{bloque}", type="secondary"):
+            if st.button(f"🗑️ Eliminar Bloque {bloque}", key=f"del_{bloque}", type="secondary", help="Elimina definitivamente este bloque de ventas de la base de datos.", use_container_width=True):
                 st.session_state[f"confirm_del_{bloque}"] = True
 
             if st.session_state.get(f"confirm_del_{bloque}", False):
@@ -2273,7 +2274,7 @@ elif eleccion == "💸 CRUCE EGRESOS":
     st.title(":material/payments: Motor de Conciliación de Egresos")
     st.markdown("Cruza las **Facturas de Gastos (CFDI E PUE)** contra los **Cargos (Salidas)** del banco BBVA.")
 
-    if st.button("💳 O06 - Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary"):
+    if st.button("💳 O06 - Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary", use_container_width=True, help="Ejecuta el motor O06 para conciliar los egresos contra las salidas del banco."):
         with st.spinner("Buscando cargos en cuentas BBVA..."):
             res = run_egresos_crosscheck()
             if "error" in res: st.error(res["error"])
