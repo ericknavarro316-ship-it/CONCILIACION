@@ -2094,20 +2094,23 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
     st.title(":material/sync_alt: Módulo I00: Cruce de Ventas vs Bancos")
 
     col1, col2, col3 = st.columns(3)
-    if col1.button("🚀 Cruce BBVA", type="primary"):
-        res = run_bbva_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
+    if col1.button("🚀 Cruce BBVA", type="primary", use_container_width=True, help="Inicia la conciliación de depósitos bancarios de BBVA contra las ventas."):
+        with st.spinner("Conciliando BBVA..."):
+            res = run_bbva_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col2.button("⚙️ Cruce Mercado Pago", type="primary"):
-        res = run_mp_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
+    if col2.button("⚙️ Cruce Mercado Pago", type="primary", use_container_width=True, help="Inicia la conciliación de detalles de Mercado Pago contra las ventas."):
+        with st.spinner("Conciliando Mercado Pago..."):
+            res = run_mp_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
 
-    if col3.button("📄 Propagar a CFDI Ingresos", type="primary"):
-        res = run_cfdi_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
+    if col3.button("📄 Propagar a CFDI Ingresos", type="primary", use_container_width=True, help="Propaga los resultados del cruce a los CFDI de ingresos (Facturas)."):
+        with st.spinner("Propagando a CFDI..."):
+            res = run_cfdi_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
 
     st.divider()
     st.subheader("⚠️ Alertas de Diferencias (Ventas sin Cobro)")
