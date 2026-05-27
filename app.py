@@ -1155,11 +1155,11 @@ elif eleccion == "🏦 BANCOS":
                     with col_masiva1:
                         columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}")
                     with col_masiva2:
-                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}")
+                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}", placeholder="Dejar en blanco borrará los datos", help="¡Precaución! Si dejas este campo vacío, se borrará la información de la columna seleccionada para todas las filas visibles.")
                     with col_masiva3:
                         st.write("") # Espaciador
                         st.write("")
-                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary"):
+                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary", use_container_width=True, help="Aplica el valor ingresado a todas las filas que se muestran actualmente en la tabla."):
                             if len(df_filtrado) > 0:
                                 df_crudo_masivo = get_df_from_sql(cuenta_sel)
                                 # Asegurar que las columnas nuevas existan en el df original antes de guardar
@@ -2013,11 +2013,12 @@ elif eleccion == "🛒 VENTAS":
                 data=to_excel_ventas_det(df_v_vista),
                 file_name=f"{bloque}_Exportado.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"export_{bloque}"
+                key=f"export_{bloque}",
+                use_container_width=True
             )
 
         with col_vbtn4:
-            if st.button(f"🗑️ Eliminar Bloque {bloque}", key=f"del_{bloque}", type="secondary"):
+            if st.button(f"🗑️ Eliminar Bloque {bloque}", key=f"del_{bloque}", type="secondary", use_container_width=True, help="Elimina definitivamente este bloque de ventas de la base de datos."):
                 st.session_state[f"confirm_del_{bloque}"] = True
 
             if st.session_state.get(f"confirm_del_{bloque}", False):
