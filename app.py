@@ -2093,21 +2093,34 @@ elif eleccion == "⚙️ O00: PRE-CLÁSICOS FISCALES":
 elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
     st.title(":material/sync_alt: Módulo I00: Cruce de Ventas vs Bancos")
 
+    tablas_i00 = get_all_tables()
+    can_bbva = "VENTAS_BBVA" in tablas_i00 and any(t.startswith("BANCO_") for t in tablas_i00)
+    help_bbva = "Sube Ventas BBVA y Estados de Cuenta BBVA primero." if not can_bbva else "Cruzar Ventas vs Bancos BBVA"
+
+    can_mp = "VENTAS_MP" in tablas_i00 and "AUX_MP_DETALLE" in tablas_i00
+    help_mp = "Sube Ventas Mercado Pago y Detalle MP primero." if not can_mp else "Cruzar tickets de Mercado Pago"
+
+    can_cfdi = ("CFDI_CFDI_I_PUE" in tablas_i00 or "CFDI_CFDI_I_PPD" in tablas_i00)
+    help_cfdi = "Sube CFDI de Ingresos (PUE/PPD) primero." if not can_cfdi else "Propagar UUID a CFDI Ingresos"
+
     col1, col2, col3 = st.columns(3)
-    if col1.button("🚀 Cruce BBVA", type="primary"):
-        res = run_bbva_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
+    if col1.button("🚀 Cruce BBVA", type="primary", disabled=not can_bbva, help=help_bbva, use_container_width=True):
+        with st.spinner("Ejecutando cruce BBVA..."):
+            res = run_bbva_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col2.button("⚙️ Cruce Mercado Pago", type="primary"):
-        res = run_mp_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
+    if col2.button("⚙️ Cruce Mercado Pago", type="primary", disabled=not can_mp, help=help_mp, use_container_width=True):
+        with st.spinner("Ejecutando cruce Mercado Pago..."):
+            res = run_mp_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
 
-    if col3.button("📄 Propagar a CFDI Ingresos", type="primary"):
-        res = run_cfdi_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
+    if col3.button("📄 Propagar a CFDI Ingresos", type="primary", disabled=not can_cfdi, help=help_cfdi, use_container_width=True):
+        with st.spinner("Propagando información a CFDI..."):
+            res = run_cfdi_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
 
     st.divider()
     st.subheader("⚠️ Alertas de Diferencias (Ventas sin Cobro)")
