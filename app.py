@@ -1155,11 +1155,11 @@ elif eleccion == "🏦 BANCOS":
                     with col_masiva1:
                         columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}")
                     with col_masiva2:
-                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}")
+                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}", placeholder="Dejar vacío para borrar", help="Nota: Si dejas este campo vacío, se borrarán los datos de esta columna en todas las filas visibles.")
                     with col_masiva3:
                         st.write("") # Espaciador
                         st.write("")
-                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary"):
+                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary", use_container_width=True, help="Aplica este valor o borra el campo en TODAS las filas que se muestran actualmente."):
                             if len(df_filtrado) > 0:
                                 df_crudo_masivo = get_df_from_sql(cuenta_sel)
                                 # Asegurar que las columnas nuevas existan en el df original antes de guardar
@@ -2093,25 +2093,33 @@ elif eleccion == "⚙️ O00: PRE-CLÁSICOS FISCALES":
 elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
     st.title(":material/sync_alt: Módulo I00: Cruce de Ventas vs Bancos")
 
+    tablas = get_all_tables()
+    can_run_bbva = "VENTAS_BBVA" in tablas and any(t.startswith("BANCO_") for t in tablas)
+    can_run_mp = "VENTAS_MP" in tablas and "AUX_MP_DETALLE" in tablas
+    can_run_cfdi = any(t in tablas for t in ["CFDI_I_PUE", "CFDI_I_PPD", "CFDI_CFDI_I_PUE", "CFDI_CFDI_I_PPD"])
+
     col1, col2, col3 = st.columns(3)
-    if col1.button("🚀 Cruce BBVA", type="primary"):
-        res = run_bbva_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col2.button("⚙️ Cruce Mercado Pago", type="primary"):
-        res = run_mp_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
+    if col1.button("🚀 Cruce BBVA", type="primary", use_container_width=True, disabled=not can_run_bbva, help="Requiere VENTAS_BBVA y tablas BANCO_." if not can_run_bbva else "Inicia el cruce BBVA"):
+        with st.spinner("Ejecutando cruce BBVA..."):
+            res = run_bbva_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col3.button("📄 Propagar a CFDI Ingresos", type="primary"):
-        res = run_cfdi_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
+    if col2.button("⚙️ Cruce Mercado Pago", type="primary", use_container_width=True, disabled=not can_run_mp, help="Requiere VENTAS_MP y AUX_MP_DETALLE." if not can_run_mp else "Inicia el cruce MP"):
+        with st.spinner("Ejecutando cruce Mercado Pago..."):
+            res = run_mp_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
+
+    if col3.button("📄 Propagar a CFDI Ingresos", type="primary", use_container_width=True, disabled=not can_run_cfdi, help="Requiere CFDI de ingresos." if not can_run_cfdi else "Inicia la propagación"):
+        with st.spinner("Propagando a CFDI Ingresos..."):
+            res = run_cfdi_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
 
     st.divider()
     st.subheader("⚠️ Alertas de Diferencias (Ventas sin Cobro)")
-    tablas = get_all_tables()
     df_alertas_bbva = pd.DataFrame()
     df_alertas_mp = pd.DataFrame()
 
