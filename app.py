@@ -2093,21 +2093,29 @@ elif eleccion == "⚙️ O00: PRE-CLÁSICOS FISCALES":
 elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
     st.title(":material/sync_alt: Módulo I00: Cruce de Ventas vs Bancos")
 
+    tablas = get_all_tables()
+    has_bbva = "VENTAS_BBVA" in tablas and any(t.startswith("BANCO_") for t in tablas)
+    has_mp = "VENTAS_MP" in tablas and "AUX_MP_DETALLE" in tablas
+    has_cfdi = any(t in tablas for t in ["CFDI_I_PUE", "CFDI_CFDI_I_PUE", "CFDI_I_PPD", "CFDI_CFDI_I_PPD"])
+
     col1, col2, col3 = st.columns(3)
-    if col1.button("🚀 Cruce BBVA", type="primary"):
-        res = run_bbva_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
+    if col1.button("🚀 Cruce BBVA", type="primary", disabled=not has_bbva, help="Requiere subir VENTAS_BBVA y al menos una tabla BANCO_" if not has_bbva else "Cruza ventas de BBVA contra los depósitos bancarios."):
+        with st.spinner("Cruzando BBVA..."):
+            res = run_bbva_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col2.button("⚙️ Cruce Mercado Pago", type="primary"):
-        res = run_mp_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
+    if col2.button("⚙️ Cruce Mercado Pago", type="primary", disabled=not has_mp, help="Requiere subir VENTAS_MP y AUX_MP_DETALLE" if not has_mp else "Cruza ventas de Mercado Pago contra el detalle bancario de Mercado Pago."):
+        with st.spinner("Cruzando Mercado Pago..."):
+            res = run_mp_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
 
-    if col3.button("📄 Propagar a CFDI Ingresos", type="primary"):
-        res = run_cfdi_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
+    if col3.button("📄 Propagar a CFDI Ingresos", type="primary", disabled=not has_cfdi, help="Requiere subir tablas CFDI (PUE/PPD)" if not has_cfdi else "Propaga los cruces hacia las facturas emitidas."):
+        with st.spinner("Propagando CFDI..."):
+            res = run_cfdi_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
 
     st.divider()
     st.subheader("⚠️ Alertas de Diferencias (Ventas sin Cobro)")
@@ -2273,7 +2281,7 @@ elif eleccion == "💸 CRUCE EGRESOS":
     st.title(":material/payments: Motor de Conciliación de Egresos")
     st.markdown("Cruza las **Facturas de Gastos (CFDI E PUE)** contra los **Cargos (Salidas)** del banco BBVA.")
 
-    if st.button("💳 O06 - Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary"):
+    if st.button("💳 O06 - Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary", disabled=not (("CFDI_E_PUE" in get_all_tables() or "CFDI_CFDI_E_PUE" in get_all_tables()) and any(t.startswith("BANCO_") for t in get_all_tables())), help="Requiere CFDI de Egresos y tablas de banco." if not (("CFDI_E_PUE" in get_all_tables() or "CFDI_CFDI_E_PUE" in get_all_tables()) and any(t.startswith("BANCO_") for t in get_all_tables())) else "Ejecuta el cruce de egresos."):
         with st.spinner("Buscando cargos en cuentas BBVA..."):
             res = run_egresos_crosscheck()
             if "error" in res: st.error(res["error"])
