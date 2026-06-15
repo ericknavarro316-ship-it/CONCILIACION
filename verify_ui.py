@@ -11,16 +11,17 @@ def verify_ventas_ui():
             import time
             time.sleep(5)
 
-            # Click on VENTAS in sidebar using JS evaluate
+            # Click on I00: CRUCE INGRESOS (Ventas) in sidebar using JS evaluate
             page.evaluate('''() => {
                 const labels = Array.from(document.querySelectorAll('label'));
-                const ventasLabel = labels.find(l => l.innerText && l.innerText.includes('VENTAS'));
+                const ventasLabel = labels.find(l => l.innerText && l.innerText.includes('CRUCE INGRESOS'));
                 if(ventasLabel) ventasLabel.click();
             }''')
             time.sleep(3)
 
-            # Take screenshot of the new Ventas layout (empty state or populated)
-            page.screenshot(path="/home/jules/verification/ventas_layout.png", full_page=True)
+            # Take screenshot of the new layout (empty state or populated)
+            page.screenshot(path="verification_cruce_ingresos.png", full_page=True)
+            print("Screenshot saved to verification_cruce_ingresos.png")
 
         finally:
             browser.close()
