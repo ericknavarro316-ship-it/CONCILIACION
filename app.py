@@ -1155,11 +1155,11 @@ elif eleccion == "🏦 BANCOS":
                     with col_masiva1:
                         columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}")
                     with col_masiva2:
-                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}")
+                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}", placeholder="Escribe el nuevo valor aquí", help="Atención: Si dejas esto vacío, se borrarán los datos de esta columna en todas las filas visibles.")
                     with col_masiva3:
                         st.write("") # Espaciador
                         st.write("")
-                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary"):
+                        if st.button("Aplicar a Filas Visibles", key=f"masiva_btn_{key_prefix}", type="secondary", use_container_width=True, help="Aplica el valor ingresado a todas las filas mostradas actualmente."):
                             if len(df_filtrado) > 0:
                                 df_crudo_masivo = get_df_from_sql(cuenta_sel)
                                 # Asegurar que las columnas nuevas existan en el df original antes de guardar
