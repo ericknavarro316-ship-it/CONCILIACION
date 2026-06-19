@@ -2093,21 +2093,31 @@ elif eleccion == "⚙️ O00: PRE-CLÁSICOS FISCALES":
 elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
     st.title(":material/sync_alt: Módulo I00: Cruce de Ventas vs Bancos")
 
+    tablas_disponibles = get_all_tables()
+
+    can_bbva = "VENTAS_BBVA" in tablas_disponibles and any(t.startswith("BANCO_") for t in tablas_disponibles)
+    can_mp = "VENTAS_MP" in tablas_disponibles and "AUX_MP_DETALLE" in tablas_disponibles
+    can_cfdi = any(t in tablas_disponibles for t in ["CFDI_I_PUE", "CFDI_I_PPD", "CFDI_CFDI_I_PUE", "CFDI_CFDI_I_PPD"])
+
     col1, col2, col3 = st.columns(3)
-    if col1.button("🚀 Cruce BBVA", type="primary"):
-        res = run_bbva_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col2.button("⚙️ Cruce Mercado Pago", type="primary"):
-        res = run_mp_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
+    if col1.button("🚀 Cruce BBVA", type="primary", use_container_width=True, disabled=not can_bbva, help="Sube notas de ventas de BBVA y un estado de cuenta bancario para habilitar el cruce." if not can_bbva else "Ejecuta el cruce de ventas contra abonos bancarios de BBVA."):
+        with st.spinner("Conciliando Ventas BBVA vs Bancos..."):
+            res = run_bbva_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col3.button("📄 Propagar a CFDI Ingresos", type="primary"):
-        res = run_cfdi_crosscheck()
-        if "error" in res: st.error(res["error"])
-        else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
+    if col2.button("⚙️ Cruce Mercado Pago", type="primary", use_container_width=True, disabled=not can_mp, help="Sube notas de ventas de Mercado Pago y los movimientos operativos (detalle) para habilitar el cruce." if not can_mp else "Ejecuta el cruce de tickets de Mercado Pago."):
+        with st.spinner("Conciliando Mercado Pago..."):
+            res = run_mp_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
+
+    if col3.button("📄 Propagar a CFDI Ingresos", type="primary", use_container_width=True, disabled=not can_cfdi, help="Sube CFDI de Ingresos (PUE/PPD) para habilitar la propagación de UUIDs." if not can_cfdi else "Propaga los UUIDs a los cruces ya realizados."):
+        with st.spinner("Propagando UUIDs a CFDI..."):
+            res = run_cfdi_crosscheck()
+            if "error" in res: st.error(res["error"])
+            else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
 
     st.divider()
     st.subheader("⚠️ Alertas de Diferencias (Ventas sin Cobro)")
