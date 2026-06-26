@@ -1155,7 +1155,7 @@ elif eleccion == "🏦 BANCOS":
                     with col_masiva1:
                         columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}")
                     with col_masiva2:
-                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}")
+                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}", placeholder="Deja vacío para borrar", help="El valor ingresado se aplicará a todas las filas filtradas. Si lo dejas vacío, se borrará el contenido actual.")
                     with col_masiva3:
                         st.write("") # Espaciador
                         st.write("")
@@ -2067,7 +2067,9 @@ elif eleccion == "⚙️ O00: PRE-CLÁSICOS FISCALES":
     with col1:
         st.subheader("1. Preclasificación Bancos")
         st.markdown("Busca patrones (ej. 'Comisión', 'Nómina') en el concepto y auto-asigna categoría.")
-        if st.button("🔍 O01 - Ejecutar Preclasificación", type="primary"):
+        tablas_todas = get_all_tables()
+        has_bancos = any(t.startswith("BANCO_") for t in tablas_todas)
+        if st.button("🔍 O01 - Ejecutar Preclasificación", type="primary", disabled=not has_bancos, help="Requiere cargar al menos un estado de cuenta bancario." if not has_bancos else "Ejecuta la preclasificación de movimientos."):
             with st.spinner("Analizando conceptos bancarios..."):
                 res = run_o01_preclasificar_bancos()
                 if "success" in res:
@@ -2078,7 +2080,9 @@ elif eleccion == "⚙️ O00: PRE-CLÁSICOS FISCALES":
     with col2:
         st.subheader("2. Conciliación Complementos (PAGOS E)")
         st.markdown("Cruza las salidas bancarias directamente contra los Pagos de Egresos emitidos.")
-        if st.button("🧾 O07 - Conciliar PAGOS E", type="primary"):
+        has_pagos_e = "PAGOS_E" in tablas_todas or "CFDI_PAGOS_E" in tablas_todas
+        can_run_pagos_e = has_bancos and has_pagos_e
+        if st.button("🧾 O07 - Conciliar PAGOS E", type="primary", disabled=not can_run_pagos_e, help="Requiere cargar bancos y complementos de pago (PAGOS_E)." if not can_run_pagos_e else "Cruza salidas bancarias contra Pagos Egresos."):
             with st.spinner("Buscando cargos para PAGOS E..."):
                 res = run_o07_conciliar_pagos_e()
                 if "success" in res:
@@ -2094,24 +2098,31 @@ elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
     st.title(":material/sync_alt: Módulo I00: Cruce de Ventas vs Bancos")
 
     col1, col2, col3 = st.columns(3)
-    if col1.button("🚀 Cruce BBVA", type="primary"):
+    tablas = get_all_tables()
+    has_ventas_bbva = "VENTAS_BBVA" in tablas
+    has_bancos_bbva = any(t.startswith("BANCO_") for t in tablas) # Or more specific BBVA check if needed, but generic works
+    can_run_bbva = has_ventas_bbva and has_bancos_bbva
+    if col1.button("🚀 Cruce BBVA", type="primary", disabled=not can_run_bbva, help="Requiere cargar VENTAS_BBVA y estados de cuenta bancarios." if not can_run_bbva else "Cruza ventas BBVA contra depósitos bancarios."):
         res = run_bbva_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col2.button("⚙️ Cruce Mercado Pago", type="primary"):
+    has_ventas_mp = "VENTAS_MP" in tablas
+    has_aux_mp = "AUX_MP_DETALLE" in tablas
+    can_run_mp = has_ventas_mp and has_aux_mp
+    if col2.button("⚙️ Cruce Mercado Pago", type="primary", disabled=not can_run_mp, help="Requiere cargar VENTAS_MP y detalle de Mercado Pago (AUX_MP_DETALLE)." if not can_run_mp else "Cruza ventas Mercado Pago contra detalle de cuenta."):
         res = run_mp_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
 
-    if col3.button("📄 Propagar a CFDI Ingresos", type="primary"):
+    has_cfdi_ingresos = any(t in tablas for t in ["CFDI_I_PUE", "CFDI_I_PPD", "CFDI_CFDI_I_PUE", "CFDI_CFDI_I_PPD"])
+    if col3.button("📄 Propagar a CFDI Ingresos", type="primary", disabled=not has_cfdi_ingresos, help="Requiere cargar facturas de ingresos (CFDI_I_PUE o PPD)." if not has_cfdi_ingresos else "Propaga las ventas conciliadas a los CFDI."):
         res = run_cfdi_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
 
     st.divider()
     st.subheader("⚠️ Alertas de Diferencias (Ventas sin Cobro)")
-    tablas = get_all_tables()
     df_alertas_bbva = pd.DataFrame()
     df_alertas_mp = pd.DataFrame()
 
@@ -2273,14 +2284,17 @@ elif eleccion == "💸 CRUCE EGRESOS":
     st.title(":material/payments: Motor de Conciliación de Egresos")
     st.markdown("Cruza las **Facturas de Gastos (CFDI E PUE)** contra los **Cargos (Salidas)** del banco BBVA.")
 
-    if st.button("💳 O06 - Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary"):
+    tablas = get_all_tables()
+    has_cfdi_egresos = any(t in tablas for t in ["CFDI_E_PUE", "CFDI_CFDI_E_PUE"])
+    has_bancos_egresos = any(t.startswith("BANCO_") for t in tablas)
+    can_run_egresos = has_cfdi_egresos and has_bancos_egresos
+    if st.button("💳 O06 - Ejecutar Cruce Egresos (CFDI E PUE vs Bancos BBVA)", type="primary", disabled=not can_run_egresos, help="Requiere cargar facturas de egresos (CFDI_E_PUE) y estados de cuenta bancarios." if not can_run_egresos else "Cruza facturas de gastos contra cargos bancarios."):
         with st.spinner("Buscando cargos en cuentas BBVA..."):
             res = run_egresos_crosscheck()
             if "error" in res: st.error(res["error"])
             else: st.success(f"✅ ¡Cruce Exitoso! {res['matches']} Egresos PUE encontrados en el banco.")
 
     st.subheader("Gastos Pendientes de Identificar en Banco")
-    tablas = get_all_tables()
 
     # Check both potential names for the table
     tabla_egresos_name = None
