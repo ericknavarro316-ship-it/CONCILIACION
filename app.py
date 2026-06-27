@@ -2093,18 +2093,23 @@ elif eleccion == "⚙️ O00: PRE-CLÁSICOS FISCALES":
 elif eleccion == "🔄 I00: CRUCE INGRESOS (Ventas)":
     st.title(":material/sync_alt: Módulo I00: Cruce de Ventas vs Bancos")
 
+    tablas = get_all_tables()
+    tiene_bbva = "VENTAS_BBVA" in tablas and any(t.startswith("BANCO_") for t in tablas)
+    tiene_mp = "VENTAS_MP" in tablas and "AUX_MP_DETALLE" in tablas
+    tiene_cfdi = any(t in tablas for t in ["CFDI_I_PUE", "CFDI_I_PPD", "CFDI_CFDI_I_PUE", "CFDI_CFDI_I_PPD"])
+
     col1, col2, col3 = st.columns(3)
-    if col1.button("🚀 Cruce BBVA", type="primary"):
+    if col1.button("🚀 Cruce BBVA", type="primary", disabled=not tiene_bbva, help="Sube tus Notas de Ventas y Estado de Cuenta (BBVA) primero para habilitar esta opción." if not tiene_bbva else "Inicia el cruce de ventas contra bancos BBVA."):
         res = run_bbva_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res['matches']} abonos BBVA conciliados.")
 
-    if col2.button("⚙️ Cruce Mercado Pago", type="primary"):
+    if col2.button("⚙️ Cruce Mercado Pago", type="primary", disabled=not tiene_mp, help="Sube tus Notas de Ventas y Detalle de Movimientos (Mercado Pago) primero para habilitar esta opción." if not tiene_mp else "Inicia el cruce de ventas contra Mercado Pago."):
         res = run_mp_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res['matches']} tickets MP conciliados.")
 
-    if col3.button("📄 Propagar a CFDI Ingresos", type="primary"):
+    if col3.button("📄 Propagar a CFDI Ingresos", type="primary", disabled=not tiene_cfdi, help="Sube tus Facturas de Ingresos (CFDI) primero para habilitar esta opción." if not tiene_cfdi else "Propaga los datos de ventas cruzadas a los CFDI de Ingresos."):
         res = run_cfdi_crosscheck()
         if "error" in res: st.error(res["error"])
         else: st.success(f"✅ {res.get('matches_pue',0)} PUE / {res.get('matches_ppd',0)} PPD.")
