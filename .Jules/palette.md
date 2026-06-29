@@ -1,3 +1,6 @@
 ## 2026-04-18 - Native disabled states for Streamlit forms
 **Learning:** Streamlit forms and buttons often use a pattern of short-circuiting rendering (e.g., `if data and st.button(...)`) which hides the action entirely until valid data is provided. This is a UX anti-pattern because users don't know what actions are available or why they can't proceed.
 **Action:** Always use the native `disabled` property on interactive elements (e.g., `st.button('Action', disabled=not data)`) combined with the `help` parameter to provide contextual tooltips explaining the required prerequisites.
+## 2026-06-29 - Native Disabled States with Tooltips for Prerequisites
+**Learning:** In Streamlit, short-circuiting rendering (e.g., hiding a button entirely if data is missing) is a UX anti-pattern because it hides available actions and confuses users about system capabilities. Conversely, allowing a click on a button without prerequisites and showing an error *after* the click is frustrating.
+**Action:** Always render actionable buttons. If prerequisites are missing (like missing data tables for cross-checks), use the native `disabled=...` property combined with the `help="..."` parameter to provide an immediate tooltip explaining exactly what is required to enable the action.
