@@ -1,3 +1,6 @@
 ## 2026-04-18 - Native disabled states for Streamlit forms
 **Learning:** Streamlit forms and buttons often use a pattern of short-circuiting rendering (e.g., `if data and st.button(...)`) which hides the action entirely until valid data is provided. This is a UX anti-pattern because users don't know what actions are available or why they can't proceed.
 **Action:** Always use the native `disabled` property on interactive elements (e.g., `st.button('Action', disabled=not data)`) combined with the `help` parameter to provide contextual tooltips explaining the required prerequisites.
+## 2026-07-02 - Native disabled states vs Database queries
+**Learning:** While dynamically disabling action buttons based on data presence is good UX, calling synchronous database queries (like `get_all_tables()`) directly inside Streamlit widget parameters (e.g., `disabled=not get_all_tables()`) is extremely dangerous. Streamlit re-runs the entire script on every interaction, meaning this query would fire constantly, causing severe UI lag, potential database locks, and crashes.
+**Action:** Always use pre-calculated state variables or check existing data loaded in memory when determining dynamic disabled states, avoiding inline expensive operations.
