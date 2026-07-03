@@ -1,3 +1,6 @@
 ## 2026-04-18 - Native disabled states for Streamlit forms
 **Learning:** Streamlit forms and buttons often use a pattern of short-circuiting rendering (e.g., `if data and st.button(...)`) which hides the action entirely until valid data is provided. This is a UX anti-pattern because users don't know what actions are available or why they can't proceed.
 **Action:** Always use the native `disabled` property on interactive elements (e.g., `st.button('Action', disabled=not data)`) combined with the `help` parameter to provide contextual tooltips explaining the required prerequisites.
+## 2026-04-18 - Tooltips and placeholders for mass assignment actions
+**Learning:** In mass assignment operations (like applying a value to all visible rows), an empty input field often means "clear the data", which is a destructive action that isn't always obvious to users. Furthermore, applying an action when no rows are visible is a no-op that can cause confusion.
+**Action:** Use `placeholder` text and the `help` tooltip on the text input to explicitly warn users that an empty value will erase data. Additionally, use the native `disabled` property on the action button when no rows are available, combined with a `help` tooltip to explain why it is disabled.
