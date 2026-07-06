@@ -1155,7 +1155,7 @@ elif eleccion == "🏦 BANCOS":
                     with col_masiva1:
                         columna_masiva = st.selectbox("Columna a modificar:", col_conceptos_editables, key=f"masiva_col_{key_prefix}")
                     with col_masiva2:
-                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}")
+                        valor_masivo = st.text_input("Nuevo Valor:", "", key=f"masiva_val_{key_prefix}", placeholder="Dejar en blanco para borrar", help="Si dejas este campo vacío, se borrará el contenido de la columna seleccionada para todas las filas visibles. Usa esto con precaución.")
                     with col_masiva3:
                         st.write("") # Espaciador
                         st.write("")
